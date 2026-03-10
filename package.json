@@ -18,6 +18,7 @@
     "dist": "npm run prepare:kernel && tauri build",
     "dist:mac": "bash scripts/build-mac-dmg.sh",
     "dist:win": "npm run prepare:kernel && tauri build --bundles nsis,msi",
+    "dist:win:ci": "npm run prepare:kernel && tauri build --bundles msi",
     "dist:linux": "npm run prepare:kernel && tauri build --bundles appimage,deb,rpm",
     "dist:mac:tauri": "npm run prepare:kernel && tauri build --bundles dmg"
   },
