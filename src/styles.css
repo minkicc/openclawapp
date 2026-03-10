@@ -76,6 +76,19 @@ body {
   margin-bottom: 20px;
 }
 
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#langSelect {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 10px;
+  background: #fff;
+}
+
 .topbar h1 {
   margin: 0;
   font-size: 36px;
@@ -159,7 +172,8 @@ textarea {
   gap: 8px;
 }
 
-.inline-row input {
+.inline-row input,
+.inline-row select {
   flex: 1 1 auto;
 }
 
@@ -256,6 +270,10 @@ textarea {
   color: var(--muted);
   font-size: 13px;
   font-weight: 600;
+}
+
+body[data-lang="en-US"] .advanced-block > summary::after {
+  content: "Expand";
 }
 
 .advanced-block[open] > summary::after {
