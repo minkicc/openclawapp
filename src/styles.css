@@ -1,0 +1,362 @@
+html,
+body {
+  height: 100%;
+}
+
+:root {
+  color-scheme: light;
+  --bg-a: #f7efe8;
+  --bg-b: #d9ecf2;
+  --panel: #ffffffd9;
+  --ink: #18222d;
+  --muted: #4e5a68;
+  --line: #cad5e2;
+  --primary: #025f9f;
+  --primary-hover: #014d82;
+  --secondary: #eff4f9;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  color: var(--ink);
+  min-height: 100%;
+  background: linear-gradient(145deg, var(--bg-a), var(--bg-b));
+  overflow: hidden;
+}
+
+.background {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 15% 20%, #ffffff99 0, transparent 42%),
+    radial-gradient(circle at 83% 72%, #ffffffaa 0, transparent 35%);
+}
+
+.shell {
+  position: relative;
+  max-width: 980px;
+  height: calc(100vh - 24px);
+  margin: 12px auto;
+  padding: 0 20px 12px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(24, 34, 45, 0.28) transparent;
+}
+
+.shell::-webkit-scrollbar {
+  width: 8px;
+}
+
+.shell::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.shell::-webkit-scrollbar-thumb {
+  background: rgba(24, 34, 45, 0.28);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.shell::-webkit-scrollbar-thumb:hover {
+  background: rgba(24, 34, 45, 0.4);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 36px;
+  letter-spacing: 0.4px;
+}
+
+.topbar p {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+
+.badge {
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 24px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 10px 40px #1948661a;
+}
+
+.hidden {
+  display: none;
+}
+
+h2 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.hint {
+  color: var(--muted);
+  margin: 8px 0 20px;
+}
+
+.form-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-weight: 600;
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+}
+
+input,
+select,
+textarea {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  background: #fff;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 86px;
+}
+
+.inline-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inline-row input {
+  flex: 1 1 auto;
+}
+
+.inline-row button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.skills-block {
+  margin-top: 22px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 16px;
+  background: #ffffffbb;
+}
+
+.skills-block.compact {
+  margin-top: 18px;
+}
+
+.skills-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.skills-header h3,
+.skills-block h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+#skillsList,
+#summarySkillsList {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+#skillsList li,
+#summarySkillsList li {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  padding: 9px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+#skillsList li span,
+#summarySkillsList li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.actions.bottom {
+  margin-top: 18px;
+}
+
+.advanced-block {
+  margin-top: 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #ffffffb8;
+}
+
+.advanced-block > summary {
+  cursor: pointer;
+  list-style: none;
+  font-weight: 700;
+  padding: 12px 14px;
+  user-select: none;
+}
+
+.advanced-block > summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-block > summary::after {
+  content: "展开";
+  float: right;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.advanced-block[open] > summary::after {
+  content: "收起";
+}
+
+.advanced-content {
+  border-top: 1px solid var(--line);
+  padding: 14px;
+}
+
+button {
+  border: 0;
+  border-radius: 12px;
+  padding: 11px 14px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: var(--primary-hover);
+}
+
+.btn-secondary {
+  background: var(--secondary);
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+
+.kv {
+  margin-top: 15px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.kv div {
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 12px;
+  padding: 11px;
+}
+
+.kv span {
+  font-size: 12px;
+  color: var(--muted);
+  display: block;
+  margin-bottom: 6px;
+}
+
+.kv strong {
+  word-break: break-all;
+}
+
+.message {
+  min-height: 22px;
+  margin-top: 14px;
+  font-weight: 600;
+}
+
+.message.success {
+  color: #086e44;
+}
+
+.message.error {
+  color: #aa1d2e;
+}
+
+#doctorOutput {
+  margin-top: 14px;
+  padding: 12px;
+  min-height: 90px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: #001524;
+  color: #caefff;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.remove-btn {
+  background: #fff;
+  border: 1px solid #e9b4b8;
+  color: #8f1e29;
+  border-radius: 8px;
+  font-size: 12px;
+  padding: 6px 8px;
+}
+
+@media (max-width: 860px) {
+  .form-grid,
+  .kv {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar h1 {
+    font-size: 28px;
+  }
+}
