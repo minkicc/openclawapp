@@ -20,7 +20,7 @@
     "dist:win": "npm run prepare:kernel && tauri build --bundles nsis,msi",
     "dist:win:ci": "npm run prepare:kernel && tauri build --bundles msi",
     "dist:linux": "npm run prepare:kernel && tauri build --bundles appimage,deb,rpm",
-    "dist:linux:ci": "npm run prepare:kernel && tauri build --bundles deb,rpm",
+    "dist:linux:ci": "npm run prepare:kernel && tauri build --bundles deb",
     "dist:linux:appimage": "npm run prepare:kernel && tauri build --bundles appimage",
     "dist:mac:tauri": "npm run prepare:kernel && tauri build --bundles dmg"
   },

@@ -79,7 +79,6 @@ jobs:
           set -euo pipefail
           mkdir -p dist-artifacts
           cp -v src-tauri/target/release/bundle/deb/*.deb dist-artifacts/
-          cp -v src-tauri/target/release/bundle/rpm/*.rpm dist-artifacts/
 
       - name: Collect installers (macOS)
         if: matrix.os == 'macos-latest'
@@ -124,4 +123,3 @@ jobs:
             release-artifacts/**/*.dmg
             release-artifacts/**/*.msi
             release-artifacts/**/*.deb
-            release-artifacts/**/*.rpm
