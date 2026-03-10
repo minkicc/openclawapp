@@ -62,7 +62,16 @@ jobs:
         if: startsWith(matrix.os, 'ubuntu')
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: npm run dist:linux
+        run: npm run dist:linux:ci
+
+      - name: Build AppImage (optional)
+        if: startsWith(matrix.os, 'ubuntu')
+        continue-on-error: true
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          TAURI_CLI_LOG_LEVEL: debug
+          RUST_BACKTRACE: full
+        run: npm run dist:linux:appimage
 
       - name: Build installers (macOS)
         if: matrix.os == 'macos-latest'
