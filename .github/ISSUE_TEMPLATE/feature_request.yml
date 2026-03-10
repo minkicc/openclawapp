@@ -1,0 +1,39 @@
+name: Feature request
+description: Suggest an improvement for OpenClaw Desktop Installer
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. Please explain the user value clearly.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What problem are you trying to solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe your preferred solution
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any alternative approaches?
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Mockups, examples, references, or links
+
