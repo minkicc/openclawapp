@@ -66,12 +66,18 @@ jobs:
 
       - name: Build AppImage (optional)
         if: startsWith(matrix.os, 'ubuntu')
-        continue-on-error: true
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
           TAURI_CLI_LOG_LEVEL: debug
           RUST_BACKTRACE: full
-        run: npm run dist:linux:appimage
+        run: |
+          set +e
+          npm run dist:linux:appimage
+          code=$?
+          if [ "$code" -ne 0 ]; then
+            echo "::warning::AppImage build failed (non-blocking). deb/rpm bundles are still available."
+          fi
+          exit 0
 
       - name: Build installers (macOS)
         if: matrix.os == 'macos-latest'
