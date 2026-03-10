@@ -33,17 +33,42 @@ if (existsSync(openclawPkg) && existsSync(nodePkg)) {
   process.exit(0);
 }
 
-const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-const npmCheck = spawnSync(npmCommand, ["--version"], { stdio: "ignore" });
-if (npmCheck.status !== 0) {
+function resolveNpmInvocation() {
+  const npmExecPath = process.env.npm_execpath;
+  if (npmExecPath && existsSync(npmExecPath)) {
+    return {
+      command: process.execPath,
+      prefixArgs: [npmExecPath],
+    };
+  }
+
+  const candidates =
+    process.platform === "win32" ? ["npm.cmd", "npm"] : ["npm"];
+
+  for (const command of candidates) {
+    const check = spawnSync(command, ["--version"], { stdio: "ignore" });
+    if (check.status === 0) {
+      return {
+        command,
+        prefixArgs: [],
+      };
+    }
+  }
+
+  return null;
+}
+
+const npmInvocation = resolveNpmInvocation();
+if (!npmInvocation) {
   console.error("npm not found. Cannot prepare bundled kernel.");
   process.exit(1);
 }
 
 console.log(`Installing bundled kernel packages: ${openclawSpec} + ${nodeSpec}`);
 const install = spawnSync(
-  npmCommand,
+  npmInvocation.command,
   [
+    ...npmInvocation.prefixArgs,
     "install",
     "--omit=dev",
     "--no-audit",
