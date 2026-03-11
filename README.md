@@ -109,6 +109,24 @@ Workflow file:
 .github/workflows/build.yml
 ```
 
+### macOS signing and notarization in GitHub Actions
+
+To distribute a macOS app without Gatekeeper damage warnings, configure these repository secrets:
+
+- `APPLE_CERTIFICATE_P12`: Base64-encoded Developer ID Application certificate (`.p12`)
+- `APPLE_CERTIFICATE_PASSWORD`: Password of the `.p12` file
+- `APPLE_SIGN_IDENTITY`: Signing identity, for example `Developer ID Application: Your Name (TEAMID)`
+- `APPLE_KEYCHAIN_PASSWORD` (optional): Temporary keychain password in CI
+- `APPLE_ID`: Apple ID email for notarization
+- `APPLE_APP_SPECIFIC_PASSWORD`: App-specific password for the Apple ID
+- `APPLE_TEAM_ID`: Apple Developer Team ID
+
+Behavior:
+
+- If cert secrets are provided, CI signs `.app` and `.dmg` with Developer ID.
+- If notarization secrets are also provided, CI submits and staples the `.dmg`.
+- If secrets are missing, CI falls back to ad-hoc signing for internal testing.
+
 ## License
 
 MIT. See [LICENSE](./LICENSE).

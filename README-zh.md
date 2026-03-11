@@ -109,6 +109,24 @@ GitHub Actions 会在 Push / PR 自动构建安装包。
 .github/workflows/build.yml
 ```
 
+### GitHub Actions 的 macOS 签名与公证
+
+为了避免用户在 macOS 上看到“已损坏、无法打开”的 Gatekeeper 提示，需要在仓库 Secrets 中配置：
+
+- `APPLE_CERTIFICATE_P12`：Developer ID Application 证书（`.p12`）的 Base64 内容
+- `APPLE_CERTIFICATE_PASSWORD`：`.p12` 文件密码
+- `APPLE_SIGN_IDENTITY`：签名身份，例如 `Developer ID Application: Your Name (TEAMID)`
+- `APPLE_KEYCHAIN_PASSWORD`（可选）：CI 临时 keychain 密码
+- `APPLE_ID`：用于公证的 Apple ID 邮箱
+- `APPLE_APP_SPECIFIC_PASSWORD`：该 Apple ID 的 app-specific password
+- `APPLE_TEAM_ID`：Apple Developer Team ID
+
+行为说明：
+
+- 提供证书类 secrets 后，会对 `.app` 和 `.dmg` 做 Developer ID 签名。
+- 再提供公证类 secrets 后，会自动提交 notarization 并 staple 到 `.dmg`。
+- 未提供 secrets 时，会回退到 ad-hoc 签名（适合内部测试，不适合公开分发）。
+
 ## 开源协议
 
 MIT，见 [LICENSE](./LICENSE)。
