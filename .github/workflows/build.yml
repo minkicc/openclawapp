@@ -61,7 +61,7 @@ jobs:
         run: npm ci --include=dev
 
       - name: Import Developer ID certificate (macOS)
-        if: matrix.os == 'macos-latest' && secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != ''
+        if: matrix.os == 'macos-latest'
         shell: bash
         env:
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
@@ -69,6 +69,11 @@ jobs:
           APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
         run: |
           set -euo pipefail
+          if [[ -z "${APPLE_CERTIFICATE_P12:-}" || -z "${APPLE_CERTIFICATE_PASSWORD:-}" ]]; then
+            echo "Developer ID certificate secrets not set; skipping certificate import."
+            exit 0
+          fi
+
           CERT_PATH="$RUNNER_TEMP/developer-id-cert.p12"
           KEYCHAIN_PATH="$RUNNER_TEMP/openclaw-signing.keychain-db"
           KEYCHAIN_PASSWORD="${APPLE_KEYCHAIN_PASSWORD:-$(uuidgen)}"
@@ -89,7 +94,7 @@ jobs:
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
       - name: Configure notarytool credentials (macOS)
-        if: matrix.os == 'macos-latest' && secrets.APPLE_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' && secrets.APPLE_TEAM_ID != ''
+        if: matrix.os == 'macos-latest'
         shell: bash
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -97,6 +102,11 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
+          if [[ -z "${APPLE_ID:-}" || -z "${APPLE_APP_SPECIFIC_PASSWORD:-}" || -z "${APPLE_TEAM_ID:-}" ]]; then
+            echo "Notarization secrets not set; skipping notarytool credential setup."
+            exit 0
+          fi
+
           xcrun notarytool store-credentials "$MAC_NOTARY_PROFILE" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD" \
@@ -111,11 +121,28 @@ jobs:
       - name: Build installers (macOS)
         if: matrix.os == 'macos-latest'
         env:
-          APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_SIGN_IDENTITY != '' && secrets.APPLE_SIGN_IDENTITY || '-' }}
-          ENABLE_CODESIGN: "1"
-          ENABLE_NOTARIZE: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_SIGN_IDENTITY != '' && secrets.APPLE_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' && '1' || '0' }}
+          APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           NOTARY_PROFILE: ${{ env.MAC_NOTARY_PROFILE }}
-        run: npm run dist:mac
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${APPLE_SIGN_IDENTITY:-}" ]]; then
+            export APPLE_SIGN_IDENTITY="-"
+          fi
+          export ENABLE_CODESIGN="1"
+
+          if [[ -n "${APPLE_CERTIFICATE_P12:-}" && -n "${APPLE_CERTIFICATE_PASSWORD:-}" && -n "${APPLE_SIGN_IDENTITY:-}" && "${APPLE_SIGN_IDENTITY}" != "-" && -n "${APPLE_ID:-}" && -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" ]]; then
+            export ENABLE_NOTARIZE="1"
+          else
+            export ENABLE_NOTARIZE="0"
+          fi
+
+          npm run dist:mac
 
       - name: Build installers (Windows)
         if: matrix.os == 'windows-latest'
@@ -153,7 +180,7 @@ jobs:
           retention-days: 14
 
       - name: Cleanup signing keychain (macOS)
-        if: always() && matrix.os == 'macos-latest' && secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != ''
+        if: always() && matrix.os == 'macos-latest'
         shell: bash
         run: |
           security delete-keychain "$RUNNER_TEMP/openclaw-signing.keychain-db" || true
