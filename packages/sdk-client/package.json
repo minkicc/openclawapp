@@ -1,0 +1,8 @@
+{
+  "name": "@openclaw/sdk-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared client SDK scaffold for desktop/mobile/server communication",
+  "main": "src/index.mjs"
+}

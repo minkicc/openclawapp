@@ -2,9 +2,12 @@
   "name": "@openclaw/server",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "OpenClaw server scaffold",
   "scripts": {
-    "dev": "echo \"TODO: initialize server app\"",
-    "build": "echo \"TODO: build server app\""
+    "dev": "node --watch src/index.mjs",
+    "start": "node src/index.mjs",
+    "build": "echo \"No build step for server scaffold\"",
+    "check": "node src/check-openapi.mjs"
   }
 }

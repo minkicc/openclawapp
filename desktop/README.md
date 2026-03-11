@@ -26,6 +26,7 @@ Keywords: OpenClaw installer, OpenClaw GUI, OpenClaw desktop app, OpenClaw for W
 - Bundled OpenClaw kernel in the installer
 - Optional one-click kernel update via npm
 - One-click launch into OpenClaw Web dashboard
+- Pairing state machine skeleton for remote-control workflow (`src/pairing/state-machine.js`)
 - Works on Windows, macOS, and Linux
 
 ## Supported platforms

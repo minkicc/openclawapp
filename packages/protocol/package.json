@@ -1,0 +1,16 @@
+{
+  "name": "@openclaw/protocol",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared message protocol schemas for desktop/mobile/server",
+  "main": "src/index.mjs",
+  "files": [
+    "schemas",
+    "src",
+    "examples"
+  ],
+  "scripts": {
+    "check": "node src/check-schemas.mjs"
+  }
+}

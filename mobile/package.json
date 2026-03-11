@@ -2,9 +2,11 @@
   "name": "@openclaw/mobile",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "OpenClaw mobile client scaffold",
   "scripts": {
     "dev": "echo \"TODO: initialize mobile app\"",
-    "build": "echo \"TODO: build mobile app\""
+    "build": "echo \"TODO: build mobile app\"",
+    "check": "node -e \"import('./src/pairing/state-machine.js').then(()=>console.log('mobile pairing state machine loaded'))\""
   }
 }

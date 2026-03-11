@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclawapp.dev/schemas/payload-task-create.schema.json",
+  "title": "TaskCreatePayload",
+  "type": "object",
+  "required": ["taskId", "prompt"],
+  "properties": {
+    "taskId": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+    },
+    "prompt": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 50000
+    },
+    "metadata": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

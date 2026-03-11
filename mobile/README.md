@@ -6,5 +6,6 @@
 
 - `package.json`
 - `src/`
+- `src/pairing/state-machine.js`（配对流程状态机骨架）
 
 后续可在此接入 React Native / Flutter / Kotlin Multiplatform 等方案。

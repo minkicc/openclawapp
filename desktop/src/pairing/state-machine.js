@@ -1,0 +1,82 @@
+export const DESKTOP_PAIRING_STATES = {
+  BOOTING: "booting",
+  ONLINE: "online",
+  CREATING_PAIR_SESSION: "creating_pair_session",
+  PAIR_SESSION_READY: "pair_session_ready",
+  WAITING_CLAIM: "waiting_claim",
+  PAIRED: "paired",
+  CONNECTING_P2P: "connecting_p2p",
+  CONNECTED_P2P: "connected_p2p",
+  CONNECTED_RELAY: "connected_relay",
+  ERROR: "error",
+};
+
+const transitions = {
+  [DESKTOP_PAIRING_STATES.BOOTING]: ["REGISTERED", "REGISTER_FAILED"],
+  [DESKTOP_PAIRING_STATES.ONLINE]: ["CREATE_PAIR_SESSION"],
+  [DESKTOP_PAIRING_STATES.CREATING_PAIR_SESSION]: ["PAIR_SESSION_CREATED", "PAIR_SESSION_FAILED"],
+  [DESKTOP_PAIRING_STATES.PAIR_SESSION_READY]: ["WAIT_FOR_CLAIM", "CANCEL_PAIRING"],
+  [DESKTOP_PAIRING_STATES.WAITING_CLAIM]: ["CLAIMED", "PAIR_TIMEOUT", "CANCEL_PAIRING"],
+  [DESKTOP_PAIRING_STATES.PAIRED]: ["CONNECT_P2P", "CONNECT_RELAY", "UNPAIRED"],
+  [DESKTOP_PAIRING_STATES.CONNECTING_P2P]: ["P2P_CONNECTED", "P2P_FAILED"],
+  [DESKTOP_PAIRING_STATES.CONNECTED_P2P]: ["P2P_DISCONNECTED", "UNPAIRED"],
+  [DESKTOP_PAIRING_STATES.CONNECTED_RELAY]: ["RELAY_DISCONNECTED", "UNPAIRED"],
+  [DESKTOP_PAIRING_STATES.ERROR]: ["RESET"],
+};
+
+const nextStateMap = {
+  REGISTERED: DESKTOP_PAIRING_STATES.ONLINE,
+  REGISTER_FAILED: DESKTOP_PAIRING_STATES.ERROR,
+  CREATE_PAIR_SESSION: DESKTOP_PAIRING_STATES.CREATING_PAIR_SESSION,
+  PAIR_SESSION_CREATED: DESKTOP_PAIRING_STATES.PAIR_SESSION_READY,
+  PAIR_SESSION_FAILED: DESKTOP_PAIRING_STATES.ERROR,
+  WAIT_FOR_CLAIM: DESKTOP_PAIRING_STATES.WAITING_CLAIM,
+  CLAIMED: DESKTOP_PAIRING_STATES.PAIRED,
+  PAIR_TIMEOUT: DESKTOP_PAIRING_STATES.ONLINE,
+  CANCEL_PAIRING: DESKTOP_PAIRING_STATES.ONLINE,
+  CONNECT_P2P: DESKTOP_PAIRING_STATES.CONNECTING_P2P,
+  P2P_CONNECTED: DESKTOP_PAIRING_STATES.CONNECTED_P2P,
+  P2P_FAILED: DESKTOP_PAIRING_STATES.CONNECTED_RELAY,
+  CONNECT_RELAY: DESKTOP_PAIRING_STATES.CONNECTED_RELAY,
+  P2P_DISCONNECTED: DESKTOP_PAIRING_STATES.CONNECTED_RELAY,
+  RELAY_DISCONNECTED: DESKTOP_PAIRING_STATES.ERROR,
+  UNPAIRED: DESKTOP_PAIRING_STATES.ONLINE,
+  RESET: DESKTOP_PAIRING_STATES.ONLINE,
+};
+
+export class DesktopPairingStateMachine {
+  constructor(initialState = DESKTOP_PAIRING_STATES.BOOTING) {
+    this.state = initialState;
+    this.history = [];
+  }
+
+  can(event) {
+    const allowed = transitions[this.state] || [];
+    return allowed.includes(event);
+  }
+
+  dispatch(event, context = {}) {
+    if (!this.can(event)) {
+      return {
+        ok: false,
+        state: this.state,
+        reason: `Invalid event ${event} for state ${this.state}`,
+      };
+    }
+
+    const nextState = nextStateMap[event];
+    this.history.push({
+      from: this.state,
+      event,
+      to: nextState,
+      context,
+      at: Date.now(),
+    });
+    this.state = nextState;
+
+    return {
+      ok: true,
+      state: this.state,
+    };
+  }
+}

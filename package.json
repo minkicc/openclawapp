@@ -11,7 +11,12 @@
   ],
   "scripts": {
     "dev:desktop": "npm --prefix desktop run dev",
+    "dev:server": "npm --prefix server run dev",
     "build:desktop": "npm --prefix desktop run dist",
-    "lint:desktop": "npm --prefix desktop run build:web"
+    "lint:desktop": "npm --prefix desktop run build:web",
+    "check:protocol": "npm --prefix packages/protocol run check",
+    "check:server": "npm --prefix server run check",
+    "check:mobile": "npm --prefix mobile run check",
+    "check:stack": "npm run check:protocol && npm run check:server && npm run check:mobile"
   }
 }
