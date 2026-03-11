@@ -1,17 +1,45 @@
 {
-  "name": "openclawapp-monorepo",
+  "name": "openclawapp-workspace",
+  "version": "0.1.0",
   "private": true,
   "license": "MIT",
-  "description": "OpenClaw desktop/mobile/server monorepo",
+  "description": "OpenClaw workspace root",
+  "type": "module",
   "workspaces": [
     "desktop",
     "mobile",
     "server",
-    "packages/*"
+    "packages/protocol"
   ],
   "scripts": {
-    "dev:desktop": "npm --prefix desktop run dev",
-    "build:desktop": "npm --prefix desktop run dist",
-    "lint:desktop": "npm --prefix desktop run build:web"
+    "desktop:dev": "npm --prefix desktop run dev",
+    "desktop:dev:web": "npm --prefix desktop run dev:web",
+    "desktop:build:web": "npm --prefix desktop run build:web",
+    "desktop:prepare:kernel": "npm --prefix desktop run prepare:kernel",
+    "desktop:dist": "npm --prefix desktop run dist",
+    "desktop:dist:mac": "npm --prefix desktop run dist:mac",
+    "desktop:dist:mac:tauri": "npm --prefix desktop run dist:mac:tauri",
+    "desktop:dist:win": "npm --prefix desktop run dist:win",
+    "desktop:dist:win:ci": "npm --prefix desktop run dist:win:ci",
+    "desktop:dist:linux": "npm --prefix desktop run dist:linux",
+    "desktop:dist:linux:ci": "npm --prefix desktop run dist:linux:ci",
+    "desktop:dist:linux:appimage": "npm --prefix desktop run dist:linux:appimage",
+    "mobile:dev": "npm --prefix mobile run dev",
+    "mobile:build": "npm --prefix mobile run build",
+    "server:dev": "npm --prefix server run dev",
+    "server:start": "npm --prefix server run start",
+    "typecheck": "npm run -ws typecheck",
+    "dev": "npm run desktop:dev",
+    "dev:web": "npm run desktop:dev:web",
+    "build:web": "npm run desktop:build:web",
+    "prepare:kernel": "npm run desktop:prepare:kernel",
+    "dist": "npm run desktop:dist",
+    "dist:mac": "npm run desktop:dist:mac",
+    "dist:mac:tauri": "npm run desktop:dist:mac:tauri",
+    "dist:win": "npm run desktop:dist:win",
+    "dist:win:ci": "npm run desktop:dist:win:ci",
+    "dist:linux": "npm run desktop:dist:linux",
+    "dist:linux:ci": "npm run desktop:dist:linux:ci",
+    "dist:linux:appimage": "npm run desktop:dist:linux:appimage"
   }
 }

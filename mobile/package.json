@@ -1,10 +1,19 @@
 {
-  "name": "@openclaw/mobile",
+  "name": "@openclaw/mobile-mvp",
   "version": "0.1.0",
   "private": true,
-  "description": "OpenClaw mobile client scaffold",
+  "type": "module",
+  "description": "OpenClaw mobile MVP web app",
   "scripts": {
-    "dev": "echo \"TODO: initialize mobile app\"",
-    "build": "echo \"TODO: build mobile app\""
+    "dev": "vite --port 4173 --strictPort",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@openclaw/protocol": "file:../packages/protocol"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2",
+    "vite": "^5.4.14"
   }
 }

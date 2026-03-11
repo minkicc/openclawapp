@@ -1,5 +1,3 @@
-# docs
+# Docs
 
-架构与接口文档目录。
-
-- `three-end-system-design.md`: Desktop / Mobile / Server 三端系统设计与实施计划
+- `remote-pairing-mvp.md`: API and WebSocket contract for the MVP server.

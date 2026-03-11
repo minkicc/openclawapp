@@ -59,8 +59,7 @@ jobs:
             patchelf
 
       - name: Install dependencies
-        working-directory: desktop
-        run: npm ci --include=dev
+        run: npm ci --include=dev --prefix desktop
 
       - name: Import Developer ID certificate (macOS)
         if: matrix.os == 'macos-latest'
@@ -116,14 +115,12 @@ jobs:
 
       - name: Build installers (Linux)
         if: startsWith(matrix.os, 'ubuntu')
-        working-directory: desktop
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: npm run dist:linux:ci
+        run: npm --prefix desktop run dist:linux:ci
 
       - name: Build installers (macOS)
         if: matrix.os == 'macos-latest'
-        working-directory: desktop
         env:
           APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
@@ -146,12 +143,11 @@ jobs:
             export ENABLE_NOTARIZE="0"
           fi
 
-          npm run dist:mac
+          npm --prefix desktop run dist:mac
 
       - name: Build installers (Windows)
         if: matrix.os == 'windows-latest'
-        working-directory: desktop
-        run: npm run dist:win:ci
+        run: npm --prefix desktop run dist:win:ci
 
       - name: Sign installers (Windows)
         if: matrix.os == 'windows-latest'

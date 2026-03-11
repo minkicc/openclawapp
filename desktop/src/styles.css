@@ -359,6 +359,33 @@ button {
   white-space: pre-wrap;
 }
 
+.pair-actions {
+  margin-top: 12px;
+}
+
+.pair-payload {
+  margin-top: 14px;
+}
+
+#pairQrPayload {
+  margin-top: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  min-height: 118px;
+}
+
+#pairEventLog {
+  margin-top: 14px;
+  padding: 12px;
+  min-height: 120px;
+  max-height: 220px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: #0f172a;
+  color: #d9ebff;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
 .remove-btn {
   background: #fff;
   border: 1px solid #e9b4b8;

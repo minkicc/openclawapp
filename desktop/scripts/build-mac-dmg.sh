@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT_DIR"
+DESKTOP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$DESKTOP_DIR"
 
 SIGN_IDENTITY="${APPLE_SIGN_IDENTITY:--}"
 ENABLE_CODESIGN="${ENABLE_CODESIGN:-1}"
@@ -13,7 +13,7 @@ echo "Building macOS app bundle..."
 npm run prepare:kernel
 npx tauri build --bundles app
 
-APP_PATH="$ROOT_DIR/src-tauri/target/release/bundle/macos/OpenClaw.app"
+APP_PATH="$DESKTOP_DIR/src-tauri/target/release/bundle/macos/OpenClaw.app"
 if [[ ! -d "$APP_PATH" ]]; then
   echo "App bundle not found: $APP_PATH" >&2
   exit 1
@@ -37,7 +37,7 @@ case "$ARCH_RAW" in
   *) ARCH="$ARCH_RAW" ;;
 esac
 
-OUT_DIR="$ROOT_DIR/src-tauri/target/release/bundle/dmg"
+OUT_DIR="$DESKTOP_DIR/src-tauri/target/release/bundle/dmg"
 mkdir -p "$OUT_DIR"
 OUT_PATH="$OUT_DIR/OpenClaw_${VERSION}_${ARCH}.dmg"
 

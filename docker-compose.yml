@@ -1,0 +1,22 @@
+services:
+  openclaw-server:
+    container_name: openclaw-server
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    image: openclaw/server-mvp:dev
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: 38089
+      PUBLIC_BASE_URL: ${OPENCLAW_SERVER_PUBLIC_BASE_URL:-http://127.0.0.1:38089}
+      PAIR_TTL_SECONDS: ${OPENCLAW_SERVER_PAIR_TTL_SECONDS:-120}
+      STORE_PATH: ${OPENCLAW_SERVER_STORE_PATH:-/data/store.json}
+      OPENCLAW_SERVER_TOKEN: ${OPENCLAW_SERVER_TOKEN:-}
+    ports:
+      - "${OPENCLAW_SERVER_PORT:-38089}:38089"
+    volumes:
+      - openclaw-server-data:/data
+
+volumes:
+  openclaw-server-data:

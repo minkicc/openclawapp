@@ -1,0 +1,13 @@
+.git
+.github
+.DS_Store
+node_modules
+dist
+vendor
+apps/desktop/src-tauri/target
+apps/desktop/dist
+resources/kernel
+resources/bin
+resources/skills
+**/.DS_Store
+**/node_modules

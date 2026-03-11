@@ -1,0 +1,131 @@
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: #f4f6fb;
+  color: #1b2430;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.container {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 24px;
+}
+
+h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.hint {
+  margin: 0;
+  color: #556172;
+}
+
+.card {
+  border: 1px solid #d4dce8;
+  border-radius: 14px;
+  background: #ffffff;
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+input,
+textarea,
+button {
+  font: inherit;
+}
+
+input,
+textarea {
+  border: 1px solid #c8d2e1;
+  border-radius: 10px;
+  padding: 10px;
+  background: #fff;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 86px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+button {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button.primary {
+  background: #045f9e;
+  color: #fff;
+}
+
+button.secondary {
+  background: #eef3fb;
+  border: 1px solid #c8d2e1;
+  color: #1b2430;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.status {
+  margin: 0;
+  font-weight: 700;
+  color: #3d4a5d;
+}
+
+#eventLog {
+  margin: 0;
+  min-height: 140px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #c8d2e1;
+  background: #0f172a;
+  color: #e5efff;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 720px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}

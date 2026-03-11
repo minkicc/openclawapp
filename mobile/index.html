@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenClaw Mobile MVP</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>OpenClaw Mobile MVP</h1>
+      <p class="hint">
+        最小联调页：解析二维码载荷、认领配对会话、连接移动端通道、向 PC 派发任务。
+      </p>
+
+      <section class="card">
+        <h2>1) 配对载荷</h2>
+        <label>
+          <span>二维码载荷（JSON）</span>
+          <textarea id="qrPayloadInput" rows="6" placeholder='{"base_url":"http://127.0.0.1:38089","session_id":"...","pair_code":"..."}'></textarea>
+        </label>
+        <div class="actions">
+          <button id="parsePayloadBtn" class="secondary">解析载荷</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>2) 会话认领</h2>
+        <div class="grid">
+          <label>
+            <span>服务端地址</span>
+            <input id="serverBaseUrlInput" type="text" value="http://127.0.0.1:38089" />
+          </label>
+          <label>
+            <span>服务端 Token（可选）</span>
+            <input id="serverTokenInput" type="password" />
+          </label>
+          <label>
+            <span>用户 ID</span>
+            <input id="userIdInput" type="text" />
+          </label>
+          <label>
+            <span>Session ID</span>
+            <input id="sessionIdInput" type="text" />
+          </label>
+          <label>
+            <span>Pair Code</span>
+            <input id="pairCodeInput" type="text" />
+          </label>
+          <label>
+            <span>目标设备 ID（可自动填充）</span>
+            <input id="deviceIdInput" type="text" />
+          </label>
+        </div>
+        <div class="actions">
+          <button id="claimBtn" class="primary">认领配对会话</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>3) 长连接与任务</h2>
+        <p id="wsStatus" class="status">通道状态：未连接</p>
+        <div class="actions">
+          <button id="wsConnectBtn" class="secondary">连接移动端通道</button>
+          <button id="wsDisconnectBtn" class="secondary">断开通道</button>
+        </div>
+        <label>
+          <span>任务内容</span>
+          <textarea id="taskPromptInput" rows="4" placeholder="例如：请帮我总结今天的待办"></textarea>
+        </label>
+        <div class="actions">
+          <button id="sendTaskBtn" class="primary">发送 task.create</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>日志</h2>
+        <pre id="eventLog"></pre>
+      </section>
+    </main>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

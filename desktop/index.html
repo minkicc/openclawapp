@@ -128,6 +128,55 @@
             <button id="openWebBtn" class="btn-primary" data-i18n="btn.start">开始使用</button>
           </div>
 
+          <details class="advanced-block" id="pairCenterView">
+            <summary data-i18n="pair.title">远程配对中心（实验）</summary>
+            <div class="advanced-content">
+              <p class="hint" data-i18n="pair.hint">
+                连接服务端后可创建配对会话，移动端扫码（或复制载荷）后即可与当前 PC 建立长期远程关系。
+              </p>
+
+              <div class="form-grid">
+                <label>
+                  <span data-i18n="pair.serverUrl">服务端地址</span>
+                  <input id="pairServerUrlInput" type="text" value="http://127.0.0.1:38089" />
+                </label>
+
+                <label>
+                  <span data-i18n="pair.serverToken">服务端 Token（可选）</span>
+                  <input id="pairServerTokenInput" type="password" />
+                </label>
+
+                <label>
+                  <span data-i18n="pair.deviceId">设备 ID</span>
+                  <input id="pairDeviceIdInput" type="text" />
+                </label>
+              </div>
+
+              <div class="actions bottom pair-actions">
+                <button id="pairConnectBtn" class="btn-secondary" type="button" data-i18n="btn.pairConnect">连接通道</button>
+                <button id="pairDisconnectBtn" class="btn-secondary" type="button" data-i18n="btn.pairDisconnect">断开通道</button>
+                <button id="pairCreateBtn" class="btn-primary" type="button" data-i18n="btn.pairCreate">创建配对会话</button>
+              </div>
+
+              <p id="pairStatusMessage" class="message"></p>
+
+              <div class="kv">
+                <div><span data-i18n="pair.wsStatus">通道状态</span><strong id="pairWsStatus">-</strong></div>
+                <div><span data-i18n="pair.sessionId">会话 ID</span><strong id="pairSessionId">-</strong></div>
+                <div><span data-i18n="pair.code">配对码</span><strong id="pairCode">-</strong></div>
+                <div><span data-i18n="pair.expiresAt">过期时间</span><strong id="pairExpiresAt">-</strong></div>
+                <div><span data-i18n="pair.claimedUser">已绑定用户</span><strong id="pairClaimedUser">-</strong></div>
+              </div>
+
+              <label class="pair-payload">
+                <span data-i18n="pair.qrPayload">二维码载荷（JSON）</span>
+                <textarea id="pairQrPayload" rows="5" readonly></textarea>
+              </label>
+
+              <pre id="pairEventLog"></pre>
+            </div>
+          </details>
+
           <details class="advanced-block">
             <summary data-i18n="advanced.infoTitle">高级信息（可选）</summary>
             <div class="advanced-content">
@@ -166,6 +215,6 @@
       </main>
     </div>
 
-    <script type="module" src="/src/app.js"></script>
+    <script type="module" src="/src/app.ts"></script>
   </body>
 </html>
