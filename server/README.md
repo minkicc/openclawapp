@@ -41,6 +41,14 @@ cd server
 go run .
 ```
 
+## Integration Test (Redis Online)
+
+Run end-to-end Redis integration checks (restart recovery + cross-instance pub/sub + inbox consistency):
+
+```bash
+npm --prefix server run test:integration:redis
+```
+
 ## Environment variables
 
 - `HOST` (default: `0.0.0.0`)

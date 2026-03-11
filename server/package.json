@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "go run .",
     "start": "go run .",
-    "typecheck": "go test ./..."
+    "typecheck": "go test ./...",
+    "test:integration:redis": "bash test/integration/redis-e2e.sh"
   }
 }
