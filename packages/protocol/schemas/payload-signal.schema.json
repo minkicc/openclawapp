@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclawapp.dev/schemas/payload-signal.schema.json",
+  "title": "SignalPayload",
+  "type": "object",
+  "required": ["pairSessionId", "kind", "sdpOrCandidate"],
+  "properties": {
+    "pairSessionId": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["offer", "answer", "ice"]
+    },
+    "sdpOrCandidate": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mid": {
+      "type": "string"
+    },
+    "mLineIndex": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false
+}

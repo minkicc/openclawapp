@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclawapp.dev/schemas/envelope.schema.json",
+  "title": "OpenClawMessageEnvelope",
+  "type": "object",
+  "required": [
+    "id",
+    "sessionId",
+    "traceId",
+    "from",
+    "to",
+    "type",
+    "timestamp",
+    "payload",
+    "needAck"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+    },
+    "traceId": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+    },
+    "from": {
+      "$ref": "#/definitions/endpoint"
+    },
+    "to": {
+      "$ref": "#/definitions/endpoint"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "chat.message",
+        "task.create",
+        "task.accepted",
+        "task.progress",
+        "task.result",
+        "task.error",
+        "signal.offer",
+        "signal.answer",
+        "signal.ice",
+        "ack",
+        "error"
+      ]
+    },
+    "timestamp": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "payload": {
+      "type": "object"
+    },
+    "needAck": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "endpoint": {
+      "type": "object",
+      "required": ["type", "id"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["mobile", "desktop", "server"]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

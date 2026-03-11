@@ -1,0 +1,14 @@
+{
+  "id": "msg_01hxy7p3v8j3x3f2k8h3w6d8",
+  "sessionId": "sess_01hxy7p2ajxw0qk2b7s2dc1p",
+  "traceId": "trc_01hxy7p2qqh9dj54q4n2f8t4",
+  "from": {"type": "mobile", "id": "user_123"},
+  "to": {"type": "desktop", "id": "dev_abc"},
+  "type": "task.create",
+  "timestamp": 1710000000000,
+  "needAck": true,
+  "payload": {
+    "taskId": "task_01hxy7q1m1h4j2k3",
+    "prompt": "Summarize today's project logs"
+  }
+}
