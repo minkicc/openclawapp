@@ -158,6 +158,14 @@ func clientKey(clientType string, clientID string) string {
 	return fmt.Sprintf("%s:%s", clientType, clientID)
 }
 
+func splitClientKey(key string) (string, string, bool) {
+	index := strings.Index(key, ":")
+	if index <= 0 || index >= len(key)-1 {
+		return "", "", false
+	}
+	return key[:index], key[index+1:], true
+}
+
 func clampInt(value int, min int, max int) int {
 	if value < min {
 		return min
@@ -273,95 +281,6 @@ func (s *Store) snapshot() StoreSnapshot {
 	}
 
 	return snap
-}
-
-func decodeEntryMap[T any](raw json.RawMessage) (map[string]T, error) {
-	if len(raw) == 0 {
-		return map[string]T{}, nil
-	}
-
-	var asMap map[string]T
-	if err := json.Unmarshal(raw, &asMap); err == nil {
-		if asMap == nil {
-			asMap = map[string]T{}
-		}
-		return asMap, nil
-	}
-
-	var entries []json.RawMessage
-	if err := json.Unmarshal(raw, &entries); err != nil {
-		return nil, err
-	}
-	out := map[string]T{}
-	for _, entry := range entries {
-		var pair []json.RawMessage
-		if err := json.Unmarshal(entry, &pair); err != nil || len(pair) != 2 {
-			continue
-		}
-		var key string
-		if err := json.Unmarshal(pair[0], &key); err != nil {
-			continue
-		}
-		var value T
-		if err := json.Unmarshal(pair[1], &value); err != nil {
-			continue
-		}
-		out[key] = value
-	}
-	return out, nil
-}
-
-func parseSnapshot(raw string) (StoreSnapshot, error) {
-	var snap StoreSnapshot
-	if err := json.Unmarshal([]byte(raw), &snap); err == nil {
-		if snap.Devices == nil {
-			snap.Devices = map[string]Device{}
-		}
-		if snap.PairSessions == nil {
-			snap.PairSessions = map[string]PairSession{}
-		}
-		if snap.PairTokenIndex == nil {
-			snap.PairTokenIndex = map[string]string{}
-		}
-		if snap.PairCodeIndex == nil {
-			snap.PairCodeIndex = map[string]string{}
-		}
-		if snap.Bindings == nil {
-			snap.Bindings = map[string]Binding{}
-		}
-		if snap.SignalQueues == nil {
-			snap.SignalQueues = map[string][]SignalEvent{}
-		}
-		return snap, nil
-	}
-
-	var root map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &root); err != nil {
-		return StoreSnapshot{}, err
-	}
-
-	snap = StoreSnapshot{Version: 1, SavedAt: nowMillis()}
-	var err error
-	if snap.Devices, err = decodeEntryMap[Device](root["devices"]); err != nil {
-		return StoreSnapshot{}, err
-	}
-	if snap.PairSessions, err = decodeEntryMap[PairSession](root["pairSessions"]); err != nil {
-		return StoreSnapshot{}, err
-	}
-	if snap.PairTokenIndex, err = decodeEntryMap[string](root["pairTokenIndex"]); err != nil {
-		return StoreSnapshot{}, err
-	}
-	if snap.PairCodeIndex, err = decodeEntryMap[string](root["pairCodeIndex"]); err != nil {
-		return StoreSnapshot{}, err
-	}
-	if snap.Bindings, err = decodeEntryMap[Binding](root["bindings"]); err != nil {
-		return StoreSnapshot{}, err
-	}
-	if snap.SignalQueues, err = decodeEntryMap[[]SignalEvent](root["signalQueues"]); err != nil {
-		return StoreSnapshot{}, err
-	}
-
-	return snap, nil
 }
 
 func (s *Store) applySnapshot(snap StoreSnapshot) {
@@ -855,7 +774,7 @@ func (s *Store) removeSubscriber(clientType string, clientID string, ch chan Sig
 	}
 }
 
-func (s *Store) enqueueSignalEvent(targetType string, targetID string, event SignalEvent) bool {
+func (s *Store) deliverSignalEvent(targetType string, targetID string, event SignalEvent) bool {
 	key := clientKey(targetType, targetID)
 
 	s.mu.RLock()
@@ -878,10 +797,22 @@ func (s *Store) enqueueSignalEvent(targetType string, targetID string, event Sig
 	if delivered {
 		return true
 	}
+	return false
+}
 
+func (s *Store) enqueueSignalToQueue(targetType string, targetID string, event SignalEvent) {
+	key := clientKey(targetType, targetID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.signalQueues[key] = append(s.signalQueues[key], copySignalEvent(event))
+}
+
+func (s *Store) enqueueSignalEvent(targetType string, targetID string, event SignalEvent) bool {
+	delivered := s.deliverSignalEvent(targetType, targetID, event)
+	if delivered {
+		return true
+	}
+	s.enqueueSignalToQueue(targetType, targetID, event)
 	return false
 }
 
@@ -894,22 +825,22 @@ type sendSignalRequest struct {
 	Payload  map[string]any `json:"payload"`
 }
 
-func (s *Store) sendSignal(req sendSignalRequest) (SignalEvent, bool, error) {
+func (s *Store) buildSignalEvent(req sendSignalRequest) (SignalEvent, error) {
 	fromType, err := trimRequired(req.FromType, "fromType")
 	if err != nil {
-		return SignalEvent{}, false, err
+		return SignalEvent{}, err
 	}
 	fromID, err := trimRequired(req.FromID, "fromId")
 	if err != nil {
-		return SignalEvent{}, false, err
+		return SignalEvent{}, err
 	}
 	toType, err := trimRequired(req.ToType, "toType")
 	if err != nil {
-		return SignalEvent{}, false, err
+		return SignalEvent{}, err
 	}
 	toID, err := trimRequired(req.ToID, "toId")
 	if err != nil {
-		return SignalEvent{}, false, err
+		return SignalEvent{}, err
 	}
 	eventType := strings.TrimSpace(req.Type)
 	if eventType == "" {
@@ -918,7 +849,7 @@ func (s *Store) sendSignal(req sendSignalRequest) (SignalEvent, bool, error) {
 
 	eventID, idErr := makeID("evt")
 	if idErr != nil {
-		return SignalEvent{}, false, newError("INTERNAL_ERROR", "failed to create signal event id")
+		return SignalEvent{}, newError("INTERNAL_ERROR", "failed to create signal event id")
 	}
 
 	event := SignalEvent{
@@ -929,8 +860,15 @@ func (s *Store) sendSignal(req sendSignalRequest) (SignalEvent, bool, error) {
 		To:      &SignalParty{Type: toType, ID: toID},
 		Payload: copyPayload(req.Payload),
 	}
+	return event, nil
+}
 
-	delivered := s.enqueueSignalEvent(toType, toID, event)
+func (s *Store) sendSignal(req sendSignalRequest) (SignalEvent, bool, error) {
+	event, err := s.buildSignalEvent(req)
+	if err != nil {
+		return SignalEvent{}, false, err
+	}
+	delivered := s.enqueueSignalEvent(event.To.Type, event.To.ID, event)
 	return event, delivered, nil
 }
 
@@ -945,6 +883,10 @@ type persistence interface {
 	Flush(ctx context.Context)
 	Close(ctx context.Context)
 	Status() persistenceStatus
+	UseExternalSignalQueue() bool
+	PushSignal(toType string, toID string, event SignalEvent, deliveredLocal bool)
+	PullSignalInbox(clientType string, clientID string, limit int) ([]SignalEvent, error)
+	SubscribeSignals(clientType string, clientID string) (<-chan SignalEvent, func(), error)
 }
 
 type memoryPersistence struct{}
@@ -955,18 +897,196 @@ func (m *memoryPersistence) Close(_ context.Context) {}
 func (m *memoryPersistence) Status() persistenceStatus {
 	return persistenceStatus{Backend: "memory", RedisKey: nil, Connected: false}
 }
-
-type redisPersistence struct {
-	store     *Store
-	client    *redis.Client
-	redisKey  string
-	timerMu   sync.Mutex
-	timer     *time.Timer
-	persistMu sync.Mutex
+func (m *memoryPersistence) UseExternalSignalQueue() bool {
+	return false
+}
+func (m *memoryPersistence) PushSignal(_ string, _ string, _ SignalEvent, _ bool) {}
+func (m *memoryPersistence) PullSignalInbox(_ string, _ string, _ int) ([]SignalEvent, error) {
+	return nil, nil
+}
+func (m *memoryPersistence) SubscribeSignals(_ string, _ string) (<-chan SignalEvent, func(), error) {
+	return nil, nil, nil
 }
 
-func newRedisPersistence(store *Store, client *redis.Client, redisKey string) *redisPersistence {
-	return &redisPersistence{store: store, client: client, redisKey: redisKey}
+var redisPullQueueScript = redis.NewScript(`
+local key = KEYS[1]
+local limit = tonumber(ARGV[1])
+if limit == nil or limit < 1 then
+  limit = 1
+end
+local stop = limit - 1
+local items = redis.call("LRANGE", key, 0, stop)
+if #items > 0 then
+  redis.call("LTRIM", key, limit, -1)
+end
+return items
+`)
+
+type redisSignalEnvelope struct {
+	Origin string      `json:"origin"`
+	ToType string      `json:"toType"`
+	ToID   string      `json:"toId"`
+	Event  SignalEvent `json:"event"`
+}
+
+type redisPersistence struct {
+	store      *Store
+	client     *redis.Client
+	keyPrefix  string
+	instanceID string
+	queueTTL   time.Duration
+	channel    string
+	timerMu    sync.Mutex
+	timer      *time.Timer
+	persistMu  sync.Mutex
+}
+
+func newRedisPersistence(store *Store, client *redis.Client, keyPrefix string, instanceID string) *redisPersistence {
+	return &redisPersistence{
+		store:      store,
+		client:     client,
+		keyPrefix:  strings.TrimSuffix(keyPrefix, ":"),
+		instanceID: instanceID,
+		queueTTL:   24 * time.Hour,
+		channel:    strings.TrimSuffix(keyPrefix, ":") + ":signal:pubsub",
+	}
+}
+
+func (r *redisPersistence) keyDevices() string {
+	return r.keyPrefix + ":devices"
+}
+
+func (r *redisPersistence) keyPairSessions() string {
+	return r.keyPrefix + ":pair:sessions"
+}
+
+func (r *redisPersistence) keyBindings() string {
+	return r.keyPrefix + ":pair:bindings"
+}
+
+func (r *redisPersistence) keyPairToken(token string) string {
+	return r.keyPrefix + ":pair:token:" + token
+}
+
+func (r *redisPersistence) keyPairCode(code string) string {
+	return r.keyPrefix + ":pair:code:" + code
+}
+
+func (r *redisPersistence) keySignalQueuePrefix() string {
+	return r.keyPrefix + ":signal:queue:"
+}
+
+func (r *redisPersistence) keySignalQueue(clientType string, clientID string) string {
+	return r.keySignalQueuePrefix() + clientKey(clientType, clientID)
+}
+
+func (r *redisPersistence) clientKeyFromQueueKey(queueKey string) (string, bool) {
+	prefix := r.keySignalQueuePrefix()
+	if !strings.HasPrefix(queueKey, prefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(queueKey, prefix)
+	if rest == "" {
+		return "", false
+	}
+	return rest, true
+}
+
+func marshalStructMap[T any](values map[string]T) map[string]any {
+	result := map[string]any{}
+	for key, value := range values {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			continue
+		}
+		result[key] = string(encoded)
+	}
+	return result
+}
+
+func decodeStructMap[T any](values map[string]string) map[string]T {
+	result := map[string]T{}
+	for key, raw := range values {
+		var value T
+		if err := json.Unmarshal([]byte(raw), &value); err != nil {
+			continue
+		}
+		result[key] = value
+	}
+	return result
+}
+
+func (r *redisPersistence) hydrateFromRedis() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	devicesRaw, err := r.client.HGetAll(ctx, r.keyDevices()).Result()
+	if err != nil {
+		return err
+	}
+	pairSessionsRaw, err := r.client.HGetAll(ctx, r.keyPairSessions()).Result()
+	if err != nil {
+		return err
+	}
+	bindingsRaw, err := r.client.HGetAll(ctx, r.keyBindings()).Result()
+	if err != nil {
+		return err
+	}
+
+	queues := map[string][]SignalEvent{}
+	queueKeys, err := r.client.Keys(ctx, r.keySignalQueuePrefix()+"*").Result()
+	if err != nil {
+		log.Printf("[openclaw-server] failed to list redis signal queues: %v", err)
+	} else {
+		for _, queueKey := range queueKeys {
+			clientKeyValue, ok := r.clientKeyFromQueueKey(queueKey)
+			if !ok {
+				continue
+			}
+			items, rangeErr := r.client.LRange(ctx, queueKey, 0, -1).Result()
+			if rangeErr != nil || len(items) == 0 {
+				continue
+			}
+			events := make([]SignalEvent, 0, len(items))
+			for _, raw := range items {
+				var event SignalEvent
+				if unmarshalErr := json.Unmarshal([]byte(raw), &event); unmarshalErr != nil {
+					continue
+				}
+				events = append(events, event)
+			}
+			if len(events) > 0 {
+				queues[clientKeyValue] = events
+			}
+		}
+	}
+
+	snapshot := StoreSnapshot{
+		Version:        1,
+		SavedAt:        nowMillis(),
+		Devices:        decodeStructMap[Device](devicesRaw),
+		PairSessions:   decodeStructMap[PairSession](pairSessionsRaw),
+		PairTokenIndex: map[string]string{},
+		PairCodeIndex:  map[string]string{},
+		Bindings:       decodeStructMap[Binding](bindingsRaw),
+		SignalQueues:   queues,
+	}
+
+	now := nowMillis()
+	for sessionID, session := range snapshot.PairSessions {
+		if session.Status != "pending" || session.ExpiresAt <= now {
+			continue
+		}
+		if session.PairToken != "" {
+			snapshot.PairTokenIndex[session.PairToken] = sessionID
+		}
+		if session.PairCode != "" {
+			snapshot.PairCodeIndex[session.PairCode] = sessionID
+		}
+	}
+
+	r.store.applySnapshot(snapshot)
+	return nil
 }
 
 func (r *redisPersistence) persistWithTimeout(timeout time.Duration) {
@@ -977,13 +1097,73 @@ func (r *redisPersistence) persistWithTimeout(timeout time.Duration) {
 	defer r.persistMu.Unlock()
 
 	snapshot := r.store.snapshot()
-	encoded, err := json.Marshal(snapshot)
-	if err != nil {
-		log.Printf("[openclaw-server] failed to encode snapshot: %v", err)
-		return
+	pipe := r.client.TxPipeline()
+
+	pipe.Del(ctx, r.keyDevices(), r.keyPairSessions(), r.keyBindings())
+
+	deviceHash := marshalStructMap(snapshot.Devices)
+	if len(deviceHash) > 0 {
+		pipe.HSet(ctx, r.keyDevices(), deviceHash)
 	}
-	if err := r.client.Set(ctx, r.redisKey, encoded, 0).Err(); err != nil {
-		log.Printf("[openclaw-server] failed to persist snapshot to redis: %v", err)
+
+	pairSessionHash := marshalStructMap(snapshot.PairSessions)
+	if len(pairSessionHash) > 0 {
+		pipe.HSet(ctx, r.keyPairSessions(), pairSessionHash)
+	}
+
+	bindingHash := marshalStructMap(snapshot.Bindings)
+	if len(bindingHash) > 0 {
+		pipe.HSet(ctx, r.keyBindings(), bindingHash)
+	}
+
+	now := nowMillis()
+	for _, session := range snapshot.PairSessions {
+		if session.Status != "pending" || session.ExpiresAt <= now {
+			continue
+		}
+		ttl := time.Duration(session.ExpiresAt-now) * time.Millisecond
+		if ttl < time.Second {
+			ttl = time.Second
+		}
+		if session.PairToken != "" {
+			pipe.Set(ctx, r.keyPairToken(session.PairToken), session.PairSessionID, ttl)
+		}
+		if session.PairCode != "" {
+			pipe.Set(ctx, r.keyPairCode(session.PairCode), session.PairSessionID, ttl)
+		}
+	}
+
+	existingQueueKeys, err := r.client.Keys(ctx, r.keySignalQueuePrefix()+"*").Result()
+	if err == nil && len(existingQueueKeys) > 0 {
+		pipe.Del(ctx, existingQueueKeys...)
+	}
+	if err != nil {
+		log.Printf("[openclaw-server] failed to list existing signal queues: %v", err)
+	}
+
+	for key, queue := range snapshot.SignalQueues {
+		clientType, clientID, ok := splitClientKey(key)
+		if !ok || len(queue) == 0 {
+			continue
+		}
+		queueKey := r.keySignalQueue(clientType, clientID)
+		items := make([]any, 0, len(queue))
+		for _, event := range queue {
+			encoded, marshalErr := json.Marshal(event)
+			if marshalErr != nil {
+				continue
+			}
+			items = append(items, string(encoded))
+		}
+		if len(items) == 0 {
+			continue
+		}
+		pipe.RPush(ctx, queueKey, items...)
+		pipe.Expire(ctx, queueKey, r.queueTTL)
+	}
+
+	if _, execErr := pipe.Exec(ctx); execErr != nil {
+		log.Printf("[openclaw-server] failed to persist native redis snapshot: %v", execErr)
 	}
 }
 
@@ -1019,19 +1199,140 @@ func (r *redisPersistence) Close(ctx context.Context) {
 }
 
 func (r *redisPersistence) Status() persistenceStatus {
-	redisKey := r.redisKey
+	redisKey := r.keyPrefix
 	return persistenceStatus{Backend: "redis", RedisKey: &redisKey, Connected: true}
 }
 
+func (r *redisPersistence) UseExternalSignalQueue() bool {
+	return true
+}
+
+func (r *redisPersistence) PushSignal(toType string, toID string, event SignalEvent, deliveredLocal bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	eventJSON, err := json.Marshal(event)
+	if err != nil {
+		log.Printf("[openclaw-server] failed to encode signal event: %v", err)
+		return
+	}
+
+	queueKey := r.keySignalQueue(toType, toID)
+	if !deliveredLocal {
+		if err := r.client.RPush(ctx, queueKey, string(eventJSON)).Err(); err != nil {
+			log.Printf("[openclaw-server] failed to enqueue redis signal event: %v", err)
+		} else {
+			_ = r.client.Expire(ctx, queueKey, r.queueTTL).Err()
+		}
+	}
+
+	envelope := redisSignalEnvelope{
+		Origin: r.instanceID,
+		ToType: toType,
+		ToID:   toID,
+		Event:  event,
+	}
+	payload, err := json.Marshal(envelope)
+	if err != nil {
+		return
+	}
+	if err := r.client.Publish(ctx, r.channel, string(payload)).Err(); err != nil {
+		log.Printf("[openclaw-server] failed to publish redis signal event: %v", err)
+	}
+}
+
+func (r *redisPersistence) PullSignalInbox(clientType string, clientID string, limit int) ([]SignalEvent, error) {
+	safeLimit := clampInt(limit, 1, maxSignalQueuePull)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	queueKey := r.keySignalQueue(clientType, clientID)
+	result, err := redisPullQueueScript.Run(ctx, r.client, []string{queueKey}, safeLimit).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	rawItems, ok := result.([]any)
+	if !ok || len(rawItems) == 0 {
+		return []SignalEvent{}, nil
+	}
+
+	events := make([]SignalEvent, 0, len(rawItems))
+	for _, item := range rawItems {
+		var raw string
+		switch value := item.(type) {
+		case string:
+			raw = value
+		case []byte:
+			raw = string(value)
+		default:
+			continue
+		}
+		var event SignalEvent
+		if unmarshalErr := json.Unmarshal([]byte(raw), &event); unmarshalErr != nil {
+			continue
+		}
+		events = append(events, event)
+	}
+	if len(events) > 0 {
+		_ = r.client.Expire(ctx, queueKey, r.queueTTL).Err()
+	}
+	return events, nil
+}
+
+func (r *redisPersistence) SubscribeSignals(clientType string, clientID string) (<-chan SignalEvent, func(), error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	pubsub := r.client.Subscribe(ctx, r.channel)
+
+	channel := make(chan SignalEvent, 64)
+	go func() {
+		defer close(channel)
+		pubsubChannel := pubsub.Channel()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case message, ok := <-pubsubChannel:
+				if !ok {
+					return
+				}
+				var envelope redisSignalEnvelope
+				if err := json.Unmarshal([]byte(message.Payload), &envelope); err != nil {
+					continue
+				}
+				if envelope.Origin == r.instanceID {
+					continue
+				}
+				if envelope.ToType != clientType || envelope.ToID != clientID {
+					continue
+				}
+				select {
+				case channel <- envelope.Event:
+				default:
+				}
+			}
+		}
+	}()
+
+	var closeOnce sync.Once
+	closeFn := func() {
+		closeOnce.Do(func() {
+			cancel()
+			_ = pubsub.Close()
+		})
+	}
+	return channel, closeFn, nil
+}
+
 func newPersistenceFromEnv(store *Store) persistence {
-	backend := strings.ToLower(strings.TrimSpace(os.Getenv("STORE_BACKEND")))
-	if backend == "" || backend == "memory" {
+	storeBackend := strings.ToLower(strings.TrimSpace(os.Getenv("STORE_BACKEND")))
+	if storeBackend == "" || storeBackend == "memory" {
 		log.Printf("[openclaw-server] persistence backend: memory")
 		return &memoryPersistence{}
 	}
 
-	if backend != "redis" {
-		log.Printf("[openclaw-server] unknown STORE_BACKEND=%s, fallback to memory", backend)
+	if storeBackend != "redis" {
+		log.Printf("[openclaw-server] unknown STORE_BACKEND=%s, fallback to memory", storeBackend)
 		return &memoryPersistence{}
 	}
 
@@ -1039,9 +1340,9 @@ func newPersistenceFromEnv(store *Store) persistence {
 	if redisURL == "" {
 		redisURL = "redis://127.0.0.1:6379"
 	}
-	redisKey := strings.TrimSpace(os.Getenv("REDIS_SNAPSHOT_KEY"))
-	if redisKey == "" {
-		redisKey = "openclaw:server:store-snapshot:v1"
+	redisKeyPrefix := strings.TrimSpace(os.Getenv("REDIS_KEY_PREFIX"))
+	if redisKeyPrefix == "" {
+		redisKeyPrefix = "openclaw:server"
 	}
 
 	options, err := redis.ParseURL(redisURL)
@@ -1064,22 +1365,20 @@ func newPersistenceFromEnv(store *Store) persistence {
 		return &memoryPersistence{}
 	}
 
-	raw, err := client.Get(ctx, redisKey).Result()
-	if err == nil && raw != "" {
-		snapshot, parseErr := parseSnapshot(raw)
-		if parseErr != nil {
-			log.Printf("[openclaw-server] failed to parse redis snapshot, start fresh: %v", parseErr)
-		} else {
-			store.applySnapshot(snapshot)
-			log.Printf("[openclaw-server] restored store snapshot from redis")
-		}
-	}
-	if err != nil && err != redis.Nil {
-		log.Printf("[openclaw-server] failed to read redis snapshot: %v", err)
+	instanceID, idErr := makeID("instance")
+	if idErr != nil {
+		instanceID = fmt.Sprintf("instance_%d", time.Now().UnixNano())
 	}
 
-	log.Printf("[openclaw-server] persistence backend: redis (%s)", redisURL)
-	return newRedisPersistence(store, client, redisKey)
+	redisBackend := newRedisPersistence(store, client, redisKeyPrefix, instanceID)
+	if err := redisBackend.hydrateFromRedis(); err != nil {
+		log.Printf("[openclaw-server] failed to restore redis state, start fresh: %v", err)
+	} else {
+		log.Printf("[openclaw-server] restored native redis state")
+	}
+
+	log.Printf("[openclaw-server] persistence backend: redis (%s, prefix=%s)", redisURL, redisKeyPrefix)
+	return redisBackend
 }
 
 func setCORS(w http.ResponseWriter) {
@@ -1152,6 +1451,26 @@ type app struct {
 
 func (a *app) onMutation() {
 	a.persistence.SchedulePersist()
+}
+
+func (a *app) emitSignal(targetType string, targetID string, event SignalEvent) bool {
+	if a.persistence.UseExternalSignalQueue() {
+		deliveredLocal := a.store.deliverSignalEvent(targetType, targetID, event)
+		a.persistence.PushSignal(targetType, targetID, event, deliveredLocal)
+		return deliveredLocal
+	}
+	return a.store.enqueueSignalEvent(targetType, targetID, event)
+}
+
+func (a *app) pullSignalInbox(clientType string, clientID string, limit int) []SignalEvent {
+	if a.persistence.UseExternalSignalQueue() {
+		events, err := a.persistence.PullSignalInbox(clientType, clientID, limit)
+		if err == nil {
+			return events
+		}
+		log.Printf("[openclaw-server] failed to pull redis signal inbox, fallback to local memory queue: %v", err)
+	}
+	return a.store.pullSignalInbox(clientType, clientID, limit)
 }
 
 func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
@@ -1265,7 +1584,7 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 				"mobileId":  binding.MobileID,
 			},
 		}
-		a.store.enqueueSignalEvent("desktop", binding.DeviceID, event)
+		a.emitSignal("desktop", binding.DeviceID, event)
 		a.onMutation()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session": session, "binding": binding})
 		return
@@ -1292,7 +1611,7 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 				"mobileId":  binding.MobileID,
 			},
 		}
-		a.store.enqueueSignalEvent("desktop", binding.DeviceID, event)
+		a.emitSignal("desktop", binding.DeviceID, event)
 		a.onMutation()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session": session, "binding": binding})
 		return
@@ -1331,12 +1650,15 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
-		event, deliveredRealtime, err := a.store.sendSignal(req)
+		event, err := a.store.buildSignalEvent(req)
 		if err != nil {
 			writeError(w, err)
 			return
 		}
-		a.onMutation()
+		deliveredRealtime := a.emitSignal(event.To.Type, event.To.ID, event)
+		if !a.persistence.UseExternalSignalQueue() {
+			a.onMutation()
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deliveredRealtime": deliveredRealtime, "event": event})
 		return
 	}
@@ -1357,8 +1679,10 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		if parseErr != nil || limit == 0 {
 			limit = 100
 		}
-		events := a.store.pullSignalInbox(clientType, clientID, limit)
-		a.onMutation()
+		events := a.pullSignalInbox(clientType, clientID, limit)
+		if !a.persistence.UseExternalSignalQueue() {
+			a.onMutation()
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "events": events})
 		return
 	}
@@ -1403,7 +1727,7 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		flusher.Flush()
 
-		queued := a.store.pullSignalInbox(clientType, clientID, maxSignalQueuePull)
+		queued := a.pullSignalInbox(clientType, clientID, maxSignalQueuePull)
 		if len(queued) > 0 {
 			for _, event := range queued {
 				if err := writeSSE(w, event); err != nil {
@@ -1411,11 +1735,26 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			flusher.Flush()
-			a.onMutation()
+			if !a.persistence.UseExternalSignalQueue() {
+				a.onMutation()
+			}
 		}
 
 		sub := a.store.addSubscriber(clientType, clientID)
 		defer a.store.removeSubscriber(clientType, clientID, sub)
+
+		var externalSub <-chan SignalEvent
+		var closeExternalSub func()
+		if a.persistence.UseExternalSignalQueue() {
+			subChannel, closeFn, subscribeErr := a.persistence.SubscribeSignals(clientType, clientID)
+			if subscribeErr != nil {
+				log.Printf("[openclaw-server] failed to subscribe redis signal pubsub: %v", subscribeErr)
+			} else {
+				externalSub = subChannel
+				closeExternalSub = closeFn
+				defer closeExternalSub()
+			}
+		}
 
 		ticker := time.NewTicker(20 * time.Second)
 		defer ticker.Stop()
@@ -1423,6 +1762,15 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		for {
 			select {
 			case event := <-sub:
+				if err := writeSSE(w, event); err != nil {
+					return
+				}
+				flusher.Flush()
+			case event, ok := <-externalSub:
+				if !ok {
+					externalSub = nil
+					continue
+				}
 				if err := writeSSE(w, event); err != nil {
 					return
 				}

@@ -11,7 +11,7 @@ services:
       PORT: 38089
       STORE_BACKEND: ${OPENCLAW_SERVER_STORE_BACKEND:-memory}
       REDIS_URL: ${OPENCLAW_SERVER_REDIS_URL:-redis://redis:6379}
-      REDIS_SNAPSHOT_KEY: ${OPENCLAW_SERVER_REDIS_SNAPSHOT_KEY:-openclaw:server:store-snapshot:v1}
+      REDIS_KEY_PREFIX: ${OPENCLAW_SERVER_REDIS_KEY_PREFIX:-openclaw:server}
     ports:
       - "${OPENCLAW_SERVER_PORT:-38089}:38089"
     depends_on:

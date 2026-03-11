@@ -47,12 +47,13 @@ go run .
 - `PORT` (default: `8787`)
 - `STORE_BACKEND` (default: `memory`, optional: `redis`)
 - `REDIS_URL` (default: `redis://127.0.0.1:6379`, used when `STORE_BACKEND=redis`)
-- `REDIS_SNAPSHOT_KEY` (default: `openclaw:server:store-snapshot:v1`)
+- `REDIS_KEY_PREFIX` (default: `openclaw:server`)
 
 ### Persistence choice
 
 - Recommended for current pairing/signaling workload: `Redis`
 - Why: low-latency read/write + native TTL pattern for short-lived session data
+- Redis mode stores native keys/hashes/queues and uses Pub/Sub for cross-instance realtime relay
 - Keep `MySQL` for later long-term history/audit reporting, not first-stage signaling hot path
 
 ## Notes
