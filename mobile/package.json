@@ -9,9 +9,7 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
-    "@openclaw/protocol": "file:../packages/protocol"
-  },
+  "dependencies": {},
   "devDependencies": {
     "typescript": "^5.8.2",
     "vite": "^5.4.14"

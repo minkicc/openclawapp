@@ -24,7 +24,6 @@ function ensureStreams(store, key) {
 }
 
 function writeSse(res, event) {
-  res.write(`event: ${event.type}\n`);
   res.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 

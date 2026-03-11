@@ -1,67 +1,51 @@
-import { MESSAGE_TYPES, createEnvelope } from "@openclaw/protocol";
+const qrPayloadInput = document.getElementById("qrPayloadInput") as HTMLTextAreaElement;
+const parsePayloadBtn = document.getElementById("parsePayloadBtn") as HTMLButtonElement;
+const serverBaseUrlInput = document.getElementById("serverBaseUrlInput") as HTMLInputElement;
+const serverTokenInput = document.getElementById("serverTokenInput") as HTMLInputElement;
+const userIdInput = document.getElementById("userIdInput") as HTMLInputElement;
+const mobileIdInput = document.getElementById("mobileIdInput") as HTMLInputElement;
+const pairTokenInput = document.getElementById("pairTokenInput") as HTMLInputElement;
+const pairCodeInput = document.getElementById("pairCodeInput") as HTMLInputElement;
+const deviceIdInput = document.getElementById("deviceIdInput") as HTMLInputElement;
 
-const qrPayloadInput = document.getElementById("qrPayloadInput") as any;
-const parsePayloadBtn = document.getElementById("parsePayloadBtn") as any;
-const serverBaseUrlInput = document.getElementById("serverBaseUrlInput") as any;
-const serverTokenInput = document.getElementById("serverTokenInput") as any;
-const userIdInput = document.getElementById("userIdInput") as any;
-const sessionIdInput = document.getElementById("sessionIdInput") as any;
-const pairCodeInput = document.getElementById("pairCodeInput") as any;
-const deviceIdInput = document.getElementById("deviceIdInput") as any;
-const claimBtn = document.getElementById("claimBtn") as any;
-const wsStatus = document.getElementById("wsStatus") as any;
-const wsConnectBtn = document.getElementById("wsConnectBtn") as any;
-const wsDisconnectBtn = document.getElementById("wsDisconnectBtn") as any;
-const taskPromptInput = document.getElementById("taskPromptInput") as any;
-const sendTaskBtn = document.getElementById("sendTaskBtn") as any;
-const eventLog = document.getElementById("eventLog") as any;
+const claimByTokenBtn = document.getElementById("claimByTokenBtn") as HTMLButtonElement;
+const claimByCodeBtn = document.getElementById("claimByCodeBtn") as HTMLButtonElement;
 
-let mobileWs = null;
+const signalStatus = document.getElementById("signalStatus") as HTMLParagraphElement;
+const signalConnectBtn = document.getElementById("signalConnectBtn") as HTMLButtonElement;
+const signalDisconnectBtn = document.getElementById("signalDisconnectBtn") as HTMLButtonElement;
 
-function logEvent(line) {
+const taskPromptInput = document.getElementById("taskPromptInput") as HTMLTextAreaElement;
+const sendTaskBtn = document.getElementById("sendTaskBtn") as HTMLButtonElement;
+const eventLog = document.getElementById("eventLog") as HTMLPreElement;
+
+let signalSource: EventSource | null = null;
+
+function logEvent(line: string) {
   const stamp = new Date().toLocaleString();
   const text = `[${stamp}] ${line}`;
   eventLog.textContent = eventLog.textContent ? `${eventLog.textContent}\n${text}` : text;
   eventLog.scrollTop = eventLog.scrollHeight;
 }
 
-function normalizeServerBaseUrl(raw) {
+function normalizeServerBaseUrl(raw: string) {
   const text = String(raw || "").trim();
   if (!text) {
     throw new Error("服务端地址不能为空");
   }
+
   const parsed = new URL(text);
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error("服务端地址必须是 http/https");
   }
+
   parsed.hash = "";
   parsed.search = "";
   parsed.pathname = parsed.pathname.replace(/\/+$/, "");
   return parsed.toString().replace(/\/+$/, "");
 }
 
-function buildHttpUrl(baseUrl, path) {
-  const parsed = new URL(baseUrl);
-  parsed.pathname = path;
-  parsed.search = "";
-  parsed.hash = "";
-  return parsed.toString();
-}
-
-function buildWsUrl(baseUrl, userId) {
-  const parsed = new URL(baseUrl);
-  parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
-  parsed.pathname = "/ws/mobile";
-  parsed.search = `user_id=${encodeURIComponent(userId)}`;
-  const token = String(serverTokenInput.value || "").trim();
-  if (token) {
-    parsed.search += `&token=${encodeURIComponent(token)}`;
-  }
-  parsed.hash = "";
-  return parsed.toString();
-}
-
-function requireText(value, fieldLabel) {
+function requireText(value: string, fieldLabel: string) {
   const text = String(value || "").trim();
   if (!text) {
     throw new Error(`${fieldLabel}不能为空`);
@@ -69,240 +53,316 @@ function requireText(value, fieldLabel) {
   return text;
 }
 
-function setWsStatus(text) {
-  wsStatus.textContent = `通道状态：${text}`;
-}
-
-function parseQrPayload() {
-  const raw = String(qrPayloadInput.value || "").trim();
-  if (!raw) {
-    throw new Error("请先粘贴二维码载荷 JSON");
-  }
-  const payload = JSON.parse(raw);
-  if (!payload || typeof payload !== "object") {
-    throw new Error("二维码载荷必须是 JSON 对象");
-  }
-  return payload;
+function setSignalStatus(text: string) {
+  signalStatus.textContent = `信令状态：${text}`;
 }
 
 function setButtons() {
-  const open = mobileWs && mobileWs.readyState === WebSocket.OPEN;
-  const connecting = mobileWs && mobileWs.readyState === WebSocket.CONNECTING;
-  wsConnectBtn.disabled = open || connecting;
-  wsDisconnectBtn.disabled = !mobileWs || mobileWs.readyState === WebSocket.CLOSED;
-  sendTaskBtn.disabled = !open;
+  const connected = signalSource?.readyState === EventSource.OPEN;
+  const connecting = signalSource?.readyState === EventSource.CONNECTING;
+
+  signalConnectBtn.disabled = Boolean(connected || connecting);
+  signalDisconnectBtn.disabled = !signalSource;
+  sendTaskBtn.disabled = false;
+
+  claimByTokenBtn.disabled = false;
+  claimByCodeBtn.disabled = false;
 }
 
-async function claimPairSession() {
-  let baseUrl;
-  let userId;
-  let sessionId;
-  let pairCode;
-
-  try {
-    baseUrl = normalizeServerBaseUrl(serverBaseUrlInput.value);
-    userId = requireText(userIdInput.value, "用户 ID");
-    sessionId = requireText(sessionIdInput.value, "Session ID");
-    pairCode = requireText(pairCodeInput.value, "Pair Code");
-  } catch (error) {
-    logEvent(`claim failed: ${error.message || String(error)}`);
-    return;
+function buildApiUrl(baseUrl: string, path: string, query?: URLSearchParams) {
+  const url = new URL(path, `${baseUrl}/`);
+  if (query) {
+    url.search = query.toString();
   }
+  return url.toString();
+}
 
-  const endpoint = buildHttpUrl(baseUrl, "/pair/claim");
-  const token = String(serverTokenInput.value || "").trim();
+async function requestJson<T>(
+  baseUrl: string,
+  path: string,
+  init: RequestInit = {}
+): Promise<T> {
   const headers: Record<string, string> = {
-    "Content-Type": "application/json"
+    "content-type": "application/json",
+    ...(init.headers as Record<string, string> | undefined),
   };
+
+  const token = String(serverTokenInput.value || "").trim();
   if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-  logEvent(`claim -> ${endpoint}`);
-  let response;
-  try {
-    response = await fetch(endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        session_id: sessionId,
-        pair_code: pairCode,
-        user_id: userId
-      })
-    });
-  } catch (error) {
-    logEvent(`claim request failed: ${error.message || String(error)}`);
-    return;
+    headers.authorization = `Bearer ${token}`;
   }
 
-  let result;
-  try {
-    result = await response.json();
-  } catch {
-    result = null;
-  }
-
-  if (!response.ok || !result?.ok || !result?.data) {
-    const message = result?.error || result?.message || `HTTP ${response.status}`;
-    logEvent(`claim failed: ${message}`);
-    return;
-  }
-
-  const data = result.data;
-  deviceIdInput.value = data.device_id || deviceIdInput.value || "";
-  logEvent(`claim ok: device=${data.device_id || "-"} user=${data.user_id || "-"}`);
-}
-
-async function connectMobileWs() {
-  let baseUrl;
-  let userId;
-  try {
-    baseUrl = normalizeServerBaseUrl(serverBaseUrlInput.value);
-    userId = requireText(userIdInput.value, "用户 ID");
-  } catch (error) {
-    logEvent(`ws connect failed: ${error.message || String(error)}`);
-    return;
-  }
-
-  if (mobileWs) {
-    try {
-      mobileWs.close();
-    } catch {
-      // no-op
-    }
-    mobileWs = null;
-  }
-
-  const url = buildWsUrl(baseUrl, userId);
-  logEvent(`ws connect -> ${url}`);
-  setWsStatus("连接中");
-  const ws = new WebSocket(url);
-  mobileWs = ws;
-  setButtons();
-
-  ws.onopen = () => {
-    setWsStatus("已连接");
-    logEvent("ws connected");
-    setButtons();
-  };
-
-  ws.onmessage = (event) => {
-    const raw = String(event.data || "");
-    try {
-      const payload = JSON.parse(raw);
-      if (payload.type === MESSAGE_TYPES.PAIR_CLAIMED) {
-        const uid = payload?.payload?.user_id || payload?.user_id || "-";
-        const did = payload?.payload?.device_id || payload?.device_id || "-";
-        deviceIdInput.value = did;
-        logEvent(`event pair.claimed user=${uid} device=${did}`);
-        return;
-      }
-      logEvent(`event ${payload.type || "unknown"} ${raw.slice(0, 260)}`);
-    } catch {
-      logEvent(`event(raw) ${raw.slice(0, 260)}`);
-    }
-  };
-
-  ws.onerror = () => {
-    setWsStatus("异常");
-    logEvent("ws error");
-    setButtons();
-  };
-
-  ws.onclose = () => {
-    setWsStatus("已断开");
-    logEvent("ws closed");
-    setButtons();
-  };
-}
-
-function disconnectMobileWs() {
-  if (!mobileWs) {
-    setWsStatus("未连接");
-    setButtons();
-    return;
-  }
-  try {
-    mobileWs.close();
-  } catch {
-    // no-op
-  }
-  mobileWs = null;
-  setWsStatus("已断开");
-  setButtons();
-}
-
-function sendTaskCreate() {
-  if (!mobileWs || mobileWs.readyState !== WebSocket.OPEN) {
-    logEvent("send task failed: websocket not connected");
-    return;
-  }
-
-  let targetDeviceId;
-  let userId;
-  try {
-    targetDeviceId = requireText(deviceIdInput.value, "目标设备 ID");
-    userId = requireText(userIdInput.value, "用户 ID");
-  } catch (error) {
-    logEvent(`send task failed: ${error.message || String(error)}`);
-    return;
-  }
-
-  const prompt = String(taskPromptInput.value || "").trim();
-  if (!prompt) {
-    logEvent("send task failed: 任务内容不能为空");
-    return;
-  }
-
-  const envelope = createEnvelope({
-    type: MESSAGE_TYPES.TASK_CREATE,
-    userId,
-    targetDeviceId,
-    payload: {
-      prompt
-    }
+  const res = await fetch(buildApiUrl(baseUrl, path), {
+    ...init,
+    headers,
   });
 
-  mobileWs.send(JSON.stringify(envelope));
-  logEvent(`send task.create -> ${targetDeviceId}`);
+  const data = await res.json().catch(() => ({} as Record<string, unknown>));
+  if (!res.ok || (data as { ok?: boolean }).ok === false) {
+    const message =
+      (data as { message?: string; error?: string }).message ||
+      (data as { message?: string; error?: string }).error ||
+      `HTTP ${res.status}`;
+    throw new Error(message);
+  }
+
+  return data as T;
+}
+
+function parsePayload() {
+  const raw = String(qrPayloadInput.value || "").trim();
+  if (!raw) {
+    throw new Error("请先粘贴载荷 JSON");
+  }
+
+  const payload = JSON.parse(raw) as Record<string, unknown>;
+  if (!payload || typeof payload !== "object") {
+    throw new Error("载荷必须是 JSON 对象");
+  }
+
+  const baseUrl =
+    typeof payload.baseUrl === "string"
+      ? payload.baseUrl
+      : typeof payload.base_url === "string"
+        ? payload.base_url
+        : "";
+
+  const pairToken =
+    typeof payload.pairToken === "string"
+      ? payload.pairToken
+      : typeof payload.pair_token === "string"
+        ? payload.pair_token
+        : "";
+
+  const pairCode =
+    typeof payload.pairCode === "string"
+      ? payload.pairCode
+      : typeof payload.pair_code === "string"
+        ? payload.pair_code
+        : "";
+
+  const deviceId =
+    typeof payload.deviceId === "string"
+      ? payload.deviceId
+      : typeof payload.device_id === "string"
+        ? payload.device_id
+        : "";
+
+  if (baseUrl) {
+    serverBaseUrlInput.value = baseUrl.trim();
+  }
+  if (pairToken) {
+    pairTokenInput.value = pairToken.trim();
+  }
+  if (pairCode) {
+    pairCodeInput.value = pairCode.trim();
+  }
+  if (deviceId) {
+    deviceIdInput.value = deviceId.trim();
+  }
+
+  logEvent("payload parsed");
+}
+
+type ClaimResponse = {
+  ok: boolean;
+  session: {
+    pairSessionId: string;
+    deviceId: string;
+    pairCode: string;
+    pairToken: string;
+    status: string;
+  };
+  binding: {
+    bindingId: string;
+    userId: string;
+    deviceId: string;
+    mobileId: string;
+    status: string;
+  };
+};
+
+async function claimByToken() {
+  try {
+    const baseUrl = normalizeServerBaseUrl(serverBaseUrlInput.value);
+    const pairToken = requireText(pairTokenInput.value, "Pair Token");
+    const userId = requireText(userIdInput.value, "用户 ID");
+    const mobileId = requireText(mobileIdInput.value, "移动端 ID");
+
+    const result = await requestJson<ClaimResponse>(baseUrl, "/v1/pair/claim", {
+      method: "POST",
+      body: JSON.stringify({ pairToken, userId, mobileId }),
+    });
+
+    deviceIdInput.value = result.binding.deviceId || result.session.deviceId || "";
+    logEvent(
+      `claim by token ok: device=${result.binding.deviceId} user=${result.binding.userId} mobile=${result.binding.mobileId}`
+    );
+  } catch (error) {
+    logEvent(`claim by token failed: ${(error as Error).message}`);
+  }
+}
+
+async function claimByCode() {
+  try {
+    const baseUrl = normalizeServerBaseUrl(serverBaseUrlInput.value);
+    const pairCode = requireText(pairCodeInput.value, "Pair Code");
+    const userId = requireText(userIdInput.value, "用户 ID");
+    const mobileId = requireText(mobileIdInput.value, "移动端 ID");
+
+    const result = await requestJson<ClaimResponse>(baseUrl, "/v1/pair/claim-by-code", {
+      method: "POST",
+      body: JSON.stringify({ pairCode, userId, mobileId }),
+    });
+
+    deviceIdInput.value = result.binding.deviceId || result.session.deviceId || "";
+    logEvent(
+      `claim by code ok: device=${result.binding.deviceId} user=${result.binding.userId} mobile=${result.binding.mobileId}`
+    );
+  } catch (error) {
+    logEvent(`claim by code failed: ${(error as Error).message}`);
+  }
+}
+
+function closeSignal() {
+  if (signalSource) {
+    signalSource.close();
+    signalSource = null;
+  }
+  setSignalStatus("已断开");
+  setButtons();
+}
+
+function handleSignalEvent(payload: Record<string, unknown>) {
+  const type = String(payload.type || "unknown");
+
+  if (type === "pair.claimed") {
+    const data = (payload.payload || {}) as Record<string, unknown>;
+    const did = String(data.deviceId || data.device_id || "").trim();
+    if (did) {
+      deviceIdInput.value = did;
+    }
+  }
+
+  logEvent(`signal ${type}: ${JSON.stringify(payload).slice(0, 320)}`);
+}
+
+function connectSignal() {
+  try {
+    const baseUrl = normalizeServerBaseUrl(serverBaseUrlInput.value);
+    const mobileId = requireText(mobileIdInput.value, "移动端 ID");
+
+    closeSignal();
+
+    const params = new URLSearchParams({
+      clientType: "mobile",
+      clientId: mobileId,
+    });
+    const streamUrl = buildApiUrl(baseUrl, "/v1/signal/stream", params);
+
+    setSignalStatus("连接中");
+    signalSource = new EventSource(streamUrl);
+    setButtons();
+
+    signalSource.onopen = () => {
+      setSignalStatus("已连接（SSE）");
+      logEvent(`signal connected -> ${streamUrl}`);
+      setButtons();
+    };
+
+    signalSource.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data) as Record<string, unknown>;
+        handleSignalEvent(payload);
+      } catch {
+        logEvent(`signal raw: ${String(event.data).slice(0, 320)}`);
+      }
+    };
+
+    signalSource.onerror = () => {
+      const state = signalSource?.readyState;
+      if (state === EventSource.CLOSED) {
+        setSignalStatus("已关闭");
+      } else {
+        setSignalStatus("重连中");
+      }
+      setButtons();
+    };
+  } catch (error) {
+    logEvent(`connect signal failed: ${(error as Error).message}`);
+    setSignalStatus("连接失败");
+    setButtons();
+  }
+}
+
+type SendSignalResponse = {
+  ok: boolean;
+  deliveredRealtime: boolean;
+  event: {
+    id: string;
+    type: string;
+  };
+};
+
+async function sendTaskCreate() {
+  try {
+    const baseUrl = normalizeServerBaseUrl(serverBaseUrlInput.value);
+    const mobileId = requireText(mobileIdInput.value, "移动端 ID");
+    const deviceId = requireText(deviceIdInput.value, "目标设备 ID");
+    const prompt = requireText(taskPromptInput.value, "任务内容");
+
+    const result = await requestJson<SendSignalResponse>(baseUrl, "/v1/signal/send", {
+      method: "POST",
+      body: JSON.stringify({
+        fromType: "mobile",
+        fromId: mobileId,
+        toType: "desktop",
+        toId: deviceId,
+        type: "task.create",
+        payload: { prompt },
+      }),
+    });
+
+    logEvent(
+      `task.create sent -> device=${deviceId} deliveredRealtime=${String(result.deliveredRealtime)}`
+    );
+  } catch (error) {
+    logEvent(`send task.create failed: ${(error as Error).message}`);
+  }
 }
 
 parsePayloadBtn.addEventListener("click", () => {
   try {
-    const payload = parseQrPayload();
-    if (payload.base_url) {
-      serverBaseUrlInput.value = String(payload.base_url).trim();
-    }
-    if (payload.session_id) {
-      sessionIdInput.value = String(payload.session_id).trim();
-    }
-    if (payload.pair_code) {
-      pairCodeInput.value = String(payload.pair_code).trim();
-    }
-    logEvent("qr payload parsed");
+    parsePayload();
   } catch (error) {
-    logEvent(`parse payload failed: ${error.message || String(error)}`);
+    logEvent(`parse payload failed: ${(error as Error).message}`);
   }
 });
 
-claimBtn.addEventListener("click", async () => {
-  await claimPairSession();
+claimByTokenBtn.addEventListener("click", async () => {
+  await claimByToken();
 });
 
-wsConnectBtn.addEventListener("click", async () => {
-  await connectMobileWs();
+claimByCodeBtn.addEventListener("click", async () => {
+  await claimByCode();
 });
 
-wsDisconnectBtn.addEventListener("click", () => {
-  disconnectMobileWs();
+signalConnectBtn.addEventListener("click", () => {
+  connectSignal();
 });
 
-sendTaskBtn.addEventListener("click", () => {
-  sendTaskCreate();
+signalDisconnectBtn.addEventListener("click", () => {
+  closeSignal();
+});
+
+sendTaskBtn.addEventListener("click", async () => {
+  await sendTaskCreate();
 });
 
 window.addEventListener("beforeunload", () => {
-  disconnectMobileWs();
+  closeSignal();
 });
 
 setButtons();
-logEvent("mobile mvp ready");
+setSignalStatus("未连接");
+logEvent("mobile pairing mvp ready");

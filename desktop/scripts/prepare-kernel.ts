@@ -6,9 +6,8 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(scriptDir, "../../..");
-
-const kernelRoot = join(repoRoot, "resources", "kernel");
+const desktopRoot = resolve(scriptDir, "..");
+const kernelRoot = join(desktopRoot, "resources", "kernel");
 const openclawPkg = join(kernelRoot, "node_modules", "openclaw", "package.json");
 const nodePkg = join(kernelRoot, "node_modules", "node", "package.json");
 

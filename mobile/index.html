@@ -3,21 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>OpenClaw Mobile MVP</title>
+    <title>OpenClaw Mobile Pairing MVP</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <main class="container">
-      <h1>OpenClaw Mobile MVP</h1>
+      <h1>OpenClaw Mobile Pairing MVP</h1>
       <p class="hint">
-        最小联调页：解析二维码载荷、认领配对会话、连接移动端通道、向 PC 派发任务。
+        最小联调页：解析配对载荷、认领会话、建立移动端信令流（SSE）、向 PC 发送 task.create。
       </p>
 
       <section class="card">
         <h2>1) 配对载荷</h2>
         <label>
-          <span>二维码载荷（JSON）</span>
-          <textarea id="qrPayloadInput" rows="6" placeholder='{"base_url":"http://127.0.0.1:38089","session_id":"...","pair_code":"..."}'></textarea>
+          <span>载荷 JSON</span>
+          <textarea
+            id="qrPayloadInput"
+            rows="6"
+            placeholder='{"baseUrl":"http://127.0.0.1:8787","pairToken":"...","pairCode":"...","deviceId":"..."}'
+          ></textarea>
         </label>
         <div class="actions">
           <button id="parsePayloadBtn" class="secondary">解析载荷</button>
@@ -29,7 +33,7 @@
         <div class="grid">
           <label>
             <span>服务端地址</span>
-            <input id="serverBaseUrlInput" type="text" value="http://127.0.0.1:38089" />
+            <input id="serverBaseUrlInput" type="text" value="http://127.0.0.1:8787" />
           </label>
           <label>
             <span>服务端 Token（可选）</span>
@@ -40,29 +44,34 @@
             <input id="userIdInput" type="text" />
           </label>
           <label>
-            <span>Session ID</span>
-            <input id="sessionIdInput" type="text" />
+            <span>移动端 ID</span>
+            <input id="mobileIdInput" type="text" />
+          </label>
+          <label>
+            <span>Pair Token</span>
+            <input id="pairTokenInput" type="text" />
           </label>
           <label>
             <span>Pair Code</span>
             <input id="pairCodeInput" type="text" />
           </label>
           <label>
-            <span>目标设备 ID（可自动填充）</span>
+            <span>目标设备 ID（认领后自动填充）</span>
             <input id="deviceIdInput" type="text" />
           </label>
         </div>
         <div class="actions">
-          <button id="claimBtn" class="primary">认领配对会话</button>
+          <button id="claimByTokenBtn" class="primary">用 Token 认领</button>
+          <button id="claimByCodeBtn" class="secondary">用 Code 认领</button>
         </div>
       </section>
 
       <section class="card">
-        <h2>3) 长连接与任务</h2>
-        <p id="wsStatus" class="status">通道状态：未连接</p>
+        <h2>3) 信令与任务</h2>
+        <p id="signalStatus" class="status">信令状态：未连接</p>
         <div class="actions">
-          <button id="wsConnectBtn" class="secondary">连接移动端通道</button>
-          <button id="wsDisconnectBtn" class="secondary">断开通道</button>
+          <button id="signalConnectBtn" class="secondary">连接 SSE 信令</button>
+          <button id="signalDisconnectBtn" class="secondary">断开信令</button>
         </div>
         <label>
           <span>任务内容</span>

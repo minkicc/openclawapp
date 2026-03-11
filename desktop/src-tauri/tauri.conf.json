@@ -53,9 +53,9 @@
         "icons/icon.ico"
       ],
       "resources": [
-        "../../../resources/skills",
-        "../../../resources/bin",
-        "../../../resources/kernel"
+        "../resources/skills",
+        "../resources/bin",
+        "../resources/kernel"
       ]
     }
   }
