@@ -6,6 +6,8 @@ const requiredSnippets = [
   "openapi: 3.1.0",
   "/v1/devices/register",
   "/v1/pair/sessions",
+  "/v1/signal/send",
+  "/v1/signal/stream",
   "/ws/desktop",
   "/ws/mobile",
 ];

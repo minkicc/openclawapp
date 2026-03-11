@@ -1,67 +1,54 @@
 # OpenClaw Server (MVP)
 
-Minimal pairing and message-routing server for desktop/mobile long-lived connection.
+Minimal pairing and signaling server for desktop/mobile integration.
+
+Current implementation is an in-memory MVP for protocol and flow validation.
 
 ## Endpoints
 
-- `GET /health`
-- `POST /pair/create`
-- `POST /pair/claim`
-- `GET /pair/status?session_id=...`
-- `POST /pair/revoke`
-- `WS /ws/pc?device_id=...`
-- `WS /ws/mobile?user_id=...`
+- `GET /healthz`
+- `POST /v1/devices/register`
+- `POST /v1/devices/heartbeat`
+- `GET /v1/devices/:deviceId/status`
+- `POST /v1/pair/sessions`
+- `POST /v1/pair/claim`
+- `POST /v1/pair/claim-by-code`
+- `POST /v1/pair/revoke`
+- `GET /v1/pair/bindings`
+- `POST /v1/signal/send`
+- `GET /v1/signal/inbox`
+- `GET /v1/signal/stream` (SSE)
+
+Reserved placeholders (`501`):
+
+- `GET /ws/desktop`
+- `GET /ws/mobile`
+
+Use `/v1/signal/stream` + `/v1/signal/send` as the relay channel during this stage.
 
 ## Run
+
+From repository root:
+
+```bash
+npm --prefix server run dev
+```
+
+Or:
 
 ```bash
 cd server
 npm run start
 ```
 
-## Run with Docker
+## Environment variables
 
-From repository root:
-
-```bash
-docker compose up -d openclaw-server
-```
-
-Check health:
-
-```bash
-curl http://127.0.0.1:38089/health
-```
-
-Stop:
-
-```bash
-docker compose down
-```
-
-## Environment Variables
-
-- `HOST` default `0.0.0.0`
-- `PORT` default `38089`
-- `PUBLIC_BASE_URL` default `http://127.0.0.1:$PORT`
-- `PAIR_TTL_SECONDS` default `120`
-- `STORE_PATH` optional; if set, persist sessions/bindings to JSON file
-- `OPENCLAW_SERVER_TOKEN` optional shared token for HTTP/WS auth
-
-## Optional Auth
-
-If `OPENCLAW_SERVER_TOKEN` is configured:
-
-- HTTP requests must include `Authorization: Bearer <token>`
-- WebSocket upgrade must include:
-  - query: `?token=<token>` (recommended for current MVP), or
-  - header: `Authorization: Bearer <token>`
+- `HOST` (default: `0.0.0.0`)
+- `PORT` (default: `8787`)
 
 ## Notes
 
-- No external dependencies are required.
-- Storage can be in-memory (default) or persisted to file via `STORE_PATH`.
-- This MVP is for protocol and flow validation, not production hardening.
-- Docker files:
-  - `server/Dockerfile`
-  - `docker-compose.yml` (repo root)
+- No external runtime dependencies (Node built-ins only).
+- Data is in-memory and will reset on restart.
+- This MVP is intended for integration scaffolding, not production hardening.
+- API contract draft lives in `openapi/openapi.yaml`.

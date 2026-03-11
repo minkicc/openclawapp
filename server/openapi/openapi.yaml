@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: OpenClaw Pairing and Communication API
   version: 0.1.0
-  description: API skeleton for device register, pairing, and signaling relay.
+  description: In-memory scaffold API for device register, pairing, and signaling relay.
 servers:
   - url: https://api.openclawapp.dev
 paths:
@@ -26,15 +26,15 @@ paths:
       summary: Register desktop device basic info
       operationId: registerDevice
       responses:
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+        "200":
+          description: Registered
   /v1/devices/heartbeat:
     post:
       summary: Update desktop online heartbeat
       operationId: heartbeatDevice
       responses:
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+        "200":
+          description: Heartbeat accepted
   /v1/devices/{deviceId}/status:
     get:
       summary: Get desktop device status
@@ -46,59 +46,94 @@ paths:
           schema:
             type: string
       responses:
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+        "200":
+          description: Device status
+        "404":
+          description: Device not found
   /v1/pair/sessions:
     post:
       summary: Create one-time pairing session from desktop
       operationId: createPairSession
       responses:
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+        "200":
+          description: Pair session created
   /v1/pair/claim:
     post:
       summary: Claim pairing by QR token
       operationId: claimPair
       responses:
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+        "200":
+          description: Pair claim success
+        "410":
+          description: Pair session expired
   /v1/pair/claim-by-code:
     post:
       summary: Claim pairing by manual code
       operationId: claimPairByCode
       responses:
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+        "200":
+          description: Pair claim success
+        "410":
+          description: Pair session expired
   /v1/pair/revoke:
     post:
       summary: Revoke a paired binding
       operationId: revokePair
       responses:
-        "501":
-          $ref: "#/components/responses/NotImplemented"
+        "200":
+          description: Binding revoked
+        "404":
+          description: Binding not found
   /v1/pair/bindings:
     get:
       summary: List user-device bindings
       operationId: listBindings
       responses:
-        "501":
-          $ref: "#/components/responses/NotImplemented"
-components:
-  responses:
-    NotImplemented:
-      description: Endpoint skeleton exists, implementation pending
-      content:
-        application/json:
+        "200":
+          description: OK
+  /v1/signal/send:
+    post:
+      summary: Send signaling or relay event to target peer
+      operationId: sendSignal
+      responses:
+        "200":
+          description: Accepted
+  /v1/signal/inbox:
+    get:
+      summary: Pull queued signaling events (fallback mode)
+      operationId: pullSignalInbox
+      parameters:
+        - name: clientType
+          in: query
+          required: true
           schema:
-            type: object
-            required: [ok, code, message]
-            properties:
-              ok:
-                type: boolean
-              code:
-                type: string
-              message:
-                type: string
+            type: string
+        - name: clientId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+  /v1/signal/stream:
+    get:
+      summary: Subscribe signaling events via SSE (scaffold phase)
+      operationId: streamSignalEvents
+      parameters:
+        - name: clientType
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: clientId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: SSE stream established
 x-websocket:
   endpoints:
     - path: /ws/desktop
