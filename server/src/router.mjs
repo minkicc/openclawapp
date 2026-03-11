@@ -1,5 +1,6 @@
 import { noContent, json, readJsonBody, sseHeaders } from "./http.mjs";
 import { store } from "./store/memory-store.mjs";
+import { getPersistenceStatus, schedulePersist } from "./store/persistence.mjs";
 import {
   getDeviceStatus,
   heartbeatDevice,
@@ -95,6 +96,7 @@ async function handleRoute(req, res) {
         pairSessions: store.pairSessions.size,
         bindings: store.bindings.size,
       },
+      persistence: getPersistenceStatus(),
     });
     return;
   }
@@ -102,6 +104,7 @@ async function handleRoute(req, res) {
   if (method === "POST" && url.pathname === "/v1/devices/register") {
     const payload = await readJsonBody(req);
     const device = registerDevice(store, payload);
+    schedulePersist();
     json(res, 200, { ok: true, device });
     return;
   }
@@ -109,6 +112,7 @@ async function handleRoute(req, res) {
   if (method === "POST" && url.pathname === "/v1/devices/heartbeat") {
     const payload = await readJsonBody(req);
     const device = heartbeatDevice(store, payload);
+    schedulePersist();
     json(res, 200, { ok: true, device });
     return;
   }
@@ -123,6 +127,7 @@ async function handleRoute(req, res) {
   if (method === "POST" && url.pathname === "/v1/pair/sessions") {
     const payload = await readJsonBody(req);
     const session = createPairSession(store, payload);
+    schedulePersist();
     json(res, 200, { ok: true, session });
     return;
   }
@@ -140,6 +145,7 @@ async function handleRoute(req, res) {
         mobileId: result.binding.mobileId,
       },
     });
+    schedulePersist();
     json(res, 200, { ok: true, ...result });
     return;
   }
@@ -157,6 +163,7 @@ async function handleRoute(req, res) {
         mobileId: result.binding.mobileId,
       },
     });
+    schedulePersist();
     json(res, 200, { ok: true, ...result });
     return;
   }
@@ -164,6 +171,7 @@ async function handleRoute(req, res) {
   if (method === "POST" && url.pathname === "/v1/pair/revoke") {
     const payload = await readJsonBody(req);
     const binding = revokePair(store, payload);
+    schedulePersist();
     json(res, 200, { ok: true, binding });
     return;
   }
@@ -181,6 +189,7 @@ async function handleRoute(req, res) {
   if (method === "POST" && url.pathname === "/v1/signal/send") {
     const payload = await readJsonBody(req);
     const result = sendSignal(store, payload);
+    schedulePersist();
     json(res, 200, { ok: true, ...result });
     return;
   }
@@ -190,6 +199,7 @@ async function handleRoute(req, res) {
     const clientId = parseClientId(url.searchParams.get("clientId"));
     const limit = Number(url.searchParams.get("limit") || "100");
     const events = pullSignalInbox(store, clientType, clientId, limit);
+    schedulePersist();
     json(res, 200, { ok: true, events });
     return;
   }
@@ -200,6 +210,7 @@ async function handleRoute(req, res) {
 
     res.writeHead(200, sseHeaders());
     const cleanup = openSignalStream(store, clientType, clientId, res);
+    schedulePersist();
 
     const heartbeat = setInterval(() => {
       try {

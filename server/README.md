@@ -45,6 +45,15 @@ npm run start
 
 - `HOST` (default: `0.0.0.0`)
 - `PORT` (default: `8787`)
+- `STORE_BACKEND` (default: `memory`, optional: `redis`)
+- `REDIS_URL` (default: `redis://127.0.0.1:6379`, used when `STORE_BACKEND=redis`)
+- `REDIS_SNAPSHOT_KEY` (default: `openclaw:server:store-snapshot:v1`)
+
+### Persistence choice
+
+- Recommended for current pairing/signaling workload: `Redis`
+- Why: low-latency read/write + native TTL pattern for short-lived session data
+- Keep `MySQL` for later long-term history/audit reporting, not first-stage signaling hot path
 
 ## Notes
 
