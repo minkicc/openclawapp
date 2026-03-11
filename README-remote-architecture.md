@@ -78,15 +78,14 @@
 
 ```text
 openclawapp/
-  apps/
-    desktop/               # 桌面端（Vite + Tauri + 打包资源）
-      src/
-      src-tauri/
-      resources/
-      scripts/
-      vendor/
-    mobile/                # 移动端（当前为骨架）
-    server/                # 服务端（当前为骨架）
+  desktop/                 # 桌面端（Vite + Tauri + 打包资源）
+    src/
+    src-tauri/
+    resources/
+    scripts/
+    vendor/
+  mobile/                  # 移动端（当前为骨架）
+  server/                  # 服务端（当前为骨架）
   packages/
     protocol/              # 三端共享协议、事件、Schema
     sdk-client/            # 通用 ws/http 客户端 SDK

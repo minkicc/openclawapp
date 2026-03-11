@@ -31,7 +31,7 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
+          cache-dependency-path: desktop/package-lock.json
           registry-url: https://registry.npmjs.org
 
       - name: Setup Rust
@@ -41,7 +41,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            apps/desktop/src-tauri -> apps/desktop/src-tauri/target
+            desktop/src-tauri -> desktop/src-tauri/target
 
       - name: Install Linux dependencies
         if: startsWith(matrix.os, 'ubuntu')
@@ -59,7 +59,7 @@ jobs:
             patchelf
 
       - name: Install dependencies
-        working-directory: apps/desktop
+        working-directory: desktop
         run: npm ci --include=dev
 
       - name: Import Developer ID certificate (macOS)
@@ -116,14 +116,14 @@ jobs:
 
       - name: Build installers (Linux)
         if: startsWith(matrix.os, 'ubuntu')
-        working-directory: apps/desktop
+        working-directory: desktop
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: npm run dist:linux:ci
 
       - name: Build installers (macOS)
         if: matrix.os == 'macos-latest'
-        working-directory: apps/desktop
+        working-directory: desktop
         env:
           APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
@@ -150,7 +150,7 @@ jobs:
 
       - name: Build installers (Windows)
         if: matrix.os == 'windows-latest'
-        working-directory: apps/desktop
+        working-directory: desktop
         run: npm run dist:win:ci
 
       - name: Sign installers (Windows)
@@ -182,7 +182,7 @@ jobs:
             throw "signtool.exe not found on runner."
           }
 
-          $targets = Get-ChildItem "apps/desktop/src-tauri/target/release/bundle/msi/*.msi" -ErrorAction SilentlyContinue
+          $targets = Get-ChildItem "desktop/src-tauri/target/release/bundle/msi/*.msi" -ErrorAction SilentlyContinue
           if (-not $targets) {
             throw "No MSI installers found to sign."
           }
@@ -208,7 +208,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist-artifacts
-          cp -v apps/desktop/src-tauri/target/release/bundle/deb/*.deb dist-artifacts/
+          cp -v desktop/src-tauri/target/release/bundle/deb/*.deb dist-artifacts/
 
       - name: Collect installers (macOS)
         if: matrix.os == 'macos-latest'
@@ -216,14 +216,14 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist-artifacts
-          cp -v apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg dist-artifacts/
+          cp -v desktop/src-tauri/target/release/bundle/dmg/*.dmg dist-artifacts/
 
       - name: Collect installers (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist-artifacts | Out-Null
-          Copy-Item -Path apps/desktop/src-tauri/target/release/bundle/msi/*.msi -Destination dist-artifacts -Force
+          Copy-Item -Path desktop/src-tauri/target/release/bundle/msi/*.msi -Destination dist-artifacts -Force
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

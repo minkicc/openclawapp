@@ -2,9 +2,9 @@
 
 This repository is organized into three application domains:
 
-- `apps/desktop`: OpenClaw desktop installer and launcher (Tauri)
-- `apps/mobile`: OpenClaw mobile client (scaffold)
-- `apps/server`: OpenClaw server side (scaffold)
+- `desktop`: OpenClaw desktop installer and launcher (Tauri)
+- `mobile`: OpenClaw mobile client (scaffold)
+- `server`: OpenClaw server side (scaffold)
 
 Shared or cross-domain modules live under:
 
@@ -15,13 +15,13 @@ Shared or cross-domain modules live under:
 
 The current production-ready app is desktop.
 
-- English docs: `apps/desktop/README.md`
-- Chinese docs: `apps/desktop/README-zh.md`
+- English docs: `desktop/README.md`
+- Chinese docs: `desktop/README-zh.md`
 
 Quick start:
 
 ```bash
-cd apps/desktop
+cd desktop
 npm install
 npm run dev
 ```
@@ -30,10 +30,9 @@ npm run dev
 
 ```text
 openclawapp/
-  apps/
-    desktop/
-    mobile/
-    server/
+  desktop/
+  mobile/
+  server/
   packages/
     protocol/
     sdk-client/

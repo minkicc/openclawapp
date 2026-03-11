@@ -68,7 +68,7 @@ Prerequisites:
 Install and run:
 
 ```bash
-cd apps/desktop
+cd desktop
 npm install
 npm run dev
 ```
@@ -107,7 +107,7 @@ Tag pushes (`v*`) can publish release assets automatically.
 Workflow file:
 
 ```text
-../../.github/workflows/build.yml
+../.github/workflows/build.yml
 ```
 
 ### macOS signing and notarization in GitHub Actions
@@ -148,4 +148,4 @@ Note:
 
 ## License
 
-MIT. See [LICENSE](../../LICENSE).
+MIT. See [LICENSE](../LICENSE).

@@ -68,7 +68,7 @@ src-tauri/target/release/bundle/
 启动开发环境：
 
 ```bash
-cd apps/desktop
+cd desktop
 npm install
 npm run dev
 ```
@@ -107,7 +107,7 @@ GitHub Actions 会在 Push / PR 自动构建安装包。
 工作流文件：
 
 ```text
-../../.github/workflows/build.yml
+../.github/workflows/build.yml
 ```
 
 ### GitHub Actions 的 macOS 签名与公证
@@ -148,4 +148,4 @@ GitHub Actions 会在 Push / PR 自动构建安装包。
 
 ## 开源协议
 
-MIT，见 [LICENSE](../../LICENSE)。
+MIT，见 [LICENSE](../LICENSE)。

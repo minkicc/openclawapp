@@ -2,9 +2,9 @@
 
 仓库已按三端职责重组：
 
-- `apps/desktop`：OpenClaw 桌面安装器与启动器（Tauri）
-- `apps/mobile`：OpenClaw 移动端（骨架）
-- `apps/server`：OpenClaw 服务端（骨架）
+- `desktop`：OpenClaw 桌面安装器与启动器（Tauri）
+- `mobile`：OpenClaw 移动端（骨架）
+- `server`：OpenClaw 服务端（骨架）
 
 跨端共享模块位于：
 
@@ -15,13 +15,13 @@
 
 当前可直接使用的是桌面端：
 
-- 英文文档：`apps/desktop/README.md`
-- 中文文档：`apps/desktop/README-zh.md`
+- 英文文档：`desktop/README.md`
+- 中文文档：`desktop/README-zh.md`
 
 快速启动：
 
 ```bash
-cd apps/desktop
+cd desktop
 npm install
 npm run dev
 ```
@@ -30,10 +30,9 @@ npm run dev
 
 ```text
 openclawapp/
-  apps/
-    desktop/
-    mobile/
-    server/
+  desktop/
+  mobile/
+  server/
   packages/
     protocol/
     sdk-client/

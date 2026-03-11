@@ -4,14 +4,14 @@
   "license": "MIT",
   "description": "OpenClaw desktop/mobile/server monorepo",
   "workspaces": [
-    "apps/desktop",
-    "apps/mobile",
-    "apps/server",
+    "desktop",
+    "mobile",
+    "server",
     "packages/*"
   ],
   "scripts": {
-    "dev:desktop": "npm --prefix apps/desktop run dev",
-    "build:desktop": "npm --prefix apps/desktop run dist",
-    "lint:desktop": "npm --prefix apps/desktop run build:web"
+    "dev:desktop": "npm --prefix desktop run dev",
+    "build:desktop": "npm --prefix desktop run dist",
+    "lint:desktop": "npm --prefix desktop run build:web"
   }
 }

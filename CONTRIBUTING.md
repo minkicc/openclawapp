@@ -10,9 +10,9 @@ Thanks for helping improve OpenClaw App.
 
 ## Repository Structure
 
-- Desktop app: `apps/desktop`
-- Mobile app: `apps/mobile`
-- Server app: `apps/server`
+- Desktop app: `desktop`
+- Mobile app: `mobile`
+- Server app: `server`
 
 ## Development Setup (Desktop)
 
@@ -24,7 +24,7 @@ Requirements:
 Install dependencies:
 
 ```bash
-cd apps/desktop
+cd desktop
 npm install
 ```
 

@@ -3,9 +3,7 @@ dist/
 *.log
 .DS_Store
 .VSCodeCounter/
-src-tauri/target/
-resources/kernel/
-apps/desktop/node_modules/
-apps/desktop/dist/
-apps/desktop/src-tauri/target/
-apps/desktop/resources/kernel/
+desktop/node_modules/
+desktop/dist/
+desktop/src-tauri/target/
+desktop/resources/kernel/
