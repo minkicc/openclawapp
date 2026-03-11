@@ -1,18 +1,23 @@
-FROM node:22-alpine
+FROM golang:1.24-alpine AS build
 
-WORKDIR /app
+WORKDIR /src
+COPY server/go.mod server/go.sum ./
+RUN go mod download
 
-ENV NODE_ENV=production
+COPY server/. ./
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/openclaw-server .
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+
 ENV HOST=0.0.0.0
-ENV PORT=38089
+ENV PORT=8787
 
-COPY server ./server
-COPY packages/protocol ./packages/protocol
-RUN npm install --omit=dev --prefix server
+COPY --from=build /out/openclaw-server /usr/local/bin/openclaw-server
 
-EXPOSE 38089
+EXPOSE 8787
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || '38089') + '/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+  CMD wget -qO- "http://127.0.0.1:${PORT}/healthz" >/dev/null || exit 1
 
-CMD ["npm", "--prefix", "server", "run", "start"]
+CMD ["openclaw-server"]

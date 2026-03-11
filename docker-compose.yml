@@ -9,14 +9,17 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 38089
-      PUBLIC_BASE_URL: ${OPENCLAW_SERVER_PUBLIC_BASE_URL:-http://127.0.0.1:38089}
-      PAIR_TTL_SECONDS: ${OPENCLAW_SERVER_PAIR_TTL_SECONDS:-120}
-      STORE_PATH: ${OPENCLAW_SERVER_STORE_PATH:-/data/store.json}
-      OPENCLAW_SERVER_TOKEN: ${OPENCLAW_SERVER_TOKEN:-}
+      STORE_BACKEND: ${OPENCLAW_SERVER_STORE_BACKEND:-memory}
+      REDIS_URL: ${OPENCLAW_SERVER_REDIS_URL:-redis://redis:6379}
+      REDIS_SNAPSHOT_KEY: ${OPENCLAW_SERVER_REDIS_SNAPSHOT_KEY:-openclaw:server:store-snapshot:v1}
     ports:
       - "${OPENCLAW_SERVER_PORT:-38089}:38089"
-    volumes:
-      - openclaw-server-data:/data
+    depends_on:
+      - redis
 
-volumes:
-  openclaw-server-data:
+  redis:
+    image: redis:7-alpine
+    container_name: openclaw-redis
+    restart: unless-stopped
+    ports:
+      - "${OPENCLAW_REDIS_PORT:-6379}:6379"

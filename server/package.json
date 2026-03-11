@@ -2,20 +2,10 @@
   "name": "@openclaw/server",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
-  "description": "OpenClaw pairing and routing server (MVP)",
-  "main": "./src/index.mjs",
+  "description": "OpenClaw pairing and routing server (Go MVP)",
   "scripts": {
-    "dev": "node --watch src/index.mjs",
-    "start": "node src/index.mjs",
-    "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@openclaw/protocol": "file:../packages/protocol",
-    "redis": "^4.7.0"
-  },
-  "devDependencies": {
-    "@types/node": "^22.13.10",
-    "typescript": "^5.8.2"
+    "dev": "go run .",
+    "start": "go run .",
+    "typecheck": "go test ./..."
   }
 }

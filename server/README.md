@@ -2,7 +2,7 @@
 
 Minimal pairing and signaling server for desktop/mobile integration.
 
-Current implementation is an in-memory MVP for protocol and flow validation.
+Current implementation is a Go MVP with optional Redis snapshot persistence.
 
 ## Endpoints
 
@@ -38,7 +38,7 @@ Or:
 
 ```bash
 cd server
-npm run start
+go run .
 ```
 
 ## Environment variables
@@ -57,7 +57,8 @@ npm run start
 
 ## Notes
 
-- No external runtime dependencies (Node built-ins only).
-- Data is in-memory and will reset on restart.
+- Server runtime is Go (`go1.24+`).
+- Default data mode is in-memory and resets on restart.
+- When `STORE_BACKEND=redis`, state is restored/saved from Redis snapshot.
 - This MVP is intended for integration scaffolding, not production hardening.
 - API contract draft lives in `openapi/openapi.yaml`.
