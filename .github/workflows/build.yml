@@ -148,6 +148,55 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: npm run dist:win:ci
 
+      - name: Sign installers (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_PFX: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PFX) -or [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
+            Write-Host "Windows signing secrets not set; skipping installer signing."
+            exit 0
+          }
+
+          $pfxPath = Join-Path $env:RUNNER_TEMP "windows-codesign.pfx"
+          [System.IO.File]::WriteAllBytes($pfxPath, [System.Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_PFX))
+
+          $timestampUrl = if ([string]::IsNullOrWhiteSpace($env:WINDOWS_TIMESTAMP_URL)) {
+            "http://timestamp.digicert.com"
+          } else {
+            $env:WINDOWS_TIMESTAMP_URL
+          }
+
+          $signTool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $signTool) {
+            throw "signtool.exe not found on runner."
+          }
+
+          $targets = Get-ChildItem "src-tauri/target/release/bundle/msi/*.msi" -ErrorAction SilentlyContinue
+          if (-not $targets) {
+            throw "No MSI installers found to sign."
+          }
+
+          foreach ($file in $targets) {
+            Write-Host "Signing $($file.FullName)"
+            & $signTool.FullName sign `
+              /fd SHA256 `
+              /td SHA256 `
+              /tr $timestampUrl `
+              /f $pfxPath `
+              /p $env:WINDOWS_CERTIFICATE_PASSWORD `
+              "$($file.FullName)"
+
+            & $signTool.FullName verify /pa /v "$($file.FullName)"
+          }
+
+          Remove-Item $pfxPath -Force -ErrorAction SilentlyContinue
+
       - name: Collect installers (Linux)
         if: startsWith(matrix.os, 'ubuntu')
         shell: bash

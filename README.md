@@ -127,6 +127,24 @@ Behavior:
 - If notarization secrets are also provided, CI submits and staples the `.dmg`.
 - If secrets are missing, CI falls back to ad-hoc signing for internal testing.
 
+### Windows code signing in GitHub Actions
+
+To reduce Microsoft Defender SmartScreen warnings, configure these repository secrets:
+
+- `WINDOWS_CERTIFICATE_PFX`: Base64-encoded code-signing certificate (`.pfx`)
+- `WINDOWS_CERTIFICATE_PASSWORD`: Password of the `.pfx` file
+- `WINDOWS_TIMESTAMP_URL` (optional): RFC3161 timestamp URL (default: `http://timestamp.digicert.com`)
+
+Behavior:
+
+- If Windows signing secrets are set, CI signs generated `.msi` installers.
+- If secrets are missing, CI still builds but skips Windows signing.
+
+Note:
+
+- SmartScreen reputation is not only about "signed or not". New OV certificates may still show warnings initially.
+- EV certificates usually establish reputation faster for public distribution.
+
 ## License
 
 MIT. See [LICENSE](./LICENSE).

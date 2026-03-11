@@ -127,6 +127,24 @@ GitHub Actions 会在 Push / PR 自动构建安装包。
 - 再提供公证类 secrets 后，会自动提交 notarization 并 staple 到 `.dmg`。
 - 未提供 secrets 时，会回退到 ad-hoc 签名（适合内部测试，不适合公开分发）。
 
+### GitHub Actions 的 Windows 安装包签名
+
+为了减少 Microsoft Defender SmartScreen 的“未知应用”拦截，建议在仓库 Secrets 中配置：
+
+- `WINDOWS_CERTIFICATE_PFX`：代码签名证书（`.pfx`）的 Base64 内容
+- `WINDOWS_CERTIFICATE_PASSWORD`：`.pfx` 文件密码
+- `WINDOWS_TIMESTAMP_URL`（可选）：RFC3161 时间戳服务地址（默认 `http://timestamp.digicert.com`）
+
+行为说明：
+
+- 配置后，CI 会自动对生成的 `.msi` 安装包签名。
+- 未配置时，Windows 构建仍可完成，但会跳过签名。
+
+注意：
+
+- SmartScreen 是否放行不仅取决于是否签名，还和证书信誉有关。
+- 新的 OV 证书前期仍可能告警；公开分发建议使用 EV 证书，信誉建立更快。
+
 ## 开源协议
 
 MIT，见 [LICENSE](./LICENSE)。
