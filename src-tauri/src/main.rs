@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -15,7 +15,12 @@ use tauri::AppHandle;
 const CONFIG_FILE_NAME: &str = "openclaw.config.json";
 const MANAGED_KERNEL_DIR_NAME: &str = "managed-kernel";
 const BUNDLED_KERNEL_DIR_NAME: &str = "kernel";
-const DEFAULT_CUSTOM_API_MODE: &str = "openai-completions";
+const OPENCLAW_RUNTIME_HOME_DIR_NAME: &str = "openclaw-home";
+const OPENCLAW_RUNTIME_WORKSPACE_DIR_NAME: &str = "openclaw-workspace";
+const APP_GATEWAY_PORT: u16 = 28789;
+const APP_GATEWAY_TOKEN: &str = "openclaw-desktop-local";
+const DEFAULT_CUSTOM_API_MODE: &str = "openai-responses";
+const CUSTOM_API_MODE_MIGRATION_CUTOFF: &str = "2026-03-11T00:00:00Z";
 const LEGACY_APP_IDENTIFIER: &str = "com.openclaw.desktop";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -572,6 +577,18 @@ fn managed_kernel_root(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(root)
 }
 
+fn openclaw_runtime_home_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app_config_dir(app)?.join(OPENCLAW_RUNTIME_HOME_DIR_NAME);
+    fs::create_dir_all(&dir).map_err(|e| format!("创建 OpenClaw 运行时目录失败: {}", e))?;
+    Ok(dir)
+}
+
+fn openclaw_runtime_workspace_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app_config_dir(app)?.join(OPENCLAW_RUNTIME_WORKSPACE_DIR_NAME);
+    fs::create_dir_all(&dir).map_err(|e| format!("创建 OpenClaw 工作区目录失败: {}", e))?;
+    Ok(dir)
+}
+
 fn managed_openclaw_script_path(app: &AppHandle) -> Result<PathBuf, String> {
     let root = managed_kernel_root(app)?;
     Ok(root
@@ -588,40 +605,160 @@ fn bundled_openclaw_script_path(app: &AppHandle) -> Option<PathBuf> {
     })
 }
 
-fn bundled_node_command_path(app: &AppHandle) -> Option<PathBuf> {
-    let bundled_kernel_node = resolve_bundled_kernel_dir(app).map(|root| {
-        if cfg!(target_os = "windows") {
-            root.join("node_modules")
-                .join("node")
-                .join("bin")
-                .join("node.exe")
-        } else {
-            root.join("node_modules")
-                .join("node")
-                .join("bin")
-                .join("node")
+fn node_binary_file_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "node.exe"
+    } else {
+        "node"
+    }
+}
+
+fn find_node_in_kernel_root(kernel_root: &Path) -> Option<PathBuf> {
+    let node_bin = node_binary_file_name();
+    let package_root = kernel_root.join("node_modules").join("node");
+
+    // Legacy layout: node_modules/node/bin/node
+    let legacy = package_root.join("bin").join(node_bin);
+    if legacy.exists() {
+        return Some(legacy);
+    }
+
+    // Current npm `node` package layout:
+    // node_modules/node/node_modules/node-bin-*/bin/node
+    let nested_root = package_root.join("node_modules");
+    if let Ok(entries) = fs::read_dir(&nested_root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            if !file_name.starts_with("node-bin-") {
+                continue;
+            }
+
+            let nested_bin = path.join("bin").join(node_bin);
+            if nested_bin.exists() {
+                return Some(nested_bin);
+            }
         }
-    });
+    }
+
+    None
+}
+
+fn managed_node_command_path(app: &AppHandle) -> Option<PathBuf> {
+    managed_kernel_root(app)
+        .ok()
+        .and_then(|root| find_node_in_kernel_root(&root))
+}
+
+fn bundled_node_command_path(app: &AppHandle) -> Option<PathBuf> {
+    let bundled_kernel_node = resolve_bundled_kernel_dir(app)
+        .and_then(|root| find_node_in_kernel_root(&root));
 
     let bundled_bin_node = resolve_bundled_bin_dir(app).map(|dir| {
-        if cfg!(target_os = "windows") {
-            dir.join("node.exe")
-        } else {
-            dir.join("node")
-        }
+        dir.join(node_binary_file_name())
     });
 
     let candidates = [bundled_kernel_node, bundled_bin_node];
+    candidates.into_iter().flatten().find(|candidate| candidate.exists())
+}
 
-    candidates
-        .into_iter()
-        .flatten()
-        .find(|candidate| candidate.exists())
+fn parse_node_version_tuple(raw: &str) -> Option<(u32, u32, u32)> {
+    let cleaned = raw.trim().trim_start_matches(['v', 'V']).trim();
+    if cleaned.is_empty() {
+        return None;
+    }
+
+    let mut parts = cleaned.split('.');
+    let major = parts.next()?.trim().parse::<u32>().ok()?;
+    let minor = parts
+        .next()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    let patch = parts
+        .next()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    Some((major, minor, patch))
+}
+
+fn node_major_for_program(program: &str) -> Option<u32> {
+    let output = Command::new(program).arg("--version").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let version = if !stdout.is_empty() { stdout } else { stderr };
+    parse_node_version_tuple(&version).map(|(major, _, _)| major)
+}
+
+fn is_preferred_node_major(major: u32) -> bool {
+    (18..=22).contains(&major)
+}
+
+fn nvm_node_candidate_paths() -> Vec<PathBuf> {
+    let home = match env::var("HOME") {
+        Ok(v) if !v.trim().is_empty() => v,
+        _ => return Vec::new(),
+    };
+
+    let versions_root = PathBuf::from(home).join(".nvm").join("versions").join("node");
+    let entries = match fs::read_dir(versions_root) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut candidates: Vec<((u32, u32, u32), PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let Some(version) = parse_node_version_tuple(&name) else {
+            continue;
+        };
+
+        let bin = path.join("bin").join(node_binary_file_name());
+        if !bin.exists() {
+            continue;
+        }
+
+        candidates.push((version, bin));
+    }
+
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    candidates.into_iter().map(|(_, path)| path).collect()
 }
 
 fn resolve_node_command(app: &AppHandle) -> Option<String> {
+    let mut ordered_candidates: Vec<String> = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut push_candidate = |candidate: String| {
+        if candidate.trim().is_empty() || seen.contains(&candidate) {
+            return;
+        }
+        seen.insert(candidate.clone());
+        ordered_candidates.push(candidate);
+    };
+
+    if let Some(path) = managed_node_command_path(app) {
+        push_candidate(path.to_string_lossy().to_string());
+    }
+
     if let Some(path) = bundled_node_command_path(app) {
-        return Some(path.to_string_lossy().to_string());
+        push_candidate(path.to_string_lossy().to_string());
+    }
+
+    for path in nvm_node_candidate_paths() {
+        push_candidate(path.to_string_lossy().to_string());
     }
 
     if cfg!(target_os = "macos") {
@@ -632,7 +769,7 @@ fn resolve_node_command(app: &AppHandle) -> Option<String> {
         ];
         for candidate in mac_candidates {
             if PathBuf::from(candidate).exists() {
-                return Some(candidate.to_string());
+                push_candidate(candidate.to_string());
             }
         }
     }
@@ -651,7 +788,7 @@ fn resolve_node_command(app: &AppHandle) -> Option<String> {
         }
         for candidate in win_candidates {
             if candidate.exists() {
-                return Some(candidate.to_string_lossy().to_string());
+                push_candidate(candidate.to_string_lossy().to_string());
             }
         }
     }
@@ -660,16 +797,31 @@ fn resolve_node_command(app: &AppHandle) -> Option<String> {
         let linux_candidates = ["/usr/bin/node", "/usr/local/bin/node", "/snap/bin/node"];
         for candidate in linux_candidates {
             if PathBuf::from(candidate).exists() {
-                return Some(candidate.to_string());
+                push_candidate(candidate.to_string());
             }
         }
     }
 
     if is_command_available("node") {
-        return Some("node".to_string());
+        push_candidate("node".to_string());
     }
 
-    None
+    let mut fallback: Option<String> = None;
+    for candidate in ordered_candidates {
+        let Some(major) = node_major_for_program(&candidate) else {
+            continue;
+        };
+
+        if is_preferred_node_major(major) {
+            return Some(candidate);
+        }
+
+        if fallback.is_none() {
+            fallback = Some(candidate);
+        }
+    }
+
+    fallback
 }
 
 fn npm_command_name() -> &'static str {
@@ -711,27 +863,16 @@ fn command_version_with_args(program: &str, prefix_args: &[String]) -> String {
     }
 }
 
-fn parse_dashboard_url(text: &str) -> Option<String> {
-    for line in text.lines() {
-        if let Some((_, value)) = line.split_once("Dashboard URL:") {
-            let candidate = value.trim();
-            if candidate.starts_with("http://") || candidate.starts_with("https://") {
-                return Some(candidate.to_string());
-            }
-        }
-    }
-
-    for token in text.split_whitespace() {
-        if token.starts_with("http://") || token.starts_with("https://") {
-            return Some(token.trim().to_string());
-        }
-    }
-
-    None
-}
-
 fn is_http_url(value: &str) -> bool {
     value.starts_with("http://") || value.starts_with("https://")
+}
+
+fn app_gateway_http_url() -> String {
+    format!("http://127.0.0.1:{}", APP_GATEWAY_PORT)
+}
+
+fn app_gateway_ws_url() -> String {
+    format!("ws://127.0.0.1:{}", APP_GATEWAY_PORT)
 }
 
 fn build_openclaw_command(resolved: &ResolvedOpenClawCommand) -> Command {
@@ -743,6 +884,20 @@ fn build_openclaw_command(resolved: &ResolvedOpenClawCommand) -> Command {
 }
 
 fn apply_openclaw_runtime_env(cmd: &mut Command, cfg: &StoredConfig, app: &AppHandle) {
+    if let Ok(home_dir) = openclaw_runtime_home_dir(app) {
+        let home = home_dir.to_string_lossy().to_string();
+        cmd.env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .env("OPENCLAW_HOME", &home);
+    }
+
+    if let Ok(workspace_dir) = openclaw_runtime_workspace_dir(app) {
+        let workspace = workspace_dir.to_string_lossy().to_string();
+        cmd.current_dir(&workspace_dir)
+            .env("PWD", &workspace)
+            .env("OPENCLAW_WORKSPACE", &workspace);
+    }
+
     cmd.env("OPENCLAW_PROVIDER", cfg.provider.clone())
         .env("OPENCLAW_MODEL", cfg.model.clone())
         .env("OPENCLAW_API_KEY", cfg.api_key.clone());
@@ -818,6 +973,33 @@ fn normalize_cli_value(raw: &str) -> String {
         .and_then(|v| v.strip_suffix('\''))
         .unwrap_or(without_double);
     without_single.trim().to_string()
+}
+
+fn expand_runtime_path_tokens(raw: &str, app: &AppHandle) -> PathBuf {
+    let mut value = normalize_cli_value(raw);
+    if value.is_empty() {
+        return PathBuf::new();
+    }
+
+    let runtime_home = openclaw_runtime_home_dir(app)
+        .ok()
+        .or_else(|| env::var("HOME").ok().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let runtime_home_str = runtime_home.to_string_lossy().to_string();
+
+    for token in ["${OPENCLAW_HOME}", "$OPENCLAW_HOME", "${HOME}", "$HOME"] {
+        if value.contains(token) {
+            value = value.replace(token, &runtime_home_str);
+        }
+    }
+
+    if value == "~" {
+        value = runtime_home_str.clone();
+    } else if let Some(rest) = value.strip_prefix("~/") {
+        value = format!("{}/{}", runtime_home_str, rest);
+    }
+
+    PathBuf::from(value)
 }
 
 fn read_openclaw_config_value(
@@ -921,12 +1103,125 @@ fn resolve_openclaw_config_file(
 ) -> Result<PathBuf, String> {
     if let Ok((true, output)) = run_openclaw_capture(app, cfg, resolved, &["config", "file"]) {
         if let Some(path) = output.lines().map(str::trim).find(|line| !line.is_empty()) {
-            return Ok(PathBuf::from(path));
+            return Ok(expand_runtime_path_tokens(path, app));
         }
     }
 
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    Ok(PathBuf::from(home).join(".openclaw").join("openclaw.json"))
+    let fallback_home = openclaw_runtime_home_dir(app)
+        .or_else(|_| {
+            env::var("HOME")
+                .map(PathBuf::from)
+                .map_err(|e| e.to_string())
+        })
+        .unwrap_or_else(|_| PathBuf::from("."));
+    Ok(fallback_home.join(".openclaw").join("openclaw.json"))
+}
+
+fn parse_config_updated_at(value: &str) -> Option<DateTime<Utc>> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+fn maybe_migrate_legacy_custom_api_mode(cfg: &mut StoredConfig) -> bool {
+    if !cfg.provider.trim().eq_ignore_ascii_case("custom")
+        || !cfg
+            .custom_api_mode
+            .trim()
+            .eq_ignore_ascii_case("openai-completions")
+    {
+        return false;
+    }
+
+    let Some(updated_at) = parse_config_updated_at(&cfg.updated_at) else {
+        return false;
+    };
+
+    let Ok(cutoff_raw) = chrono::DateTime::parse_from_rfc3339(CUSTOM_API_MODE_MIGRATION_CUTOFF)
+    else {
+        return false;
+    };
+    let cutoff = cutoff_raw.with_timezone(&Utc);
+
+    if updated_at >= cutoff {
+        return false;
+    }
+
+    cfg.custom_api_mode = default_custom_api_mode();
+    cfg.updated_at = Utc::now().to_rfc3339();
+    true
+}
+
+fn read_runtime_custom_api_mode(
+    app: &AppHandle,
+    cfg: &StoredConfig,
+    resolved: &ResolvedOpenClawCommand,
+) -> Option<(String, DateTime<Utc>)> {
+    let config_file = resolve_openclaw_config_file(app, cfg, resolved).ok()?;
+    if !config_file.exists() {
+        return None;
+    }
+
+    let modified_at = fs::metadata(&config_file)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+        .map(DateTime::<Utc>::from)
+        .unwrap_or_else(Utc::now);
+
+    let raw = fs::read_to_string(&config_file).ok()?;
+    let root: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let runtime_mode = root
+        .get("models")
+        .and_then(|v| v.get("providers"))
+        .and_then(|v| v.get("custom"))
+        .and_then(|v| v.get("api"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())?;
+
+    let normalized = normalize_custom_api_mode(Some(runtime_mode)).ok()?;
+    Some((normalized, modified_at))
+}
+
+fn sync_custom_api_mode_from_runtime_if_newer(
+    app: &AppHandle,
+    cfg: &mut StoredConfig,
+    resolved: &ResolvedOpenClawCommand,
+) -> Result<(), String> {
+    if !cfg.provider.trim().eq_ignore_ascii_case("custom") {
+        return Ok(());
+    }
+
+    let Some((runtime_mode, runtime_modified_at)) = read_runtime_custom_api_mode(app, cfg, resolved)
+    else {
+        return Ok(());
+    };
+
+    let cfg_updated_at = parse_config_updated_at(&cfg.updated_at)
+        .unwrap_or_else(|| DateTime::<Utc>::from(std::time::UNIX_EPOCH));
+
+    if runtime_modified_at <= cfg_updated_at || runtime_mode == cfg.custom_api_mode {
+        return Ok(());
+    }
+
+    cfg.custom_api_mode = runtime_mode;
+    cfg.updated_at = Utc::now().to_rfc3339();
+    write_config(app, cfg)?;
+    Ok(())
+}
+
+fn read_config_with_runtime_custom_api_mode_sync(app: &AppHandle) -> Result<Option<StoredConfig>, String> {
+    let Some(mut cfg) = read_config(app)? else {
+        return Ok(None);
+    };
+
+    if maybe_migrate_legacy_custom_api_mode(&mut cfg) {
+        write_config(app, &cfg)?;
+    }
+
+    let resolved = resolve_openclaw_command(&cfg, app);
+    sync_custom_api_mode_from_runtime_if_newer(app, &mut cfg, &resolved)?;
+    Ok(Some(cfg))
 }
 
 fn apply_custom_provider_overrides(
@@ -1170,10 +1465,20 @@ fn is_gateway_healthy(
     cfg: &StoredConfig,
     resolved: &ResolvedOpenClawCommand,
 ) -> bool {
-    matches!(
-        run_openclaw_capture(app, cfg, resolved, &["gateway", "health"]),
-        Ok((true, _))
-    )
+    let ws_url = app_gateway_ws_url();
+    let mut cmd = build_openclaw_command(resolved);
+    cmd.arg("gateway")
+        .arg("health")
+        .arg("--url")
+        .arg(&ws_url)
+        .arg("--token")
+        .arg(APP_GATEWAY_TOKEN);
+    apply_openclaw_runtime_env(&mut cmd, cfg, app);
+
+    match cmd.output() {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    }
 }
 
 fn start_gateway_background(
@@ -1185,6 +1490,15 @@ fn start_gateway_background(
     cmd.arg("gateway")
         .arg("run")
         .arg("--allow-unconfigured")
+        .arg("--bind")
+        .arg("loopback")
+        .arg("--port")
+        .arg(APP_GATEWAY_PORT.to_string())
+        .arg("--auth")
+        .arg("token")
+        .arg("--token")
+        .arg(APP_GATEWAY_TOKEN)
+        .arg("--force")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -1277,7 +1591,7 @@ fn resolve_openclaw_command(cfg: &StoredConfig, app: &AppHandle) -> ResolvedOpen
 
 #[tauri::command]
 fn get_state(app: AppHandle) -> Result<StateResponse, String> {
-    let config = read_config(&app)?;
+    let config = read_config_with_runtime_custom_api_mode_sync(&app)?;
 
     let public_config = config.as_ref().map(|cfg| PublicConfig {
         provider: cfg.provider.clone(),
@@ -1303,7 +1617,7 @@ fn get_state(app: AppHandle) -> Result<StateResponse, String> {
 
 #[tauri::command]
 fn read_raw_config(app: AppHandle) -> Result<Option<StoredConfig>, String> {
-    read_config(&app)
+    read_config_with_runtime_custom_api_mode_sync(&app)
 }
 
 #[tauri::command]
@@ -1489,7 +1803,7 @@ fn install_or_update_kernel(app: AppHandle) -> Result<ActionResponse, String> {
 
 #[tauri::command]
 fn get_dashboard_url(app: AppHandle) -> Result<ActionResponse, String> {
-    let cfg = match read_config(&app)? {
+    let cfg = match read_config_with_runtime_custom_api_mode_sync(&app)? {
         Some(cfg) => cfg,
         None => {
             return Ok(ActionResponse {
@@ -1522,114 +1836,32 @@ fn get_dashboard_url(app: AppHandle) -> Result<ActionResponse, String> {
             copied_to: None,
         });
     }
-    let (ok, merged) =
-        match run_openclaw_capture(&app, &cfg, &resolved, &["dashboard", "--no-open"]) {
-            Ok(value) => value,
-            Err(e) => {
-                return Ok(ActionResponse {
-                    ok: false,
-                    message: format!("打开 Dashboard 失败（来源: {}）。", resolved.source),
-                    detail: Some(format!("{}\n命令: {}", e, resolved.display_path)),
-                    copied_from: None,
-                    copied_to: None,
-                });
-            }
-        };
-
-    if !ok {
-        return Ok(ActionResponse {
-            ok: false,
-            message: format!("获取 Dashboard 地址失败（来源: {}）。", resolved.source),
-            detail: if merged.is_empty() {
-                None
-            } else {
-                Some(merged)
-            },
-            copied_from: None,
-            copied_to: None,
-        });
-    }
-
-    let mut url = match parse_dashboard_url(&merged) {
-        Some(value) => value,
-        None => {
+    let started = match ensure_gateway_running(&app, &cfg, &resolved) {
+        Ok(v) => v,
+        Err(e) => {
             return Ok(ActionResponse {
                 ok: false,
-                message: format!(
-                    "未能从输出解析 Dashboard URL（来源: {}）。",
-                    resolved.source
-                ),
-                detail: if merged.is_empty() {
-                    None
-                } else {
-                    Some(merged)
-                },
+                message: "Dashboard 服务未就绪，且自动启动 Gateway 失败。".to_string(),
+                detail: Some(e),
                 copied_from: None,
                 copied_to: None,
             });
         }
     };
 
+    let url = format!("{}/#token={}", app_gateway_http_url(), APP_GATEWAY_TOKEN);
     if !is_dashboard_url_reachable(&url) {
-        let started = match ensure_gateway_running(&app, &cfg, &resolved) {
-            Ok(v) => v,
-            Err(e) => {
-                return Ok(ActionResponse {
-                    ok: false,
-                    message: "Dashboard 服务未就绪，且自动启动 Gateway 失败。".to_string(),
-                    detail: Some(e),
-                    copied_from: None,
-                    copied_to: None,
-                });
-            }
-        };
-
-        let (ok_after, merged_after) =
-            match run_openclaw_capture(&app, &cfg, &resolved, &["dashboard", "--no-open"]) {
-                Ok(value) => value,
-                Err(e) => {
-                    return Ok(ActionResponse {
-                        ok: false,
-                        message: "Gateway 已启动，但重新获取 Dashboard 地址失败。".to_string(),
-                        detail: Some(e),
-                        copied_from: None,
-                        copied_to: None,
-                    });
-                }
-            };
-
-        if !ok_after {
-            return Ok(ActionResponse {
-                ok: false,
-                message: "Gateway 已启动，但 Dashboard 命令返回失败。".to_string(),
-                detail: if merged_after.is_empty() {
-                    None
-                } else {
-                    Some(merged_after)
-                },
-                copied_from: None,
-                copied_to: None,
-            });
-        }
-
-        if let Some(parsed) = parse_dashboard_url(&merged_after) {
-            url = parsed;
-        }
-
-        if !is_dashboard_url_reachable(&url) {
-            return Ok(ActionResponse {
-                ok: false,
-                message: "Dashboard 地址已获取，但服务仍不可访问。".to_string(),
-                detail: Some(format!(
-                    "URL: {}\nGateway 自动启动: {}\n输出:\n{}",
-                    url,
-                    if started { "是" } else { "否" },
-                    merged_after
-                )),
-                copied_from: None,
-                copied_to: None,
-            });
-        }
+        return Ok(ActionResponse {
+            ok: false,
+            message: "Dashboard 地址已获取，但服务仍不可访问。".to_string(),
+            detail: Some(format!(
+                "URL: {}\nGateway 自动启动: {}",
+                url,
+                if started { "是" } else { "否" }
+            )),
+            copied_from: None,
+            copied_to: None,
+        });
     }
 
     Ok(ActionResponse {

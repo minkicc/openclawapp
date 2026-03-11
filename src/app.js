@@ -43,6 +43,7 @@ let rawConfig = null;
 let kernelStatus = null;
 let lastModelFetchKey = '';
 let currentLang = 'zh-CN';
+const DEFAULT_CUSTOM_API_MODE = 'openai-responses';
 
 const I18N = {
   'zh-CN': {
@@ -331,7 +332,7 @@ async function fetchModels({ silent = false, force = false } = {}) {
   const provider = providerInput.value.trim();
   const baseUrl = baseUrlInput.value.trim();
   const apiKey = (apiKeyInput.value.trim() || rawConfig?.apiKey || '').trim();
-  const customApiMode = customApiModeInput.value.trim() || 'openai-completions';
+  const customApiMode = customApiModeInput.value.trim() || DEFAULT_CUSTOM_API_MODE;
   const customHeadersJson = customHeadersInput.value.trim();
 
   if (provider !== 'custom') {
@@ -432,7 +433,12 @@ function renderSummary(config, configPath) {
   summaryApiKey.textContent = config.apiKeyMasked || '********';
   summaryBaseUrl.textContent = config.baseUrl || '-';
   summaryCommand.textContent = config.openclawCommand || 'openclaw';
-  summaryCustomApiMode.textContent = config.customApiMode || 'openai-completions';
+  const summaryMode = config.customApiMode || DEFAULT_CUSTOM_API_MODE;
+  if (summaryCustomApiMode instanceof HTMLSelectElement) {
+    summaryCustomApiMode.value = summaryMode;
+  } else {
+    summaryCustomApiMode.textContent = summaryMode;
+  }
   const headers = config.customHeaders || {};
   summaryCustomHeaders.textContent = Object.keys(headers).length
     ? JSON.stringify(headers)
@@ -525,7 +531,7 @@ async function loadState() {
   setModelValue(rawConfig?.model || '');
   baseUrlInput.value = rawConfig?.baseUrl || '';
   commandInput.value = rawConfig?.openclawCommand || 'openclaw';
-  customApiModeInput.value = rawConfig?.customApiMode || 'openai-completions';
+  customApiModeInput.value = rawConfig?.customApiMode || DEFAULT_CUSTOM_API_MODE;
   customHeadersInput.value = rawConfig?.customHeaders
     ? JSON.stringify(rawConfig.customHeaders, null, 2)
     : '';
@@ -586,7 +592,7 @@ saveBtn.addEventListener('click', async () => {
   const model = modelInput.value.trim();
   const baseUrl = baseUrlInput.value.trim();
   const provider = providerInput.value.trim();
-  const customApiMode = customApiModeInput.value.trim() || 'openai-completions';
+  const customApiMode = customApiModeInput.value.trim() || DEFAULT_CUSTOM_API_MODE;
   const customHeadersJson = customHeadersInput.value.trim();
 
   if (!model) {
@@ -731,7 +737,7 @@ reconfigureBtn.addEventListener('click', async () => {
   setModelValue(rawConfig?.model || '');
   baseUrlInput.value = rawConfig?.baseUrl || '';
   commandInput.value = rawConfig?.openclawCommand || 'openclaw';
-  customApiModeInput.value = rawConfig?.customApiMode || 'openai-completions';
+  customApiModeInput.value = rawConfig?.customApiMode || DEFAULT_CUSTOM_API_MODE;
   customHeadersInput.value = rawConfig?.customHeaders
     ? JSON.stringify(rawConfig.customHeaders, null, 2)
     : '';
@@ -775,6 +781,41 @@ customApiModeInput.addEventListener('change', async () => {
 
 customHeadersInput.addEventListener('blur', async () => {
   await fetchModels({ silent: true, force: true });
+});
+
+summaryCustomApiMode.addEventListener('change', async () => {
+  if (!(summaryCustomApiMode instanceof HTMLSelectElement)) {
+    return;
+  }
+
+  const current = await invoke('read_raw_config');
+  if (!current) {
+    return;
+  }
+
+  const payload = {
+    provider: current.provider || 'custom',
+    model: current.model || '',
+    baseUrl: current.baseUrl || '',
+    apiKey: current.apiKey || '',
+    customApiMode: summaryCustomApiMode.value || DEFAULT_CUSTOM_API_MODE,
+    customHeadersJson: current.customHeaders ? JSON.stringify(current.customHeaders) : '',
+    openclawCommand: current.openclawCommand || 'openclaw',
+    skillsDirs: current.skillsDirs || []
+  };
+
+  const result = await invoke('save_config', { payload });
+  if (!result.ok) {
+    doctorOutput.textContent = result.message || t('msg.saveFailed');
+    return;
+  }
+
+  const state = await invoke('get_state');
+  if (state.isConfigured && state.config) {
+    const configPath = await invoke('get_config_path');
+    renderSummary(state.config, configPath);
+  }
+  doctorOutput.textContent = t('msg.saveSuccess');
 });
 
 langSelect.addEventListener('change', async () => {
