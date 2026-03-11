@@ -1,6 +1,6 @@
-# Contributing to OpenClaw Desktop Installer
+# Contributing to OpenClaw App Monorepo
 
-Thanks for helping improve OpenClaw Desktop Installer.
+Thanks for helping improve OpenClaw App.
 
 ## Before You Start
 
@@ -8,7 +8,13 @@ Thanks for helping improve OpenClaw Desktop Installer.
 - Open an issue first for large behavior changes
 - Keep pull requests focused on one problem
 
-## Development Setup
+## Repository Structure
+
+- Desktop app: `apps/desktop`
+- Mobile app: `apps/mobile`
+- Server app: `apps/server`
+
+## Development Setup (Desktop)
 
 Requirements:
 
@@ -18,6 +24,7 @@ Requirements:
 Install dependencies:
 
 ```bash
+cd apps/desktop
 npm install
 ```
 

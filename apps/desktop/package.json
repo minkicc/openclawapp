@@ -1,0 +1,34 @@
+{
+  "name": "openclaw-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "description": "OpenClaw desktop packager based on Tauri",
+  "homepage": "https://openclawapp.dev",
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:ruiqiangzh/openclawapp.git"
+  },
+  "type": "module",
+  "scripts": {
+    "dev:web": "vite --port 1420 --strictPort",
+    "build:web": "vite build",
+    "prepare:kernel": "node scripts/prepare-kernel.mjs",
+    "dev": "npm run prepare:kernel && tauri dev",
+    "dist": "npm run prepare:kernel && tauri build",
+    "dist:mac": "bash scripts/build-mac-dmg.sh",
+    "dist:win": "npm run prepare:kernel && tauri build --bundles nsis,msi",
+    "dist:win:ci": "npm run prepare:kernel && tauri build --bundles msi",
+    "dist:linux": "npm run prepare:kernel && tauri build --bundles appimage,deb,rpm",
+    "dist:linux:ci": "npm run prepare:kernel && tauri build --bundles deb",
+    "dist:linux:appimage": "npm run prepare:kernel && tauri build --bundles appimage",
+    "dist:mac:tauri": "npm run prepare:kernel && tauri build --bundles dmg"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^1.6.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^1.6.2",
+    "vite": "^5.4.14"
+  }
+}

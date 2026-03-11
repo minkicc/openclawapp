@@ -72,45 +72,31 @@
 - 仅允许 `https`/`wss`。
 - 解绑/吊销设备后立即失效。
 
-## 7. 当前项目目录结构划分
+## 7. 当前项目目录结构（已按三端重组）
 
-当前仓库可按职责划分为：
-
-```text
-openclawapp/
-  src/                     # 桌面前端 UI（Vite）
-  src-tauri/               # 桌面后端（Rust/Tauri 命令与运行时）
-  resources/               # 打包资源（kernel/bin/skills）
-  scripts/                 # 构建与打包脚本
-  dist/                    # 前端构建产物（生成目录）
-  vendor/                  # vendored 依赖（wry patch）
-  .github/                 # CI 与仓库模板配置
-```
-
-说明：
-
-- `src` + `src-tauri` 是当前主要业务代码。
-- 暂无独立 `mobile`、`server` 代码目录。
-
-## 8. 按当前方案扩展后的目录建议
-
-如果后续三端都放在同一仓库，建议目录：
+当前仓库已经按三端职责拆分为：
 
 ```text
 openclawapp/
   apps/
-    desktop/               # 现有桌面端（可逐步迁移 src + src-tauri）
-    mobile/                # 移动端应用（RN/Flutter 等）
-    server/                # 服务端 API + WS 网关
+    desktop/               # 桌面端（Vite + Tauri + 打包资源）
+      src/
+      src-tauri/
+      resources/
+      scripts/
+      vendor/
+    mobile/                # 移动端（当前为骨架）
+    server/                # 服务端（当前为骨架）
   packages/
     protocol/              # 三端共享协议、事件、Schema
     sdk-client/            # 通用 ws/http 客户端 SDK
-  resources/               # 桌面打包资源
-  scripts/                 # monorepo 脚本
   docs/                    # 架构与接口文档
+  .github/                 # CI 与仓库模板配置
 ```
 
-如果你希望职责更清晰，也可以采用多仓：
+## 8. 可选进一步拆分策略
+
+如需更清晰的发布节奏，也可以采用多仓策略：
 
 - `openclaw-desktop`
 - `openclaw-mobile`
