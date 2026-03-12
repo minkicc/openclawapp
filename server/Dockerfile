@@ -1,10 +1,13 @@
 FROM golang:1.24-alpine AS build
 
 WORKDIR /src
-COPY server/go.mod server/go.sum ./
+ARG GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY=${GOPROXY}
+
+COPY go.mod go.sum ./
 RUN go mod download
 
-COPY server/. ./
+COPY . ./
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/openclaw-server .
 
 FROM alpine:3.20

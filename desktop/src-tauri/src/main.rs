@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -37,6 +37,10 @@ struct StoredConfig {
     custom_headers: BTreeMap<String, String>,
     skills_dirs: Vec<String>,
     openclaw_command: String,
+    #[serde(default)]
+    channel_server_base_url: Option<String>,
+    #[serde(default)]
+    channel_device_id: Option<String>,
     updated_at: String,
 }
 
@@ -51,6 +55,10 @@ struct PublicConfig {
     custom_headers: BTreeMap<String, String>,
     skills_dirs: Vec<String>,
     openclaw_command: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    channel_server_base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    channel_device_id: Option<String>,
     updated_at: String,
 }
 
@@ -99,6 +107,10 @@ struct SavePayload {
     custom_headers_json: Option<String>,
     skills_dirs: Vec<String>,
     openclaw_command: Option<String>,
+    #[serde(default)]
+    channel_server_base_url: Option<String>,
+    #[serde(default)]
+    channel_device_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1602,6 +1614,8 @@ fn get_state(app: AppHandle) -> Result<StateResponse, String> {
         custom_headers: cfg.custom_headers.clone(),
         skills_dirs: cfg.skills_dirs.clone(),
         openclaw_command: cfg.openclaw_command.clone(),
+        channel_server_base_url: cfg.channel_server_base_url.clone(),
+        channel_device_id: cfg.channel_device_id.clone(),
         updated_at: cfg.updated_at.clone(),
     });
 
@@ -1875,6 +1889,7 @@ fn get_dashboard_url(app: AppHandle) -> Result<ActionResponse, String> {
 
 #[tauri::command]
 fn save_config(payload: SavePayload, app: AppHandle) -> Result<ActionResponse, String> {
+    let existing = read_config(&app)?;
     let api_key = payload.api_key.trim().to_string();
     if api_key.is_empty() {
         return Ok(ActionResponse {
@@ -1966,6 +1981,19 @@ fn save_config(payload: SavePayload, app: AppHandle) -> Result<ActionResponse, S
         });
     }
 
+    let channel_server_base_url = payload
+        .channel_server_base_url
+        .as_ref()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .or_else(|| existing.as_ref().and_then(|cfg| cfg.channel_server_base_url.clone()));
+    let channel_device_id = payload
+        .channel_device_id
+        .as_ref()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .or_else(|| existing.as_ref().and_then(|cfg| cfg.channel_device_id.clone()));
+
     let cfg = StoredConfig {
         provider,
         model,
@@ -1983,6 +2011,8 @@ fn save_config(payload: SavePayload, app: AppHandle) -> Result<ActionResponse, S
             .unwrap_or_else(|| "openclaw".to_string())
             .trim()
             .to_string(),
+        channel_server_base_url,
+        channel_device_id,
         updated_at: Utc::now().to_rfc3339(),
     };
 
@@ -2298,6 +2328,37 @@ fn path_delimiter() -> &'static str {
     }
 }
 
+fn is_private_ipv4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    matches!(octets, [10, _, _, _] | [192, 168, _, _])
+        || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+        || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+}
+
+fn detect_primary_lan_ipv4() -> Option<Ipv4Addr> {
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("1.1.1.1:80").ok()?;
+    let local = socket.local_addr().ok()?;
+
+    match local.ip() {
+        IpAddr::V4(ip) if !ip.is_loopback() && !ip.is_unspecified() => Some(ip),
+        _ => None,
+    }
+}
+
+#[tauri::command]
+fn get_primary_lan_ipv4() -> Result<String, String> {
+    let detected = detect_primary_lan_ipv4();
+    if let Some(ip) = detected {
+        if is_private_ipv4(ip) {
+            return Ok(ip.to_string());
+        }
+        return Ok(ip.to_string());
+    }
+
+    Ok(String::new())
+}
+
 fn apply_provider_env(
     cmd: &mut Command,
     provider_raw: &str,
@@ -2355,7 +2416,8 @@ fn main() {
             save_config,
             fetch_models,
             install_default_skills,
-            run_doctor
+            run_doctor,
+            get_primary_lan_ipv4
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

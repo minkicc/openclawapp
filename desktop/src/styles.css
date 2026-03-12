@@ -363,14 +363,172 @@ button {
   margin-top: 12px;
 }
 
+.pair-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.btn-refresh {
+  padding: 7px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+}
+
+.pair-toggle.is-on {
+  background: #0b7a45;
+  color: #fff;
+  border-color: #0b7a45;
+}
+
+.pair-toggle.is-off {
+  background: #eef3fb;
+  color: #1b2430;
+}
+
+.channel-list-wrap {
+  margin-top: 14px;
+}
+
+.channel-list {
+  display: grid;
+  gap: 12px;
+}
+
+.channel-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.channel-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.channel-card-grid div {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px;
+}
+
+.channel-card-grid span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.channel-name-input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font: inherit;
+  background: #fff;
+}
+
+.pair-empty {
+  margin: 0;
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  background: #ffffffa8;
+}
+
+.btn-danger-ghost {
+  border-color: #e2b7bd;
+  color: #8f1e29;
+  background: #fff;
+}
+
+.btn-danger-ghost:hover {
+  background: #fff1f3;
+}
+
 .pair-payload {
   margin-top: 14px;
 }
 
-#pairQrPayload {
+.pair-qr-preview {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  padding: 12px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 248px;
+}
+
+#pairQrImage {
+  width: 220px;
+  height: 220px;
+  object-fit: contain;
+}
+
+#pairQrImage.hidden {
+  display: none;
+}
+
+#pairChatDraftInput {
   margin-top: 8px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-  min-height: 118px;
+  min-height: 84px;
+  border-left: 3px solid #0b7a45;
+}
+
+.pair-dialog {
+  width: min(760px, calc(100vw - 40px));
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px;
+}
+
+.pair-dialog::backdrop {
+  background: rgba(15, 23, 42, 0.5);
+}
+
+.pair-chat-messages {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  min-height: 220px;
+  max-height: 360px;
+  overflow: auto;
+  background: #f8fbff;
+}
+
+.pair-chat-item {
+  margin-bottom: 10px;
+  padding: 8px;
+  border-radius: 10px;
+}
+
+.pair-chat-item.from-mobile {
+  background: #ffffff;
+  border: 1px solid #d7e0ee;
+}
+
+.pair-chat-item.from-desktop {
+  background: #e9f5ff;
+  border: 1px solid #bcd8f0;
+}
+
+.pair-chat-meta {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.pair-chat-text {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 #pairEventLog {
@@ -386,6 +544,18 @@ button {
   white-space: pre-wrap;
 }
 
+#pairChannelCheckStatus.pending {
+  color: #045f9e;
+}
+
+#pairChannelCheckStatus.ok {
+  color: #086e44;
+}
+
+#pairChannelCheckStatus.error {
+  color: #aa1d2e;
+}
+
 .remove-btn {
   background: #fff;
   border: 1px solid #e9b4b8;
@@ -398,6 +568,10 @@ button {
 @media (max-width: 860px) {
   .form-grid,
   .kv {
+    grid-template-columns: 1fr;
+  }
+
+  .channel-card-grid {
     grid-template-columns: 1fr;
   }
 

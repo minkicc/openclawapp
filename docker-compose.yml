@@ -2,8 +2,10 @@ services:
   openclaw-server:
     container_name: openclaw-server
     build:
-      context: .
-      dockerfile: server/Dockerfile
+      context: ./server
+      dockerfile: Dockerfile
+      args:
+        GOPROXY: ${OPENCLAW_SERVER_GOPROXY:-https://goproxy.cn,direct}
     image: openclaw/server-mvp:dev
     restart: unless-stopped
     environment:

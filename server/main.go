@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -60,7 +61,7 @@ func errorStatus(err error) int {
 		return http.StatusNotFound
 	case "EXPIRED":
 		return http.StatusGone
-	case "INVALID_STATE":
+	case "INVALID_STATE", "ALREADY_CLAIMED":
 		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError
@@ -464,6 +465,19 @@ type createPairSessionRequest struct {
 	TTLSeconds int    `json:"ttlSeconds"`
 }
 
+type legacyCreatePairSessionRequest struct {
+	DeviceID   string `json:"device_id"`
+	DeviceName string `json:"device_name"`
+	TTLSeconds int    `json:"ttl_seconds"`
+}
+
+type legacyClaimPairRequest struct {
+	SessionID string `json:"session_id"`
+	PairCode  string `json:"pair_code"`
+	UserID    string `json:"user_id"`
+	MobileID  string `json:"mobile_id"`
+}
+
 func (s *Store) createPairSession(req createPairSessionRequest) (PairSession, error) {
 	deviceID, err := trimRequired(req.DeviceID, "deviceId")
 	if err != nil {
@@ -567,6 +581,13 @@ func (s *Store) claimSessionLocked(session PairSession, userID string, mobileID 
 	return session, binding
 }
 
+func claimedUserID(session PairSession) string {
+	if session.ClaimedByUserID == nil {
+		return ""
+	}
+	return strings.TrimSpace(*session.ClaimedByUserID)
+}
+
 type claimByTokenRequest struct {
 	PairToken string `json:"pairToken"`
 	UserID    string `json:"userId"`
@@ -578,13 +599,21 @@ func (s *Store) claimByToken(req claimByTokenRequest) (PairSession, Binding, err
 	if err != nil {
 		return PairSession{}, Binding{}, err
 	}
-	userID, err := trimRequired(req.UserID, "userId")
-	if err != nil {
-		return PairSession{}, Binding{}, err
+	userID := strings.TrimSpace(req.UserID)
+	if userID == "" {
+		fallback, idErr := makeID("user")
+		if idErr != nil {
+			return PairSession{}, Binding{}, idErr
+		}
+		userID = fallback
 	}
 	mobileID := strings.TrimSpace(req.MobileID)
 	if mobileID == "" {
-		mobileID = "mobile_unknown"
+		fallback, idErr := makeID("mobile")
+		if idErr != nil {
+			return PairSession{}, Binding{}, idErr
+		}
+		mobileID = fallback
 	}
 
 	s.mu.Lock()
@@ -599,6 +628,13 @@ func (s *Store) claimByToken(req claimByTokenRequest) (PairSession, Binding, err
 		return PairSession{}, Binding{}, newError("NOT_FOUND", "pair session not found")
 	}
 	if session.Status != "pending" {
+		if session.Status == "claimed" {
+			if claimedUserID(session) == userID {
+				session, binding := s.claimSessionLocked(session, userID, mobileID)
+				return session, binding, nil
+			}
+			return PairSession{}, Binding{}, newError("ALREADY_CLAIMED", "pair session already claimed by another user")
+		}
 		return PairSession{}, Binding{}, newError("INVALID_STATE", "pair session is not claimable")
 	}
 	if session.ExpiresAt < nowMillis() {
@@ -622,13 +658,21 @@ func (s *Store) claimByCode(req claimByCodeRequest) (PairSession, Binding, error
 	if err != nil {
 		return PairSession{}, Binding{}, err
 	}
-	userID, err := trimRequired(req.UserID, "userId")
-	if err != nil {
-		return PairSession{}, Binding{}, err
+	userID := strings.TrimSpace(req.UserID)
+	if userID == "" {
+		fallback, idErr := makeID("user")
+		if idErr != nil {
+			return PairSession{}, Binding{}, idErr
+		}
+		userID = fallback
 	}
 	mobileID := strings.TrimSpace(req.MobileID)
 	if mobileID == "" {
-		mobileID = "mobile_unknown"
+		fallback, idErr := makeID("mobile")
+		if idErr != nil {
+			return PairSession{}, Binding{}, idErr
+		}
+		mobileID = fallback
 	}
 
 	s.mu.Lock()
@@ -643,6 +687,13 @@ func (s *Store) claimByCode(req claimByCodeRequest) (PairSession, Binding, error
 		return PairSession{}, Binding{}, newError("NOT_FOUND", "pair session not found")
 	}
 	if session.Status != "pending" {
+		if session.Status == "claimed" {
+			if claimedUserID(session) == userID {
+				session, binding := s.claimSessionLocked(session, userID, mobileID)
+				return session, binding, nil
+			}
+			return PairSession{}, Binding{}, newError("ALREADY_CLAIMED", "pair session already claimed by another user")
+		}
 		return PairSession{}, Binding{}, newError("INVALID_STATE", "pair session is not claimable")
 	}
 	if session.ExpiresAt < nowMillis() {
@@ -652,6 +703,62 @@ func (s *Store) claimByCode(req claimByCodeRequest) (PairSession, Binding, error
 	}
 
 	session, binding := s.claimSessionLocked(session, userID, mobileID)
+	return session, binding, nil
+}
+
+func (s *Store) claimBySessionAndCode(sessionID string, pairCode string, userID string, mobileID string) (PairSession, Binding, error) {
+	normalizedSessionID, err := trimRequired(sessionID, "sessionId")
+	if err != nil {
+		return PairSession{}, Binding{}, err
+	}
+	normalizedPairCode, err := trimRequired(pairCode, "pairCode")
+	if err != nil {
+		return PairSession{}, Binding{}, err
+	}
+	normalizedUserID := strings.TrimSpace(userID)
+	if normalizedUserID == "" {
+		fallback, idErr := makeID("user")
+		if idErr != nil {
+			return PairSession{}, Binding{}, idErr
+		}
+		normalizedUserID = fallback
+	}
+	normalizedMobileID := strings.TrimSpace(mobileID)
+	if normalizedMobileID == "" {
+		fallback, idErr := makeID("mobile")
+		if idErr != nil {
+			return PairSession{}, Binding{}, idErr
+		}
+		normalizedMobileID = fallback
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	session, exists := s.pairSessions[normalizedSessionID]
+	if !exists {
+		return PairSession{}, Binding{}, newError("NOT_FOUND", "pair session not found")
+	}
+	if session.PairCode != normalizedPairCode {
+		return PairSession{}, Binding{}, newError("NOT_FOUND", "pair session not found")
+	}
+	if session.Status != "pending" {
+		if session.Status == "claimed" {
+			if claimedUserID(session) == normalizedUserID {
+				session, binding := s.claimSessionLocked(session, normalizedUserID, normalizedMobileID)
+				return session, binding, nil
+			}
+			return PairSession{}, Binding{}, newError("ALREADY_CLAIMED", "pair session already claimed by another user")
+		}
+		return PairSession{}, Binding{}, newError("INVALID_STATE", "pair session is not claimable")
+	}
+	if session.ExpiresAt < nowMillis() {
+		session.Status = "expired"
+		s.pairSessions[normalizedSessionID] = session
+		return PairSession{}, Binding{}, newError("EXPIRED", "pair session expired")
+	}
+
+	session, binding := s.claimSessionLocked(session, normalizedUserID, normalizedMobileID)
 	return session, binding, nil
 }
 
@@ -1449,6 +1556,19 @@ type app struct {
 	persistence persistence
 }
 
+type wsIncomingFrame struct {
+	Action    string          `json:"action"`
+	RequestID string          `json:"requestId,omitempty"`
+	Data      json.RawMessage `json:"data,omitempty"`
+}
+
+type wsSignalSendData struct {
+	ToType  string         `json:"toType"`
+	ToID    string         `json:"toId"`
+	Type    string         `json:"type"`
+	Payload map[string]any `json:"payload"`
+}
+
 func (a *app) onMutation() {
 	a.persistence.SchedulePersist()
 }
@@ -1473,6 +1593,222 @@ func (a *app) pullSignalInbox(clientType string, clientID string, limit int) []S
 	return a.store.pullSignalInbox(clientType, clientID, limit)
 }
 
+func (a *app) handleSignalWS(w http.ResponseWriter, r *http.Request, clientType string, clientID string) {
+	upgrader := websocket.Upgrader{
+		ReadBufferSize:  4096,
+		WriteBufferSize: 4096,
+		CheckOrigin: func(_ *http.Request) bool {
+			return true
+		},
+	}
+
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+	conn.SetPongHandler(func(_ string) error {
+		return conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+	})
+
+	sub := a.store.addSubscriber(clientType, clientID)
+	defer a.store.removeSubscriber(clientType, clientID, sub)
+
+	var externalSub <-chan SignalEvent
+	var closeExternalSub func()
+	if a.persistence.UseExternalSignalQueue() {
+		subChannel, closeFn, subscribeErr := a.persistence.SubscribeSignals(clientType, clientID)
+		if subscribeErr != nil {
+			log.Printf("[openclaw-server] failed to subscribe redis signal pubsub(ws): %v", subscribeErr)
+		} else {
+			externalSub = subChannel
+			closeExternalSub = closeFn
+			defer closeExternalSub()
+		}
+	}
+
+	writeCh := make(chan any, 256)
+	writeErr := make(chan error, 1)
+	readErr := make(chan error, 1)
+	closeWriter := make(chan struct{})
+
+	enqueue := func(message any) bool {
+		select {
+		case writeCh <- message:
+			return true
+		default:
+			return false
+		}
+	}
+
+	go func() {
+		heartbeat := time.NewTicker(20 * time.Second)
+		defer heartbeat.Stop()
+		for {
+			select {
+			case payload := <-writeCh:
+				_ = conn.SetWriteDeadline(time.Now().Add(12 * time.Second))
+				if err := conn.WriteJSON(payload); err != nil {
+					writeErr <- err
+					return
+				}
+			case <-heartbeat.C:
+				_ = conn.SetWriteDeadline(time.Now().Add(8 * time.Second))
+				if err := conn.WriteControl(websocket.PingMessage, []byte(strconv.FormatInt(nowMillis(), 10)), time.Now().Add(8*time.Second)); err != nil {
+					writeErr <- err
+					return
+				}
+			case <-closeWriter:
+				return
+			}
+		}
+	}()
+
+	go func() {
+		for {
+			_, raw, err := conn.ReadMessage()
+			if err != nil {
+				readErr <- err
+				return
+			}
+			_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+
+			var frame wsIncomingFrame
+			if err := json.Unmarshal(raw, &frame); err != nil {
+				_ = enqueue(map[string]any{
+					"kind":      "error",
+					"requestId": frame.RequestID,
+					"code":      "INVALID_JSON",
+					"message":   "invalid ws frame",
+				})
+				continue
+			}
+
+			action := strings.ToLower(strings.TrimSpace(frame.Action))
+			switch action {
+			case "":
+				_ = enqueue(map[string]any{
+					"kind":      "error",
+					"requestId": frame.RequestID,
+					"code":      "VALIDATION_ERROR",
+					"message":   "action is required",
+				})
+			case "ping":
+				_ = enqueue(map[string]any{
+					"kind":      "pong",
+					"requestId": frame.RequestID,
+					"ts":        nowMillis(),
+				})
+			case "signal.send":
+				var sendData wsSignalSendData
+				if err := json.Unmarshal(frame.Data, &sendData); err != nil {
+					_ = enqueue(map[string]any{
+						"kind":      "error",
+						"requestId": frame.RequestID,
+						"code":      "INVALID_JSON",
+						"message":   "invalid signal.send data",
+					})
+					continue
+				}
+
+				event, buildErr := a.store.buildSignalEvent(sendSignalRequest{
+					FromType: clientType,
+					FromID:   clientID,
+					ToType:   sendData.ToType,
+					ToID:     sendData.ToID,
+					Type:     sendData.Type,
+					Payload:  sendData.Payload,
+				})
+				if buildErr != nil {
+					_ = enqueue(map[string]any{
+						"kind":      "error",
+						"requestId": frame.RequestID,
+						"code":      errorCode(buildErr),
+						"message":   buildErr.Error(),
+					})
+					continue
+				}
+
+				deliveredRealtime := a.emitSignal(event.To.Type, event.To.ID, event)
+				if !a.persistence.UseExternalSignalQueue() {
+					a.onMutation()
+				}
+				_ = enqueue(map[string]any{
+					"kind":              "ack",
+					"action":            "signal.send",
+					"requestId":         frame.RequestID,
+					"ok":                true,
+					"deliveredRealtime": deliveredRealtime,
+					"event":             event,
+				})
+			default:
+				_ = enqueue(map[string]any{
+					"kind":      "error",
+					"requestId": frame.RequestID,
+					"code":      "NOT_FOUND",
+					"message":   "unknown ws action",
+				})
+			}
+		}
+	}()
+
+	openedID, _ := makeID("evt")
+	_ = enqueue(SignalEvent{
+		ID:   openedID,
+		Type: "stream.opened",
+		Ts:   nowMillis(),
+		Payload: map[string]any{
+			"clientType": clientType,
+			"clientId":   clientID,
+		},
+	})
+
+	queued := a.pullSignalInbox(clientType, clientID, maxSignalQueuePull)
+	for _, event := range queued {
+		if ok := enqueue(event); !ok {
+			break
+		}
+	}
+	if len(queued) > 0 && !a.persistence.UseExternalSignalQueue() {
+		a.onMutation()
+	}
+
+	for {
+		select {
+		case event := <-sub:
+			if ok := enqueue(event); !ok {
+				log.Printf("[openclaw-server] ws enqueue full, closing client=%s:%s", clientType, clientID)
+				close(closeWriter)
+				return
+			}
+		case event, ok := <-externalSub:
+			if !ok {
+				externalSub = nil
+				continue
+			}
+			if wrote := enqueue(event); !wrote {
+				log.Printf("[openclaw-server] ws enqueue full(external), closing client=%s:%s", clientType, clientID)
+				close(closeWriter)
+				return
+			}
+		case err := <-readErr:
+			if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				log.Printf("[openclaw-server] ws read closed client=%s:%s err=%v", clientType, clientID, err)
+			}
+			close(closeWriter)
+			return
+		case err := <-writeErr:
+			log.Printf("[openclaw-server] ws write closed client=%s:%s err=%v", clientType, clientID, err)
+			return
+		case <-r.Context().Done():
+			close(closeWriter)
+			return
+		}
+	}
+}
+
 func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
 
@@ -1491,6 +1827,115 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			"now":         nowMillis(),
 			"stats":       a.store.stats(),
 			"persistence": a.persistence.Status(),
+		})
+		return
+	}
+
+	// Legacy compatibility for existing desktop/mobile clients.
+	if method == http.MethodPost && path == "/pair/create" {
+		var req legacyCreatePairSessionRequest
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, err)
+			return
+		}
+
+		deviceID, err := trimRequired(req.DeviceID, "device_id")
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+
+		_, err = a.store.registerDevice(registerDeviceRequest{
+			DeviceID:   deviceID,
+			Platform:   "desktop",
+			AppVersion: "legacy",
+		})
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+
+		session, err := a.store.createPairSession(createPairSessionRequest{
+			DeviceID:   deviceID,
+			TTLSeconds: req.TTLSeconds,
+		})
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+
+		a.onMutation()
+
+		createdAt := time.UnixMilli(session.CreatedAt).UTC().Format(time.RFC3339Nano)
+		expiresAt := time.UnixMilli(session.ExpiresAt).UTC().Format(time.RFC3339Nano)
+		baseURL := requestBaseURL(r)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true,
+			"data": map[string]any{
+				"session_id": session.PairSessionID,
+				"pair_code":  session.PairCode,
+				"device_id":  session.DeviceID,
+				"device_name": func() string {
+					if strings.TrimSpace(req.DeviceName) != "" {
+						return strings.TrimSpace(req.DeviceName)
+					}
+					return "desktop"
+				}(),
+				"status":     session.Status,
+				"created_at": createdAt,
+				"expires_at": expiresAt,
+				"qr_payload": map[string]any{
+					"kind":       "openclaw.pair",
+					"version":    "v1",
+					"base_url":   baseURL,
+					"session_id": session.PairSessionID,
+					"pair_code":  session.PairCode,
+					"pair_token": session.PairToken,
+					"expires_at": expiresAt,
+				},
+				"ws_delivered": 0,
+			},
+		})
+		return
+	}
+
+	if method == http.MethodPost && path == "/pair/claim" {
+		var req legacyClaimPairRequest
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, err)
+			return
+		}
+
+		session, binding, err := a.store.claimBySessionAndCode(req.SessionID, req.PairCode, req.UserID, req.MobileID)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+
+		event := SignalEvent{
+			ID:   fmt.Sprintf("evt_pair_claim_%d", nowMillis()),
+			Type: "pair.claimed",
+			Ts:   nowMillis(),
+			Payload: map[string]any{
+				"pairSessionId": session.PairSessionID,
+				"bindingId": binding.BindingID,
+				"userId":    binding.UserID,
+				"mobileId":  binding.MobileID,
+				"deviceId":  binding.DeviceID,
+			},
+		}
+		a.emitSignal("desktop", binding.DeviceID, event)
+		a.onMutation()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true,
+			"data": map[string]any{
+				"session_id": session.PairSessionID,
+				"pair_code":  session.PairCode,
+				"device_id":  binding.DeviceID,
+				"user_id":    binding.UserID,
+				"mobile_id":  binding.MobileID,
+				"status":     session.Status,
+			},
 		})
 		return
 	}
@@ -1579,9 +2024,11 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			Type: "pair.claimed",
 			Ts:   nowMillis(),
 			Payload: map[string]any{
+				"pairSessionId": session.PairSessionID,
 				"bindingId": binding.BindingID,
 				"userId":    binding.UserID,
 				"mobileId":  binding.MobileID,
+				"deviceId":  binding.DeviceID,
 			},
 		}
 		a.emitSignal("desktop", binding.DeviceID, event)
@@ -1606,9 +2053,11 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			Type: "pair.claimed",
 			Ts:   nowMillis(),
 			Payload: map[string]any{
+				"pairSessionId": session.PairSessionID,
 				"bindingId": binding.BindingID,
 				"userId":    binding.UserID,
 				"mobileId":  binding.MobileID,
+				"deviceId":  binding.DeviceID,
 			},
 		}
 		a.emitSignal("desktop", binding.DeviceID, event)
@@ -1684,6 +2133,22 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			a.onMutation()
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "events": events})
+		return
+	}
+
+	if method == http.MethodGet && path == "/v1/signal/ws" {
+		query := r.URL.Query()
+		clientType, err := trimRequired(query.Get("clientType"), "clientType")
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		clientID, err := trimRequired(query.Get("clientId"), "clientId")
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		a.handleSignalWS(w, r, clientType, clientID)
 		return
 	}
 
@@ -1844,4 +2309,21 @@ func netJoinHostPort(host string, port string) string {
 		return "[" + host + "]:" + port
 	}
 	return host + ":" + port
+}
+
+func requestBaseURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if forwardedProto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwardedProto != "" {
+		scheme = strings.TrimSpace(strings.Split(forwardedProto, ",")[0])
+	}
+
+	host := strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = strings.TrimSpace(r.Host)
+	}
+
+	return fmt.Sprintf("%s://%s", scheme, host)
 }

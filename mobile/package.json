@@ -9,7 +9,13 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@capacitor/cli": "^8.2.0",
+    "@capacitor/core": "^8.2.0",
+    "@capacitor/ios": "^8.2.0",
+    "@openclaw/protocol": "file:../packages/protocol",
+    "html5-qrcode": "^2.3.8"
+  },
   "devDependencies": {
     "typescript": "^5.8.2",
     "vite": "^5.4.14"

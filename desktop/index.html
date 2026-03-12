@@ -129,51 +129,56 @@
           </div>
 
           <details class="advanced-block" id="pairCenterView">
-            <summary data-i18n="pair.title">远程配对中心（实验）</summary>
+            <summary data-i18n="pair.title">通信渠道</summary>
             <div class="advanced-content">
               <p class="hint" data-i18n="pair.hint">
-                连接服务端后可创建配对会话，移动端扫码（或复制载荷）后即可与当前 PC 建立长期远程关系。
+                作为 Agent 宿主机，你可以开放通信通道并新建渠道。移动端扫码后会形成独立会话卡片。
               </p>
 
-              <div class="form-grid">
-                <label>
-                  <span data-i18n="pair.serverUrl">服务端地址</span>
-                  <input id="pairServerUrlInput" type="text" value="http://127.0.0.1:38089" />
-                </label>
-
-                <label>
-                  <span data-i18n="pair.serverToken">服务端 Token（可选）</span>
-                  <input id="pairServerTokenInput" type="password" />
-                </label>
-
-                <label>
-                  <span data-i18n="pair.deviceId">设备 ID</span>
-                  <input id="pairDeviceIdInput" type="text" />
-                </label>
+              <div class="pair-toolbar">
+                <button id="pairReloadConfigBtn" class="btn-secondary btn-refresh" type="button" data-i18n="btn.pairReloadConfig">刷新配置</button>
               </div>
 
               <div class="actions bottom pair-actions">
-                <button id="pairConnectBtn" class="btn-secondary" type="button" data-i18n="btn.pairConnect">连接通道</button>
-                <button id="pairDisconnectBtn" class="btn-secondary" type="button" data-i18n="btn.pairDisconnect">断开通道</button>
-                <button id="pairCreateBtn" class="btn-primary" type="button" data-i18n="btn.pairCreate">创建配对会话</button>
+                <button id="pairChannelToggleBtn" class="btn-secondary" type="button" data-i18n="btn.pairChannelOpen">开放通道</button>
+                <button id="pairCreateChannelBtn" class="btn-primary" type="button" data-i18n="btn.pairCreateChannel">新建渠道</button>
               </div>
 
               <p id="pairStatusMessage" class="message"></p>
 
               <div class="kv">
                 <div><span data-i18n="pair.wsStatus">通道状态</span><strong id="pairWsStatus">-</strong></div>
-                <div><span data-i18n="pair.sessionId">会话 ID</span><strong id="pairSessionId">-</strong></div>
-                <div><span data-i18n="pair.code">配对码</span><strong id="pairCode">-</strong></div>
-                <div><span data-i18n="pair.expiresAt">过期时间</span><strong id="pairExpiresAt">-</strong></div>
-                <div><span data-i18n="pair.claimedUser">已绑定用户</span><strong id="pairClaimedUser">-</strong></div>
+                <div><span data-i18n="pair.channelCount">渠道数量</span><strong id="pairChannelCount">0</strong></div>
               </div>
 
-              <label class="pair-payload">
-                <span data-i18n="pair.qrPayload">二维码载荷（JSON）</span>
-                <textarea id="pairQrPayload" rows="5" readonly></textarea>
-              </label>
+              <div class="channel-list-wrap">
+                <div id="pairChannelList" class="channel-list"></div>
+              </div>
 
               <pre id="pairEventLog"></pre>
+
+              <dialog id="pairQrDialog" class="pair-dialog">
+                <h3 data-i18n="pair.qrDialogTitle">渠道二维码</h3>
+                <div class="pair-qr-preview">
+                  <img id="pairQrImage" class="hidden" alt="OpenClaw Pair QR" />
+                </div>
+                <div class="actions bottom">
+                  <button id="pairQrCloseBtn" class="btn-secondary" type="button" data-i18n="btn.close">关闭</button>
+                </div>
+              </dialog>
+
+              <dialog id="pairChatDialog" class="pair-dialog">
+                <h3 id="pairChatDialogTitle" data-i18n="pair.chatDialogTitle">渠道会话</h3>
+                <div id="pairChatMessages" class="pair-chat-messages"></div>
+                <label class="pair-payload">
+                  <span data-i18n="pair.chatDraft">发送消息</span>
+                  <textarea id="pairChatDraftInput" rows="3" data-i18n-placeholder="pair.chatDraftPlaceholder"></textarea>
+                </label>
+                <div class="actions bottom">
+                  <button id="pairChatSendBtn" class="btn-primary" type="button" data-i18n="btn.pairChatSend">发送</button>
+                  <button id="pairChatCloseBtn" class="btn-secondary" type="button" data-i18n="btn.close">关闭</button>
+                </div>
+              </dialog>
             </div>
           </details>
 

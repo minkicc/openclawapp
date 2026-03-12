@@ -104,6 +104,23 @@ npm run dist:linux:appimage
 - Linux: `~/.config/dev.openclawapp.desktop/openclaw.config.json`
 - Windows: `%APPDATA%/dev.openclawapp.desktop/openclaw.config.json`
 
+### Communication channel config (Desktop Agent host)
+
+The Desktop "Communication Channels" module reads these fields from `openclaw.config.json`:
+
+```json
+{
+  "channelServerBaseUrl": "http://192.168.1.20:38089",
+  "channelDeviceId": "pc_agent_001"
+}
+```
+
+Notes:
+
+- `channelServerBaseUrl` must be a reachable `http/https` URL for both desktop and mobile devices.
+- `channelDeviceId` is the fixed identity of the desktop Agent host.
+- These fields are intentionally not editable in the desktop channel UI.
+
 ## CI/CD
 
 GitHub Actions builds installers on push and pull request.  

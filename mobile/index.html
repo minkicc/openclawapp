@@ -2,91 +2,40 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>OpenClaw Mobile Pairing MVP</title>
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <title>OpenClaw Mobile</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <main class="container">
-      <h1>OpenClaw Mobile Pairing MVP</h1>
-      <p class="hint">
-        最小联调页：解析配对载荷、认领会话、建立移动端信令流（SSE）、向 PC 发送 task.create。
-      </p>
-
-      <section class="card">
-        <h2>1) 配对载荷</h2>
-        <label>
-          <span>载荷 JSON</span>
-          <textarea
-            id="qrPayloadInput"
-            rows="6"
-            placeholder='{"baseUrl":"http://127.0.0.1:8787","pairToken":"...","pairCode":"...","deviceId":"..."}'
-          ></textarea>
-        </label>
-        <div class="actions">
-          <button id="parsePayloadBtn" class="secondary">解析载荷</button>
-        </div>
+    <main class="app-shell">
+      <section id="homeView" class="view">
+        <header class="topbar">
+          <h1>会话列表</h1>
+          <button id="pairBtn" class="pair-btn">配对</button>
+        </header>
+        <section id="sessionList" class="session-list"></section>
       </section>
 
-      <section class="card">
-        <h2>2) 会话认领</h2>
-        <div class="grid">
-          <label>
-            <span>服务端地址</span>
-            <input id="serverBaseUrlInput" type="text" value="http://127.0.0.1:8787" />
-          </label>
-          <label>
-            <span>服务端 Token（可选）</span>
-            <input id="serverTokenInput" type="password" />
-          </label>
-          <label>
-            <span>用户 ID</span>
-            <input id="userIdInput" type="text" />
-          </label>
-          <label>
-            <span>移动端 ID</span>
-            <input id="mobileIdInput" type="text" />
-          </label>
-          <label>
-            <span>Pair Token</span>
-            <input id="pairTokenInput" type="text" />
-          </label>
-          <label>
-            <span>Pair Code</span>
-            <input id="pairCodeInput" type="text" />
-          </label>
-          <label>
-            <span>目标设备 ID（认领后自动填充）</span>
-            <input id="deviceIdInput" type="text" />
-          </label>
-        </div>
-        <div class="actions">
-          <button id="claimByTokenBtn" class="primary">用 Token 认领</button>
-          <button id="claimByCodeBtn" class="secondary">用 Code 认领</button>
-        </div>
-      </section>
-
-      <section class="card">
-        <h2>3) 信令与任务</h2>
-        <p id="signalStatus" class="status">信令状态：未连接</p>
-        <div class="actions">
-          <button id="signalConnectBtn" class="secondary">连接 SSE 信令</button>
-          <button id="signalDisconnectBtn" class="secondary">断开信令</button>
-        </div>
-        <label>
-          <span>任务内容</span>
-          <textarea id="taskPromptInput" rows="4" placeholder="例如：请帮我总结今天的待办"></textarea>
-        </label>
-        <div class="actions">
-          <button id="sendTaskBtn" class="primary">发送 task.create</button>
-        </div>
-      </section>
-
-      <section class="card">
-        <h2>日志</h2>
-        <pre id="eventLog"></pre>
+      <section id="chatView" class="view hidden">
+        <header class="chat-topbar">
+          <button id="chatBackBtn" class="chat-back-btn">返回</button>
+          <div class="chat-title-wrap">
+            <h2 id="chatTitle">会话</h2>
+            <p id="chatSubtitle" class="status-text">未连接</p>
+          </div>
+        </header>
+        <section id="chatMessages" class="chat-messages"></section>
+        <footer class="chat-input-wrap">
+          <textarea id="chatInput" rows="2" placeholder="输入消息，Ctrl/Cmd + Enter 发送"></textarea>
+          <button id="chatSendBtn" class="chat-send-btn">发送</button>
+        </footer>
       </section>
     </main>
+
+    <div id="toast" class="toast hidden"></div>
 
     <script type="module" src="./src/main.ts"></script>
   </body>

@@ -26,11 +26,12 @@
     "dist:mac:tauri": "npm run prepare:kernel && tauri build --bundles dmg"
   },
   "dependencies": {
-    "@tauri-apps/api": "^1.6.0"
+    "@tauri-apps/api": "^1.6.0",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
-    "@types/node": "^22.13.10",
     "@tauri-apps/cli": "^1.6.2",
+    "@types/node": "^22.13.10",
     "tsx": "^4.19.4",
     "typescript": "^5.8.2",
     "vite": "^5.4.14"
