@@ -7,9 +7,30 @@ import QRCode from 'qrcode';
 const setupView = document.getElementById('setupView') as any;
 const mainView = document.getElementById('mainView') as any;
 const providerInput = document.getElementById('providerInput') as any;
+const providerDescription = document.getElementById('providerDescription') as any;
+const providerRequiredList = document.getElementById('providerRequiredList') as any;
+const providerTips = document.getElementById('providerTips') as any;
+const providerDocsLink = document.getElementById('providerDocsLink') as any;
+const providerShowAdvancedToggle = document.getElementById('providerShowAdvancedToggle') as any;
+const providerAuthNotice = document.getElementById('providerAuthNotice') as any;
+const providerAuthHint = document.getElementById('providerAuthHint') as any;
+const copyProviderAuthCmdBtn = document.getElementById('copyProviderAuthCmdBtn') as any;
+const baseUrlField = document.getElementById('baseUrlField') as any;
+const apiKeyField = document.getElementById('apiKeyField') as any;
+const customApiModeField = document.getElementById('customApiModeField') as any;
+const customHeadersField = document.getElementById('customHeadersField') as any;
 const modelInput = document.getElementById('modelInput') as any;
+const modelSuggestions = document.getElementById('modelSuggestions') as any;
+const modelDropdown = document.getElementById('modelDropdown') as any;
 const apiKeyInput = document.getElementById('apiKeyInput') as any;
 const baseUrlInput = document.getElementById('baseUrlInput') as any;
+const cloudflareFields = document.getElementById('cloudflareFields') as any;
+const cloudflareAccountIdInput = document.getElementById('cloudflareAccountIdInput') as any;
+const cloudflareGatewayIdInput = document.getElementById('cloudflareGatewayIdInput') as any;
+const baseUrlHint = document.getElementById('baseUrlHint') as any;
+const apiKeyLabel = document.getElementById('apiKeyLabel') as any;
+const apiKeyHint = document.getElementById('apiKeyHint') as any;
+const modelHint = document.getElementById('modelHint') as any;
 const commandInput = document.getElementById('commandInput') as any;
 const customApiModeInput = document.getElementById('customApiModeInput') as any;
 const customHeadersInput = document.getElementById('customHeadersInput') as any;
@@ -20,6 +41,7 @@ const setupMessage = document.getElementById('setupMessage') as any;
 const doctorOutput = document.getElementById('doctorOutput') as any;
 
 const platformBadge = document.getElementById('platformBadge') as any;
+const summaryProvider = document.getElementById('summaryProvider') as any;
 const summaryModel = document.getElementById('summaryModel') as any;
 const summaryApiKey = document.getElementById('summaryApiKey') as any;
 const summaryBaseUrl = document.getElementById('summaryBaseUrl') as any;
@@ -63,6 +85,12 @@ let kernelStatus = null;
 let lastModelFetchKey = '';
 let currentLang = 'zh-CN';
 const DEFAULT_CUSTOM_API_MODE = 'openai-responses';
+const CUSTOM_API_MODE_STORAGE_KEY = 'openclaw.ui.customApiModeByModel';
+const SUPPORTED_CUSTOM_API_MODES = new Set([
+  'openai-responses',
+  'openai-completions',
+  'anthropic-messages'
+]);
 let pairWs = null;
 let pairChannelMode = 'none';
 let pairDesiredConnected = false;
@@ -79,282 +107,886 @@ const pairWsPendingRequests = new Map();
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1']);
 
-const I18N = {
-  'zh-CN': {
-    'topbar.subtitle': '首次启动配置向导',
-    'setup.title': '配置 OpenClaw（核心项）',
-    'setup.hint': '已统一使用 Custom Provider，请填写 Base URL、Model API Key、Model。',
-    'field.baseUrl': 'Base URL',
-    'field.apiKey': 'Model API Key',
-    'field.model': 'Model',
-    'field.apiKeyShort': 'API Key',
-    'field.command': 'OpenClaw 命令（覆盖默认内置内核）',
-    'field.customApiMode': 'Custom API 模式（仅 Custom）',
-    'field.customHeaders': 'Custom Headers JSON（仅 Custom，可选）',
-    'field.commandShort': 'OpenClaw 命令',
-    'field.customApiModeShort': 'Custom API 模式',
-    'field.customHeadersShort': 'Custom Headers',
-    'field.kernelStatus': '内核状态',
-    'field.configPath': '配置文件',
-    'ph.baseUrl': '例如 https://api.openai.com/v1',
-    'ph.required': '必须填写',
-    'ph.customHeaders': '例如 {"User-Agent":"Mozilla/5.0 ...","Accept":"application/json"}',
-    'model.placeholder.fetch': '请选择模型（先点击“拉取模型”）',
-    'model.placeholder.select': '请选择模型',
-    'model.currentValue': '{value}（当前值）',
-    'btn.fetchModels': '拉取模型',
-    'btn.addDir': '添加目录',
-    'btn.installDefaultSkills': '导入内置 Skills',
-    'btn.installKernel': '安装/更新 OpenClaw 内核',
-    'btn.start': '开始使用',
-    'btn.reconfigure': '重新配置',
-    'btn.checkCommand': '检查 OpenClaw 命令',
-    'btn.updateKernel': '更新内核（npm）',
-    'btn.openFirstSkillDir': '打开首个 Skills 目录',
-    'btn.pairChannelOpen': '开放通道',
-    'btn.pairChannelClose': '关闭通道',
-    'btn.pairCreateChannel': '新建渠道',
-    'btn.pairReloadConfig': '刷新配置',
-    'btn.pairChatSend': '发送',
-    'btn.close': '关闭',
-    'advanced.title': '高级选项（可选）',
-    'advanced.infoTitle': '高级信息（可选）',
-    'advanced.expand': '展开',
-    'main.readyTitle': 'OpenClaw 已就绪',
-    'main.readyHint': '核心信息已配置完成，直接点击“开始使用”即可。',
-    'skills.title.optional': 'Skills 目录（可选）',
-    'skills.title': 'Skills 目录',
-    'skills.noneConfigured': '未配置 skills 目录',
-    'skills.noneOptional': '未配置（可选）',
-    'skills.remove': '移除',
-    'dialog.selectSkillsDir': '选择 skills 目录',
-    'dialog.selectDefaultSkillsTarget': '选择导入默认 skills 的目标目录',
-    'msg.onlyCustomFetch': '当前仅支持 Custom Provider 拉取模型。',
-    'msg.needBaseUrl': '请先填写 Base URL。',
-    'msg.fetchingModels': '正在拉取模型列表...',
-    'msg.fetchModelsFailed': '拉取模型失败。',
-    'msg.modelsFetched': '已拉取 {count} 个模型。',
-    'msg.importingSkills': '正在导入内置 skills...',
-    'msg.importFailed': '导入失败。',
-    'msg.importedSkills': '已导入内置 skills 到: {path}',
-    'msg.modelRequired': 'Model 不能为空。',
-    'msg.baseUrlRequiredForCustom': 'Provider 为 custom 时，Base URL 不能为空。',
-    'msg.headersMustObject': 'Custom Headers 必须是 JSON 对象。',
-    'msg.headerValueMustString': 'Header {key} 的值必须是字符串。',
-    'msg.headersJsonInvalid': 'Custom Headers JSON 格式错误：{detail}',
-    'msg.savingConfig': '正在保存配置...',
-    'msg.saveFailed': '保存失败。',
-    'msg.saveSuccess': '配置保存成功。',
-    'msg.autoInstallingKernel': '正在自动安装 OpenClaw 内核（npm i openclaw）...',
-    'msg.autoKernelFailed': '配置已保存，但内核自动安装失败：{message}（可稍后手动点击“安装/更新 OpenClaw 内核”）',
-    'msg.configAndKernelReady': '配置与内核均已就绪，正在进入应用...',
-    'msg.enteringApp': '配置保存成功，正在进入应用...',
-    'msg.runningAction': '正在{label}（npm i openclaw）...',
-    'msg.actionFailed': '{label}失败：{message}',
-    'msg.enterWebFailed': '进入 OpenClaw Web 失败。',
-    'msg.invalidDashboardUrl': '进入 OpenClaw Web 失败：返回的地址无效。',
-    'msg.noDashboardUrl': '未返回可用 URL',
-    'msg.enteringWeb': '正在进入 OpenClaw Web...',
-    'msg.openclawWeb': 'OpenClaw Web: {url}',
-    'msg.updatingKernel': '正在更新 OpenClaw 内核（npm i openclaw）...',
-    'msg.gettingDashboard': '正在获取 OpenClaw Web 地址...',
-    'msg.checkingCommand': '正在检查 openclaw 命令...',
-    'msg.noSkillDirToOpen': '没有可打开的 skills 目录。',
-    'pair.title': '通信渠道',
-    'pair.hint': '作为 Agent 宿主机，你可以开放通信通道并新建渠道。移动端扫码后会形成独立会话卡片。',
-    'pair.wsStatus': '通道状态',
-    'pair.channelCount': '渠道数量',
-    'pair.chatDraft': '发送消息',
-    'pair.chatDraftPlaceholder': '输入消息，Ctrl/Cmd + Enter 发送',
-    'pair.card.statusPending': '待认领',
-    'pair.card.statusActive': '已连接',
-    'pair.card.statusOffline': '离线',
-    'pair.card.name': '渠道名称',
-    'pair.card.id': '渠道 ID',
-    'pair.card.mobile': '移动端设备',
-    'pair.card.createdAt': '创建时间',
-    'pair.card.status': '连接状态',
-    'pair.card.openQr': '二维码',
-    'pair.card.openChat': '查看会话',
-    'pair.card.delete': '删除渠道',
-    'pair.toggle.on': '通道已开放（点击关闭）',
-    'pair.toggle.off': '通道已关闭（点击开放）',
-    'pair.empty': '暂无渠道，点击“新建渠道”创建。',
-    'pair.qrDialogTitle': '渠道二维码',
-    'pair.chatDialogTitle': '渠道会话',
-    'pair.chatPlaceholder': '暂无消息',
-    'pair.qrPayload': '二维码载荷（JSON）',
-    'pair.logPrefix': '配对日志',
-    'pair.status.disconnected': '未连接',
-    'pair.status.connecting': '连接中',
-    'pair.status.connected': '已连接',
-    'pair.status.reconnecting': '重连中',
-    'msg.pairMissingConfig': '通信渠道配置缺失，请在配置文件中补充 channelServerBaseUrl 与 channelDeviceId。',
-    'msg.pairConnecting': '正在连接配对通道...',
-    'msg.pairConnected': '配对通道已连接。',
-    'msg.pairDisconnected': '配对通道已断开。',
-    'msg.pairReconnect': '通道中断，{seconds}s 后自动重连（第 {attempt} 次）。',
-    'msg.pairCreateRunning': '正在创建配对会话...',
-    'msg.pairCreateFailed': '创建配对会话失败：{message}',
-    'msg.pairCreated': '配对会话已创建，等待移动端扫码认领。',
-    'msg.pairClaimed': '配对成功。',
-    'msg.pairAlreadyPaired': '该移动端（{mobileId}）已配对过，不能重复新建渠道。',
-    'msg.pairNeedMobileId': '当前渠道未绑定移动端，无法发送消息。',
-    'msg.pairNeedChatMessage': '请输入消息内容。',
-    'msg.pairChatSent': '消息已发送。',
-    'msg.pairConfigReloaded': '已刷新通信渠道配置。',
-    'msg.pairDeleteConfirm': '确认删除渠道 {id} 吗？',
-    'msg.pairDeleted': '渠道已删除。',
-    'msg.pairRevokeFailed': '服务端解绑失败：{message}',
-    'pair.check.idle': '未验证',
-    'pair.check.pending': '检查中',
-    'pair.check.ok': '可用',
-    'pair.check.error': '失败',
-    'kernel.unknown': '未知',
-    'kernel.bundled': '已内置 ({version})',
-    'kernel.installed': '已安装 ({version})',
-    'kernel.available': '可用 ({version})',
-    'kernel.notInstalledNoNpm': '未安装（未检测到 npm，且未发现内置内核）',
-    'kernel.notInstalled': '未安装'
+let activeProviderId = 'openai';
+let showAdvancedProviders = false;
+let cachedModelOptions = [];
+let isModelDropdownOpen = false;
+let modelDropdownQuery = '';
+const CLOUDFLARE_PRESET_ID = 'cloudflare-ai-gateway';
+
+const DOC_PROVIDER_OVERVIEW = 'https://docs.openclaw.ai/concepts/model-providers';
+const DEFAULT_CUSTOM_HEADERS = Object.freeze({
+  'Accept': 'application/json',
+  'User-Agent': 'OpenClaw Desktop'
+});
+
+const builtinProvider = (id, label, keyLabel, modelHint, docs = DOC_PROVIDER_OVERVIEW) => ({
+  id,
+  authKind: 'api-key',
+  category: { zh: '官方内建（API Key）', en: 'Built-in (API Key)' },
+  label,
+  runtimeProvider: id,
+  keyRequired: true,
+  keyLabel,
+  keyPlaceholder: '',
+  showBaseUrl: false,
+  baseUrlRequired: false,
+  baseUrlDefault: '',
+  baseUrlHint: {
+    zh: '使用官方默认地址，无需填写 Base URL。',
+    en: 'Uses official endpoint by default. Base URL is not required.'
   },
-  'en-US': {
-    'topbar.subtitle': 'First Launch Setup Wizard',
-    'setup.title': 'Configure OpenClaw (Core)',
-    'setup.hint': 'Custom Provider is now the default. Fill Base URL, Model API Key, and Model.',
-    'field.baseUrl': 'Base URL',
-    'field.apiKey': 'Model API Key',
-    'field.model': 'Model',
-    'field.apiKeyShort': 'API Key',
-    'field.command': 'OpenClaw Command (override bundled kernel)',
-    'field.customApiMode': 'Custom API Mode (Custom only)',
-    'field.customHeaders': 'Custom Headers JSON (Custom only, optional)',
-    'field.commandShort': 'OpenClaw Command',
-    'field.customApiModeShort': 'Custom API Mode',
-    'field.customHeadersShort': 'Custom Headers',
-    'field.kernelStatus': 'Kernel Status',
-    'field.configPath': 'Config File',
-    'ph.baseUrl': 'e.g. https://api.openai.com/v1',
-    'ph.required': 'Required',
-    'ph.customHeaders': 'e.g. {"User-Agent":"Mozilla/5.0 ...","Accept":"application/json"}',
-    'model.placeholder.fetch': 'Select a model (click "Fetch Models" first)',
-    'model.placeholder.select': 'Select a model',
-    'model.currentValue': '{value} (current)',
-    'btn.fetchModels': 'Fetch Models',
-    'btn.addDir': 'Add Directory',
-    'btn.installDefaultSkills': 'Import Built-in Skills',
-    'btn.installKernel': 'Install/Update OpenClaw Kernel',
-    'btn.start': 'Start',
-    'btn.reconfigure': 'Reconfigure',
-    'btn.checkCommand': 'Check OpenClaw Command',
-    'btn.updateKernel': 'Update Kernel (npm)',
-    'btn.openFirstSkillDir': 'Open First Skills Directory',
-    'btn.pairChannelOpen': 'Open Channel',
-    'btn.pairChannelClose': 'Close Channel',
-    'btn.pairCreateChannel': 'New Channel',
-    'btn.pairReloadConfig': 'Reload Config',
-    'btn.pairChatSend': 'Send',
-    'btn.close': 'Close',
-    'advanced.title': 'Advanced (Optional)',
-    'advanced.infoTitle': 'Advanced Info (Optional)',
-    'advanced.expand': 'Expand',
-    'main.readyTitle': 'OpenClaw Is Ready',
-    'main.readyHint': 'Core settings are complete. Click "Start" to continue.',
-    'skills.title.optional': 'Skills Directory (Optional)',
-    'skills.title': 'Skills Directory',
-    'skills.noneConfigured': 'No skills directory configured',
-    'skills.noneOptional': 'Not configured (optional)',
-    'skills.remove': 'Remove',
-    'dialog.selectSkillsDir': 'Select skills directory',
-    'dialog.selectDefaultSkillsTarget': 'Select target directory for built-in skills',
-    'msg.onlyCustomFetch': 'Fetching models currently supports Custom provider only.',
-    'msg.needBaseUrl': 'Please fill Base URL first.',
-    'msg.fetchingModels': 'Fetching model list...',
-    'msg.fetchModelsFailed': 'Failed to fetch models.',
-    'msg.modelsFetched': 'Fetched {count} models.',
-    'msg.importingSkills': 'Importing built-in skills...',
-    'msg.importFailed': 'Import failed.',
-    'msg.importedSkills': 'Built-in skills imported to: {path}',
-    'msg.modelRequired': 'Model is required.',
-    'msg.baseUrlRequiredForCustom': 'Base URL is required when provider is custom.',
-    'msg.headersMustObject': 'Custom Headers must be a JSON object.',
-    'msg.headerValueMustString': 'Header {key} value must be a string.',
-    'msg.headersJsonInvalid': 'Custom Headers JSON error: {detail}',
-    'msg.savingConfig': 'Saving configuration...',
-    'msg.saveFailed': 'Save failed.',
-    'msg.saveSuccess': 'Configuration saved.',
-    'msg.autoInstallingKernel': 'Auto-installing OpenClaw kernel (npm i openclaw)...',
-    'msg.autoKernelFailed': 'Config saved, but kernel auto-install failed: {message} (you can click "Install/Update OpenClaw Kernel" later)',
-    'msg.configAndKernelReady': 'Config and kernel are ready. Entering app...',
-    'msg.enteringApp': 'Configuration saved. Entering app...',
-    'msg.runningAction': 'Running {label} (npm i openclaw)...',
-    'msg.actionFailed': '{label} failed: {message}',
-    'msg.enterWebFailed': 'Failed to open OpenClaw Web.',
-    'msg.invalidDashboardUrl': 'Failed to open OpenClaw Web: invalid URL returned.',
-    'msg.noDashboardUrl': 'No valid URL returned',
-    'msg.enteringWeb': 'Opening OpenClaw Web...',
-    'msg.openclawWeb': 'OpenClaw Web: {url}',
-    'msg.updatingKernel': 'Updating OpenClaw kernel (npm i openclaw)...',
-    'msg.gettingDashboard': 'Getting OpenClaw Web URL...',
-    'msg.checkingCommand': 'Checking openclaw command...',
-    'msg.noSkillDirToOpen': 'No skills directory available to open.',
-    'pair.title': 'Communication Channels',
-    'pair.hint': 'As the Agent host, open the channel and create channel cards. Mobile scans QR to attach.',
-    'pair.wsStatus': 'Channel Status',
-    'pair.channelCount': 'Channel Count',
-    'pair.chatDraft': 'Message',
-    'pair.chatDraftPlaceholder': 'Type message, Ctrl/Cmd + Enter to send',
-    'pair.card.statusPending': 'Pending',
-    'pair.card.statusActive': 'Connected',
-    'pair.card.statusOffline': 'Offline',
-    'pair.card.name': 'Channel Name',
-    'pair.card.id': 'Channel ID',
-    'pair.card.mobile': 'Mobile Device',
-    'pair.card.createdAt': 'Created At',
-    'pair.card.status': 'Connection',
-    'pair.card.openQr': 'QR Code',
-    'pair.card.openChat': 'Open Chat',
-    'pair.card.delete': 'Delete',
-    'pair.toggle.on': 'Channel Open (Click To Close)',
-    'pair.toggle.off': 'Channel Closed (Click To Open)',
-    'pair.empty': 'No channel yet. Click "New Channel".',
-    'pair.qrDialogTitle': 'Channel QR',
-    'pair.chatDialogTitle': 'Channel Chat',
-    'pair.chatPlaceholder': 'No messages',
-    'pair.qrPayload': 'QR Payload (JSON)',
-    'pair.logPrefix': 'Pair Log',
-    'pair.status.disconnected': 'Disconnected',
-    'pair.status.connecting': 'Connecting',
-    'pair.status.connected': 'Connected',
-    'pair.status.reconnecting': 'Reconnecting',
-    'msg.pairMissingConfig': 'Missing channel config. Please set channelServerBaseUrl and channelDeviceId in config file.',
-    'msg.pairConnecting': 'Connecting pair channel...',
-    'msg.pairConnected': 'Pair channel connected.',
-    'msg.pairDisconnected': 'Pair channel disconnected.',
-    'msg.pairReconnect': 'Channel dropped. Reconnecting in {seconds}s (attempt {attempt}).',
-    'msg.pairCreateRunning': 'Creating pair session...',
-    'msg.pairCreateFailed': 'Failed to create pair session: {message}',
-    'msg.pairCreated': 'Pair session created. Waiting for mobile claim.',
-    'msg.pairClaimed': 'Pair successful.',
-    'msg.pairAlreadyPaired': 'This mobile ({mobileId}) is already paired. Duplicate channel creation is blocked.',
-    'msg.pairNeedMobileId': 'This channel is not bound to a mobile yet.',
-    'msg.pairNeedChatMessage': 'Please enter a message first.',
-    'msg.pairChatSent': 'Message sent.',
-    'msg.pairConfigReloaded': 'Communication channel config reloaded.',
-    'msg.pairDeleteConfirm': 'Delete channel {id}?',
-    'msg.pairDeleted': 'Channel deleted.',
-    'msg.pairRevokeFailed': 'Server revoke failed: {message}',
-    'pair.check.idle': 'Not Verified',
-    'pair.check.pending': 'Checking',
-    'pair.check.ok': 'Available',
-    'pair.check.error': 'Failed',
-    'kernel.unknown': 'Unknown',
-    'kernel.bundled': 'Bundled ({version})',
-    'kernel.installed': 'Installed ({version})',
-    'kernel.available': 'Available ({version})',
-    'kernel.notInstalledNoNpm': 'Not installed (npm not found and no bundled kernel detected)',
-    'kernel.notInstalled': 'Not installed'
+  showCustomOptions: false,
+  customApiMode: DEFAULT_CUSTOM_API_MODE,
+  fetchModels: false,
+  autoApiKey: '',
+  description: {
+    zh: `使用 ${label} 官方 Provider，通常填写 API Key + 模型即可。`,
+    en: `Use ${label} built-in provider. Usually API Key + Model is enough.`
+  },
+  requiredFields: [
+    { zh: 'API Key', en: 'API Key' },
+    { zh: '模型', en: 'Model' }
+  ],
+  tips: [
+    { zh: '如果无法自动拉取模型，可手动填写模型名称。', en: 'If model fetching is unavailable, input model name manually.' }
+  ],
+  modelHint,
+  docs,
+  detectHosts: []
+});
+
+const gatewayProvider = (
+  id,
+  label,
+  baseUrlDefault,
+  customApiMode = 'openai-completions',
+  docs = DOC_PROVIDER_OVERVIEW
+) => ({
+  id,
+  authKind: 'api-key',
+  category: { zh: '兼容网关（OpenAI / Anthropic）', en: 'Gateway Compatible (OpenAI / Anthropic)' },
+  label,
+  runtimeProvider: 'custom',
+  keyRequired: true,
+  keyLabel: { zh: `${label} API 密钥`, en: `${label} API Key` },
+  keyPlaceholder: '',
+  showBaseUrl: true,
+  baseUrlRequired: true,
+  baseUrlDefault,
+  baseUrlHint: {
+    zh: '请按该提供商文档填写兼容网关地址。',
+    en: 'Use the gateway URL from this provider documentation.'
+  },
+  showCustomOptions: true,
+  customApiMode,
+  fetchModels: true,
+  autoApiKey: '',
+  description: {
+    zh: `通过兼容网关方式接入 ${label}。`,
+    en: `Connect ${label} through a compatible gateway endpoint.`
+  },
+  requiredFields: [
+    { zh: '基础 URL', en: 'Base URL' },
+    { zh: 'API 密钥', en: 'API Key' },
+    { zh: '模型', en: 'Model' }
+  ],
+  tips: [
+    { zh: '建议先点“拉取模型”，失败后再手动填写模型。', en: 'Try "Fetch Models" first, then fill model manually if needed.' }
+  ],
+  modelHint: { zh: '示例模型：参考提供商文档', en: 'Example model: follow provider docs' },
+  docs,
+  detectHosts: []
+});
+
+const managedAuthProvider = (id, label, modelHint, docs = DOC_PROVIDER_OVERVIEW) => ({
+  id,
+  authKind: 'managed-auth',
+  category: { zh: '官方（OAuth/CLI 登录）', en: 'Official (OAuth/CLI Login)' },
+  label,
+  runtimeProvider: id,
+  keyRequired: false,
+  keyLabel: { zh: '托管鉴权（需先 CLI 登录）', en: 'Managed Auth (CLI login required)' },
+  keyPlaceholder: '',
+  showBaseUrl: false,
+  baseUrlRequired: false,
+  baseUrlDefault: '',
+  baseUrlHint: { zh: 'Base URL 由提供商默认配置管理。', en: 'Base URL is managed by provider defaults.' },
+  showCustomOptions: false,
+  customApiMode: DEFAULT_CUSTOM_API_MODE,
+  fetchModels: false,
+  autoApiKey: 'managed-auth',
+  description: {
+    zh: `使用 ${label} 托管鉴权（需先 CLI 登录）。`,
+    en: `Use ${label} with OpenClaw managed auth (CLI login first).`
+  },
+  requiredFields: [
+    { zh: 'CLI 登录/鉴权', en: 'CLI Login/Auth' },
+    { zh: '模型', en: 'Model' }
+  ],
+  tips: [
+    {
+      zh: `运行：openclaw models auth login --provider ${id}`,
+      en: `Run: openclaw models auth login --provider ${id}`
+    }
+  ],
+  modelHint,
+  docs,
+  detectHosts: []
+});
+
+const awsCredentialProvider = (id, label, modelHint, docs = DOC_PROVIDER_OVERVIEW) => ({
+  id,
+  authKind: 'cloud-credentials',
+  category: { zh: '官方（云凭据）', en: 'Official (Cloud Credentials)' },
+  label,
+  runtimeProvider: id,
+  keyRequired: false,
+  keyLabel: { zh: 'AWS 凭据/配置文件', en: 'AWS Credentials/Profile' },
+  keyPlaceholder: '',
+  showBaseUrl: false,
+  baseUrlRequired: false,
+  baseUrlDefault: '',
+  baseUrlHint: { zh: '使用 AWS Bedrock 默认端点地址。', en: 'Uses AWS Bedrock default endpoint.' },
+  showCustomOptions: false,
+  customApiMode: DEFAULT_CUSTOM_API_MODE,
+  fetchModels: false,
+  autoApiKey: 'aws-credentials',
+  description: {
+    zh: '通过 AWS 凭据认证（AWS_PROFILE 或访问密钥）。',
+    en: 'Authenticate with AWS credentials (AWS_PROFILE or access keys).'
+  },
+  requiredFields: [
+    { zh: 'AWS 凭据', en: 'AWS Credentials' },
+    { zh: '模型', en: 'Model' }
+  ],
+  tips: [
+    { zh: '启动前请先配置 AWS_PROFILE / AWS 访问密钥。', en: 'Configure AWS_PROFILE/AWS keys before starting.' }
+  ],
+  modelHint,
+  docs,
+  detectHosts: []
+});
+
+const PROVIDER_PRESETS = [
+  // Official built-in providers (API key + model)
+  builtinProvider(
+    'openai',
+    'OpenAI',
+    { zh: 'OpenAI API Key', en: 'OpenAI API Key' },
+    { zh: '示例：gpt-5.4 / gpt-5.4-pro', en: 'Example: gpt-5.4 / gpt-5.4-pro' },
+    'https://docs.openclaw.ai/providers/openai'
+  ),
+  builtinProvider(
+    'anthropic',
+    'Anthropic',
+    { zh: 'Anthropic API Key', en: 'Anthropic API Key' },
+    { zh: '示例：claude-opus-4-6', en: 'Example: claude-opus-4-6' },
+    'https://docs.openclaw.ai/providers/anthropic'
+  ),
+  builtinProvider(
+    'google',
+    'Google Gemini',
+    { zh: 'Gemini API Key', en: 'Gemini API Key' },
+    { zh: '示例：gemini-3.1-pro-preview', en: 'Example: gemini-3.1-pro-preview' },
+    'https://docs.openclaw.ai/concepts/model-providers'
+  ),
+  builtinProvider(
+    'zai',
+    'Z.AI (GLM)',
+    { zh: 'Z.AI API Key', en: 'Z.AI API Key' },
+    { zh: '示例：glm-5', en: 'Example: glm-5' },
+    'https://docs.openclaw.ai/providers/zai'
+  ),
+  builtinProvider(
+    'openrouter',
+    'OpenRouter',
+    { zh: 'OpenRouter API Key', en: 'OpenRouter API Key' },
+    { zh: '示例：anthropic/claude-sonnet-4-5', en: 'Example: anthropic/claude-sonnet-4-5' },
+    'https://docs.openclaw.ai/providers/openrouter'
+  ),
+  builtinProvider(
+    'xai',
+    'xAI (Grok)',
+    { zh: 'xAI API Key', en: 'xAI API Key' },
+    { zh: '示例：grok-4', en: 'Example: grok-4' },
+    'https://docs.openclaw.ai/concepts/model-providers'
+  ),
+  builtinProvider(
+    'mistral',
+    'Mistral',
+    { zh: 'Mistral API Key', en: 'Mistral API Key' },
+    { zh: '示例：mistral-large-latest', en: 'Example: mistral-large-latest' },
+    'https://docs.openclaw.ai/providers/mistral'
+  ),
+  builtinProvider(
+    'groq',
+    'Groq',
+    { zh: 'Groq API Key', en: 'Groq API Key' },
+    { zh: '示例：llama-3.3-70b-versatile', en: 'Example: llama-3.3-70b-versatile' },
+    'https://docs.openclaw.ai/concepts/model-providers'
+  ),
+  builtinProvider(
+    'cerebras',
+    'Cerebras',
+    { zh: 'Cerebras API Key', en: 'Cerebras API Key' },
+    { zh: '示例：zai-glm-4.7', en: 'Example: zai-glm-4.7' },
+    'https://docs.openclaw.ai/concepts/model-providers'
+  ),
+  builtinProvider(
+    'huggingface',
+    'Hugging Face',
+    { zh: 'HF Token', en: 'HF Token' },
+    { zh: '示例：deepseek-ai/DeepSeek-R1', en: 'Example: deepseek-ai/DeepSeek-R1' },
+    'https://docs.openclaw.ai/providers/huggingface'
+  ),
+  builtinProvider(
+    'github-copilot',
+    'GitHub Copilot',
+    { zh: 'GitHub Token', en: 'GitHub Token' },
+    { zh: '示例：gpt-4.1', en: 'Example: gpt-4.1' },
+    'https://docs.openclaw.ai/concepts/model-providers'
+  ),
+  builtinProvider(
+    'vercel-ai-gateway',
+    'Vercel AI Gateway',
+    { zh: 'AI_GATEWAY_API_KEY', en: 'AI_GATEWAY_API_KEY' },
+    { zh: '示例：anthropic/claude-opus-4.6', en: 'Example: anthropic/claude-opus-4.6' },
+    'https://docs.openclaw.ai/providers/vercel-ai-gateway'
+  ),
+  builtinProvider(
+    'kilocode',
+    'Kilo Gateway',
+    { zh: 'KILOCODE_API_KEY', en: 'KILOCODE_API_KEY' },
+    { zh: '示例：anthropic/claude-opus-4.6', en: 'Example: anthropic/claude-opus-4.6' },
+    'https://docs.openclaw.ai/providers/kilocode'
+  ),
+  managedAuthProvider(
+    'openai-codex',
+    'OpenAI Codex',
+    { zh: '示例：gpt-5.4', en: 'Example: gpt-5.4' },
+    'https://docs.openclaw.ai/concepts/model-providers'
+  ),
+  managedAuthProvider(
+    'qwen-portal',
+    'Qwen (OAuth)',
+    { zh: '示例：coder-model', en: 'Example: coder-model' },
+    'https://docs.openclaw.ai/providers/qwen'
+  ),
+  managedAuthProvider(
+    'opencode',
+    'OpenCode Zen',
+    { zh: '示例：claude-opus-4-6', en: 'Example: claude-opus-4-6' },
+    'https://docs.openclaw.ai/providers/opencode'
+  ),
+  managedAuthProvider(
+    'opencode-go',
+    'OpenCode Go',
+    { zh: '示例：kimi-k2.5', en: 'Example: kimi-k2.5' },
+    'https://docs.openclaw.ai/providers/opencode-go'
+  ),
+  managedAuthProvider(
+    'minimax-portal',
+    'MiniMax (OAuth)',
+    { zh: '示例：MiniMax-M2.5', en: 'Example: MiniMax-M2.5' },
+    'https://docs.openclaw.ai/providers/minimax'
+  ),
+  awsCredentialProvider(
+    'amazon-bedrock',
+    'Amazon Bedrock',
+    { zh: '示例：claude-opus-4-6', en: 'Example: claude-opus-4-6' },
+    'https://docs.openclaw.ai/providers/bedrock'
+  ),
+
+  // Official providers configured through compatible gateway endpoints
+  {
+    ...gatewayProvider(
+      'moonshot',
+      'Moonshot / Kimi',
+      'https://api.moonshot.ai/v1',
+      'openai-completions',
+      'https://docs.openclaw.ai/providers/moonshot'
+    ),
+    detectHosts: ['moonshot.ai', 'moonshot.cn'],
+    baseUrlHint: {
+      zh: '中国大陆可使用 https://api.moonshot.cn/v1。',
+      en: 'You may use https://api.moonshot.cn/v1 in Mainland China'
+    },
+    modelHint: { zh: '示例：kimi-k2.5', en: 'Example: kimi-k2.5' }
+  },
+  {
+    ...gatewayProvider(
+      'kimi-coding',
+      'Kimi Coding',
+      'https://api.kimi.com/coding/',
+      'anthropic-messages',
+      'https://docs.openclaw.ai/providers/moonshot'
+    ),
+    detectHosts: ['kimi.com'],
+    modelHint: { zh: '示例：k2p5', en: 'Example: k2p5' }
+  },
+  {
+    ...gatewayProvider(
+      'together',
+      'Together AI',
+      'https://api.together.xyz/v1',
+      'openai-completions',
+      'https://docs.openclaw.ai/providers/together'
+    ),
+    detectHosts: ['together.xyz']
+  },
+  {
+    ...gatewayProvider(
+      'nvidia',
+      'NVIDIA NIM',
+      'https://integrate.api.nvidia.com/v1',
+      'openai-completions',
+      'https://docs.openclaw.ai/providers/nvidia'
+    ),
+    detectHosts: ['nvidia.com']
+  },
+  {
+    ...gatewayProvider(
+      'qianfan',
+      'Baidu Qianfan',
+      'https://qianfan.baidubce.com/v2',
+      'openai-completions',
+      'https://docs.openclaw.ai/providers/qianfan'
+    ),
+    detectHosts: ['qianfan', 'baidu'],
+    modelHint: { zh: '示例：deepseek-v3.2', en: 'Example: deepseek-v3.2' }
+  },
+  {
+    ...gatewayProvider(
+      'modelstudio',
+      'Alibaba Model Studio',
+      'https://coding-intl.dashscope.aliyuncs.com/v1',
+      'openai-completions',
+      'https://docs.openclaw.ai/concepts/model-providers'
+    ),
+    detectHosts: ['dashscope.aliyuncs.com'],
+    modelHint: { zh: '示例：qwen3.5-plus', en: 'Example: qwen3.5-plus' },
+    tips: [
+      { zh: '中国内地端点请使用 https://coding.dashscope.aliyuncs.com/v1', en: 'For China endpoint use https://coding.dashscope.aliyuncs.com/v1' }
+    ]
+  },
+  {
+    ...gatewayProvider(
+      'minimax',
+      'MiniMax (Anthropic API)',
+      'https://api.minimax.io/anthropic',
+      'anthropic-messages',
+      'https://docs.openclaw.ai/providers/minimax'
+    ),
+    detectHosts: ['minimax.io', 'minimaxi.com'],
+    modelHint: { zh: '示例：MiniMax-M2.5', en: 'Example: MiniMax-M2.5' }
+  },
+  {
+    ...gatewayProvider(
+      'xiaomi',
+      'Xiaomi',
+      'https://api.xiaomimimo.com/anthropic',
+      'anthropic-messages',
+      'https://docs.openclaw.ai/providers/xiaomi'
+    ),
+    detectHosts: ['xiaomimimo.com'],
+    modelHint: { zh: '示例：mimo-v2-flash', en: 'Example: mimo-v2-flash' }
+  },
+  {
+    ...gatewayProvider(
+      'synthetic',
+      'Synthetic',
+      'https://api.synthetic.new/anthropic',
+      'anthropic-messages',
+      'https://docs.openclaw.ai/providers/synthetic'
+    ),
+    detectHosts: ['synthetic.new'],
+    modelHint: { zh: '示例：hf:MiniMaxAI/MiniMax-M2.5', en: 'Example: hf:MiniMaxAI/MiniMax-M2.5' }
+  },
+  {
+    ...gatewayProvider(
+      'venice',
+      'Venice AI',
+      'https://api.venice.ai/api/v1',
+      'openai-completions',
+      'https://docs.openclaw.ai/providers/venice'
+    ),
+    detectHosts: ['venice.ai'],
+    modelHint: { zh: '示例：kimi-k2-5', en: 'Example: kimi-k2-5' }
+  },
+  {
+    ...gatewayProvider(
+      'volcengine',
+      'Volcengine (Doubao)',
+      'https://ark.cn-beijing.volces.com/api/v3',
+      'openai-completions',
+      'https://docs.openclaw.ai/concepts/model-providers'
+    ),
+    detectHosts: ['volces.com'],
+    modelHint: { zh: '示例：doubao-seed-1-8-251228', en: 'Example: doubao-seed-1-8-251228' }
+  },
+  {
+    ...gatewayProvider(
+      'byteplus',
+      'BytePlus ARK',
+      'https://ark.byteintlapi.com/api/v3',
+      'openai-completions',
+      'https://docs.openclaw.ai/concepts/model-providers'
+    ),
+    detectHosts: ['byteintlapi.com'],
+    modelHint: { zh: '示例：seed-1-8-251228', en: 'Example: seed-1-8-251228' }
+  },
+  {
+    ...gatewayProvider(
+      'cloudflare-ai-gateway',
+      'Cloudflare AI Gateway',
+      '',
+      'anthropic-messages',
+      'https://docs.openclaw.ai/providers/cloudflare-ai-gateway'
+    ),
+    detectHosts: ['gateway.ai.cloudflare.com', 'cloudflare.com'],
+    requiredFields: [
+      { zh: 'Base URL（包含 account_id + gateway_id）', en: 'Base URL (contains account_id + gateway_id)' },
+      { zh: 'API Key', en: 'API Key' },
+      { zh: '模型', en: 'Model' }
+    ],
+    baseUrlHint: {
+      zh: '示例：https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway_id>/openai',
+      en: 'Example: https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway_id>/openai'
+    }
+  },
+
+  // Local deployment providers
+  {
+    ...gatewayProvider(
+      'ollama',
+      'Ollama (Local)',
+      'http://127.0.0.1:11434/v1',
+      'openai-completions',
+      'https://docs.openclaw.ai/providers/ollama'
+    ),
+    category: { zh: '本地部署（非云 API）', en: 'Local Deployment (No Cloud API)' },
+    keyRequired: false,
+    autoApiKey: 'local-ollama',
+    keyLabel: { zh: 'API Key（本地可选）', en: 'API Key (optional for local)' },
+    requiredFields: [{ zh: 'Base URL', en: 'Base URL' }, { zh: '模型', en: 'Model' }],
+    detectHosts: ['127.0.0.1:11434', 'localhost:11434'],
+    tips: [
+      { zh: '会自动填充本地占位 Key。', en: 'A local placeholder key will be auto-filled.' }
+    ]
+  },
+  {
+    ...gatewayProvider(
+      'vllm',
+      'vLLM (Local/Self-hosted)',
+      'http://127.0.0.1:8000/v1',
+      'openai-completions',
+      'https://docs.openclaw.ai/providers/vllm'
+    ),
+    category: { zh: '本地部署（非云 API）', en: 'Local Deployment (No Cloud API)' },
+    keyRequired: false,
+    autoApiKey: 'local-vllm',
+    keyLabel: { zh: 'API Key（通常可选）', en: 'API Key (usually optional)' },
+    requiredFields: [{ zh: 'Base URL', en: 'Base URL' }, { zh: '模型', en: 'Model' }],
+    detectHosts: ['127.0.0.1:8000', 'localhost:8000'],
+    tips: [
+      { zh: '关闭鉴权时 API Key 可留空。', en: 'API Key can be empty when auth is disabled.' }
+    ]
+  },
+  {
+    ...gatewayProvider(
+      'litellm',
+      'LiteLLM Gateway',
+      'http://127.0.0.1:4000/v1',
+      'openai-completions',
+      'https://docs.openclaw.ai/providers/litellm'
+    ),
+    category: { zh: '本地部署（非云 API）', en: 'Local Deployment (No Cloud API)' },
+    keyRequired: false,
+    autoApiKey: 'local-litellm',
+    keyLabel: { zh: '网关 Key（可选）', en: 'Gateway Key (optional)' },
+    requiredFields: [{ zh: 'Base URL', en: 'Base URL' }, { zh: '模型', en: 'Model' }],
+    detectHosts: ['127.0.0.1:4000', 'localhost:4000', 'litellm']
+  },
+
+  // Generic fallback
+  {
+    ...gatewayProvider(
+      'custom',
+      'Custom (Manual)',
+      '',
+      DEFAULT_CUSTOM_API_MODE,
+      'https://docs.openclaw.ai/concepts/model-providers'
+    ),
+    category: { zh: '自定义', en: 'Custom' },
+    keyLabel: { zh: 'API Key', en: 'API Key' },
+    modelHint: { zh: '示例：your-model-id', en: 'Example: your-model-id' },
+    description: {
+      zh: '适用于任意 OpenAI / Anthropic 兼容网关。',
+      en: 'Use for any OpenAI / Anthropic compatible gateway.'
+    }
   }
+];
+
+const providerPresetMap = new Map(PROVIDER_PRESETS.map((preset) => [preset.id, preset]));
+
+const EN_I18N = {
+  'topbar.subtitle': 'First Launch Setup Wizard',
+  'setup.title': 'Configure OpenClaw (Core)',
+  'setup.hint': 'Choose a model provider first, then fill URL, API key, API mode, and model.',
+  'field.provider': 'Model Provider',
+  'provider.showAdvanced': 'Show advanced providers (OAuth/Cloud credentials)',
+  'provider.loginRequiredHint': 'This provider requires login first: {cmd}',
+  'provider.loginRequiredShort': 'Please complete provider login before starting.',
+  'field.baseUrl': 'Base URL',
+  'field.apiKey': 'Model API Key',
+  'field.model': 'Model',
+  'field.apiKeyShort': 'API Key',
+  'field.command': 'OpenClaw Command (override bundled kernel)',
+  'field.customApiMode': 'API Mode',
+  'field.customHeaders': 'Custom Headers JSON (Custom only, optional)',
+  'field.commandShort': 'OpenClaw Command',
+  'field.customApiModeShort': 'API Mode',
+  'customApiMode.placeholder': 'Select API mode',
+  'field.customHeadersShort': 'Custom Headers',
+  'field.kernelStatus': 'Kernel Status',
+  'field.configPath': 'Config File',
+  'field.cloudflareAccountId': 'Cloudflare Account ID',
+  'field.cloudflareGatewayId': 'Cloudflare Gateway ID',
+  'ph.baseUrl': 'e.g. https://api.openai.com/v1',
+  'ph.required': 'Required',
+  'ph.customHeaders': 'e.g. {"User-Agent":"Mozilla/5.0 ...","Accept":"application/json"}',
+  'ph.cloudflareAccountId': 'Cloudflare Account ID',
+  'ph.cloudflareGatewayId': 'Cloudflare Gateway ID',
+  'model.placeholder.fetch': 'Select a model (click "Fetch Models" first)',
+  'model.placeholder.select': 'Select a model',
+  'model.currentValue': '{value} (current)',
+  'model.dropdown.empty': 'No matching models',
+  'btn.fetchModels': 'Fetch Models',
+  'btn.addDir': 'Add Directory',
+  'btn.installDefaultSkills': 'Import Built-in Skills',
+  'btn.installKernel': 'Install/Update OpenClaw Kernel',
+  'btn.start': 'Start',
+  'btn.reconfigure': 'Reconfigure',
+  'btn.checkCommand': 'Check OpenClaw Command',
+  'btn.updateKernel': 'Update Kernel (npm)',
+  'btn.openFirstSkillDir': 'Open First Skills Directory',
+  'btn.copyLoginCommand': 'Copy Login Command',
+  'btn.pairConnect': 'Connect Channel',
+  'btn.pairDisconnect': 'Disconnect Channel',
+  'btn.pairCreate': 'Create Pair Session',
+  'advanced.title': 'Advanced (Optional)',
+  'advanced.infoTitle': 'Advanced Info (Optional)',
+  'advanced.expand': 'Expand',
+  'main.readyTitle': 'OpenClaw Is Ready',
+  'main.readyHint': 'Core settings are complete. Click "Start" to continue.',
+  'skills.title.optional': 'Skills Directory (Optional)',
+  'skills.title': 'Skills Directory',
+  'skills.noneConfigured': 'No skills directory configured',
+  'skills.noneOptional': 'Not configured (optional)',
+  'skills.remove': 'Remove',
+  'dialog.selectSkillsDir': 'Select skills directory',
+  'dialog.selectDefaultSkillsTarget': 'Select target directory for built-in skills',
+  'msg.onlyCustomFetch': 'Auto model fetching is unavailable for this provider.',
+  'msg.needBaseUrl': 'Please fill Base URL first.',
+  'msg.fetchingModels': 'Fetching model list...',
+  'msg.fetchModelsFailed': 'Failed to fetch models.',
+  'msg.modelsFetched': 'Fetched {count} models.',
+  'msg.importingSkills': 'Importing built-in skills...',
+  'msg.importFailed': 'Import failed.',
+  'msg.importedSkills': 'Built-in skills imported to: {path}',
+  'msg.modelRequired': 'Model is required.',
+  'msg.customApiModeRequired': 'Please select API mode first.',
+  'msg.cloudflareAccountIdRequired': 'Cloudflare Account ID is required.',
+  'msg.cloudflareGatewayIdRequired': 'Cloudflare Gateway ID is required.',
+  'msg.baseUrlRequiredForCustom': 'Base URL is required when provider is custom.',
+  'msg.baseUrlRequiredForProvider': 'Base URL is required for selected provider.',
+  'msg.apiKeyRequiredForProvider': 'API Key is required for selected provider.',
+  'msg.headersMustObject': 'Custom Headers must be a JSON object.',
+  'msg.headerValueMustString': 'Header {key} value must be a string.',
+  'msg.headersJsonInvalid': 'Custom Headers JSON error: {detail}',
+  'msg.authChecking': 'Checking provider login status...',
+  'msg.authNotReady': 'This provider is not logged in yet. Please complete login first.',
+  'msg.loginCommandCopied': 'Login command copied. Run it in terminal.',
+  'msg.loginCommandCopyFailed': 'Copy failed. Run manually: {cmd}',
+  'msg.savingConfig': 'Saving configuration...',
+  'msg.saveFailed': 'Save failed.',
+  'msg.saveSuccess': 'Configuration saved.',
+  'msg.autoInstallingKernel': 'Auto-installing OpenClaw kernel (npm i openclaw)...',
+  'msg.autoKernelFailed': 'Config saved, but kernel auto-install failed: {message}',
+  'msg.configAndKernelReady': 'Config and kernel are ready. Entering app...',
+  'msg.enteringApp': 'Configuration saved. Entering app...',
+  'msg.runningAction': 'Running {label} (npm i openclaw)...',
+  'msg.actionCompleted': '{label} completed.',
+  'msg.actionFailed': '{label} failed: {message}',
+  'msg.enterWebFailed': 'Failed to open OpenClaw Web.',
+  'msg.invalidDashboardUrl': 'Failed to open OpenClaw Web: invalid URL returned.',
+  'msg.noDashboardUrl': 'No valid URL returned',
+  'msg.enteringWeb': 'Opening OpenClaw Web...',
+  'msg.openclawWeb': 'OpenClaw Web: {url}',
+  'msg.updatingKernel': 'Updating OpenClaw kernel (npm i openclaw)...',
+  'msg.gettingDashboard': 'Getting OpenClaw Web URL...',
+  'msg.checkingCommand': 'Checking openclaw command...',
+  'msg.noSkillDirToOpen': 'No skills directory available to open.',
+  'pair.title': 'Remote Pair Center (Experimental)',
+  'pair.hint': 'Connect to the server and create a pair session, then let mobile claim it.',
+  'pair.serverUrl': 'Server Base URL',
+  'pair.serverToken': 'Server Token (Optional)',
+  'pair.deviceId': 'Device ID',
+  'pair.wsStatus': 'Channel Status',
+  'pair.sessionId': 'Session ID',
+  'pair.code': 'Pair Code',
+  'pair.expiresAt': 'Expires At',
+  'pair.claimedUser': 'Bound User',
+  'pair.qrPayload': 'QR Payload (JSON)',
+  'pair.logPrefix': 'Pair Log',
+  'pair.status.disconnected': 'Disconnected',
+  'pair.status.connecting': 'Connecting',
+  'pair.status.connected': 'Connected',
+  'pair.status.reconnecting': 'Reconnecting',
+  'msg.pairNeedServerUrl': 'Please fill the server URL first.',
+  'msg.pairNeedDeviceId': 'Please fill the device ID first.',
+  'msg.pairInvalidServerUrl': 'Invalid server URL: {url}',
+  'msg.pairConnecting': 'Connecting pair channel...',
+  'msg.pairConnected': 'Pair channel connected.',
+  'msg.pairDisconnected': 'Pair channel disconnected.',
+  'msg.pairReconnect': 'Channel dropped. Reconnecting in {seconds}s (attempt {attempt}).',
+  'msg.pairCreateRunning': 'Creating pair session...',
+  'msg.pairCreateFailed': 'Failed to create pair session: {message}',
+  'msg.pairCreated': 'Pair session created. Waiting for mobile claim.',
+  'msg.pairClaimed': 'Pair completed: bound user {userId}.',
+  'kernel.unknown': 'Unknown',
+  'kernel.bundled': 'Bundled ({version})',
+  'kernel.installed': 'Installed ({version})',
+  'kernel.available': 'Available ({version})',
+  'kernel.notInstalledNoNpm': 'Not installed (npm not found and no bundled kernel detected)',
+  'kernel.notInstalled': 'Not installed'
 };
+
+const ZH_I18N = {
+  "topbar.subtitle": "首次启动配置向导",
+  "setup.title": "配置 OpenClaw（核心项）",
+  "setup.hint": "请选择模型提供商，并填写基础 URL、模型 API 密钥、API 模式与模型。",
+  "field.provider": "模型提供商",
+  "provider.showAdvanced": "显示高级提供商（OAuth/云凭据）",
+  "provider.loginRequiredHint": "当前提供商需要先登录：{cmd}",
+  "provider.loginRequiredShort": "开始前请先完成该提供商登录。",
+  "field.baseUrl": "基础 URL",
+  "field.apiKey": "模型 API 密钥",
+  "field.model": "模型",
+  "field.apiKeyShort": "API Key",
+  "field.command": "OpenClaw 命令（覆盖默认内置内核）",
+  "field.customApiMode": "API 模式",
+  "field.customHeaders": "Custom Headers JSON（仅 Custom，可选）",
+  "field.commandShort": "OpenClaw 命令",
+  "field.customApiModeShort": "API 模式",
+  "customApiMode.placeholder": "请选择 API 模式",
+  "field.customHeadersShort": "Custom Headers",
+  "field.kernelStatus": "内核状态",
+  "field.configPath": "配置文件",
+  "field.cloudflareAccountId": "Cloudflare 账户 ID",
+  "field.cloudflareGatewayId": "Cloudflare 网关 ID",
+  "ph.baseUrl": "例如 https://api.openai.com/v1",
+  "ph.required": "必须填写",
+  "ph.customHeaders": "例如 {\"User-Agent\":\"Mozilla/5.0 ...\",\"Accept\":\"application/json\"}",
+  "ph.cloudflareAccountId": "Cloudflare 账户 ID",
+  "ph.cloudflareGatewayId": "Cloudflare 网关 ID",
+  "model.placeholder.fetch": "请选择模型（先点击“拉取模型”）",
+  "model.placeholder.select": "请选择模型",
+  "model.currentValue": "{value}（当前值）",
+  "model.dropdown.empty": "无匹配模型",
+  "btn.fetchModels": "拉取模型",
+  "btn.addDir": "添加目录",
+  "btn.installDefaultSkills": "导入内置 Skills",
+  "btn.installKernel": "安装/更新 OpenClaw 内核",
+  "btn.start": "开始使用",
+  "btn.reconfigure": "重新配置",
+  "btn.checkCommand": "检查 OpenClaw 命令",
+  "btn.updateKernel": "更新内核（npm）",
+  "btn.openFirstSkillDir": "打开首个 Skills 目录",
+  "btn.copyLoginCommand": "复制登录命令",
+  "btn.pairConnect": "连接通道",
+  "btn.pairDisconnect": "断开通道",
+  "btn.pairCreate": "创建配对会话",
+  "advanced.title": "高级选项（可选）",
+  "advanced.infoTitle": "高级信息（可选）",
+  "advanced.expand": "展开",
+  "main.readyTitle": "OpenClaw 已就绪",
+  "main.readyHint": "核心信息已配置完成，直接点击“开始使用”即可。",
+  "skills.title.optional": "Skills 目录（可选）",
+  "skills.title": "Skills 目录",
+  "skills.noneConfigured": "未配置 skills 目录",
+  "skills.noneOptional": "未配置（可选）",
+  "skills.remove": "移除",
+  "dialog.selectSkillsDir": "选择 skills 目录",
+  "dialog.selectDefaultSkillsTarget": "选择导入默认 skills 的目标目录",
+  "msg.onlyCustomFetch": "当前仅支持 Custom Provider 拉取模型。",
+  "msg.needBaseUrl": "请先填写 Base URL。",
+  "msg.fetchingModels": "正在拉取模型列表...",
+  "msg.fetchModelsFailed": "拉取模型失败。",
+  "msg.modelsFetched": "已拉取 {count} 个模型。",
+  "msg.importingSkills": "正在导入内置 skills...",
+  "msg.importFailed": "导入失败。",
+  "msg.importedSkills": "已导入内置 skills 到: {path}",
+  "msg.modelRequired": "Model 不能为空。",
+  "msg.customApiModeRequired": "请先选择 API 模式。",
+  "msg.cloudflareAccountIdRequired": "Cloudflare 账户 ID 不能为空。",
+  "msg.cloudflareGatewayIdRequired": "Cloudflare 网关 ID 不能为空。",
+  "msg.baseUrlRequiredForCustom": "Provider 为 custom 时，Base URL 不能为空。",
+  "msg.baseUrlRequiredForProvider": "所选提供商必须填写 Base URL。",
+  "msg.apiKeyRequiredForProvider": "所选提供商必须填写 API Key。",
+  "msg.headersMustObject": "Custom Headers 必须是 JSON 对象。",
+  "msg.headerValueMustString": "Header {key} 的值必须是字符串。",
+  "msg.headersJsonInvalid": "Custom Headers JSON 格式错误：{detail}",
+  "msg.authChecking": "正在检查提供商登录状态...",
+  "msg.authNotReady": "该提供商尚未登录，请先完成登录。",
+  "msg.loginCommandCopied": "登录命令已复制，请到终端执行。",
+  "msg.loginCommandCopyFailed": "复制失败，请手动执行：{cmd}",
+  "msg.savingConfig": "正在保存配置...",
+  "msg.saveFailed": "保存失败。",
+  "msg.saveSuccess": "配置保存成功。",
+  "msg.autoInstallingKernel": "正在自动安装 OpenClaw 内核（npm i openclaw）...",
+  "msg.autoKernelFailed": "配置已保存，但内核自动安装失败：{message}（可稍后手动点击“安装/更新 OpenClaw 内核”）",
+  "msg.configAndKernelReady": "配置与内核均已就绪，正在进入应用...",
+  "msg.enteringApp": "配置保存成功，正在进入应用...",
+  "msg.runningAction": "正在{label}（npm i openclaw）...",
+  "msg.actionCompleted": "{label} 已完成。",
+  "msg.actionFailed": "{label}失败：{message}",
+  "msg.enterWebFailed": "进入 OpenClaw Web 失败。",
+  "msg.invalidDashboardUrl": "进入 OpenClaw Web 失败：返回的地址无效。",
+  "msg.noDashboardUrl": "未返回可用 URL",
+  "msg.enteringWeb": "正在进入 OpenClaw Web...",
+  "msg.openclawWeb": "OpenClaw Web: {url}",
+  "msg.updatingKernel": "正在更新 OpenClaw 内核（npm i openclaw）...",
+  "msg.gettingDashboard": "正在获取 OpenClaw Web 地址...",
+  "msg.checkingCommand": "正在检查 openclaw 命令...",
+  "msg.noSkillDirToOpen": "没有可打开的 skills 目录。",
+  "pair.title": "远程配对中心（实验）",
+  "pair.hint": "连接服务端后可创建配对会话，移动端扫码（或复制载荷）后即可与当前 PC 建立长期远程关系。",
+  "pair.serverUrl": "服务端地址",
+  "pair.serverToken": "服务端 Token（可选）",
+  "pair.deviceId": "设备 ID",
+  "pair.wsStatus": "通道状态",
+  "pair.sessionId": "会话 ID",
+  "pair.code": "配对码",
+  "pair.expiresAt": "过期时间",
+  "pair.claimedUser": "已绑定用户",
+  "pair.qrPayload": "二维码载荷（JSON）",
+  "pair.logPrefix": "配对日志",
+  "pair.status.disconnected": "未连接",
+  "pair.status.connecting": "连接中",
+  "pair.status.connected": "已连接",
+  "pair.status.reconnecting": "重连中",
+  "msg.pairNeedServerUrl": "请先填写服务端地址。",
+  "msg.pairNeedDeviceId": "请先填写设备 ID。",
+  "msg.pairInvalidServerUrl": "服务端地址格式无效：{url}",
+  "msg.pairConnecting": "正在连接配对通道...",
+  "msg.pairConnected": "配对通道已连接。",
+  "msg.pairDisconnected": "配对通道已断开。",
+  "msg.pairReconnect": "通道中断，{seconds}s 后自动重连（第 {attempt} 次）。",
+  "msg.pairCreateRunning": "正在创建配对会话...",
+  "msg.pairCreateFailed": "创建配对会话失败：{message}",
+  "msg.pairCreated": "配对会话已创建，等待移动端扫码认领。",
+  "msg.pairClaimed": "配对成功：已绑定用户 {userId}。",
+  "kernel.unknown": "未知",
+  "kernel.bundled": "已内置 ({version})",
+  "kernel.installed": "已安装 ({version})",
+  "kernel.available": "可用 ({version})",
+  "kernel.notInstalledNoNpm": "未安装（未检测到 npm，且未发现内置内核）",
+  "kernel.notInstalled": "未安装",
+};
+const I18N = {
+  'zh-CN': ZH_I18N,
+  'en-US': EN_I18N
+};
+function normalizeCustomApiModeByBaseUrl(baseUrl, customApiMode) {
+  const normalized = String(customApiMode || '').trim();
+  if (!normalized) {
+    return '';
+  }
+  return SUPPORTED_CUSTOM_API_MODES.has(normalized) ? normalized : '';
+}
+
+function isCloudflarePresetId(presetId) {
+  return String(presetId || '').trim() === CLOUDFLARE_PRESET_ID;
+}
+
+function isCloudflarePreset(preset) {
+  return isCloudflarePresetId(preset?.id);
+}
+
+function cloudflareRouteByApiMode(customApiMode) {
+  return String(customApiMode || '').trim() === 'anthropic-messages' ? 'anthropic' : 'openai';
+}
+
+function buildCloudflareBaseUrl(accountId, gatewayId, customApiMode) {
+  const account = String(accountId || '').trim();
+  const gateway = String(gatewayId || '').trim();
+  if (!account || !gateway) {
+    return '';
+  }
+  const route = cloudflareRouteByApiMode(customApiMode || DEFAULT_CUSTOM_API_MODE);
+  return `https://gateway.ai.cloudflare.com/v1/${account}/${gateway}/${route}`;
+}
+
+function parseCloudflareBaseUrl(baseUrl) {
+  try {
+    const parsed = new URL(String(baseUrl || '').trim());
+    if (!parsed.hostname.toLowerCase().includes('cloudflare.com')) {
+      return null;
+    }
+
+    const parts = parsed.pathname
+      .split('/')
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (parts.length < 3 || parts[0].toLowerCase() !== 'v1') {
+      return null;
+    }
+
+    return {
+      accountId: parts[1],
+      gatewayId: parts[2],
+      route: parts[3] || ''
+    };
+  } catch {
+    return null;
+  }
+}
+
+function syncCloudflareBaseUrlFromInputs() {
+  const preset = getActiveProviderPreset();
+  if (!isCloudflarePreset(preset)) {
+    return baseUrlInput.value.trim();
+  }
+
+  const accountId = String(cloudflareAccountIdInput?.value || '').trim();
+  const gatewayId = String(cloudflareGatewayIdInput?.value || '').trim();
+  const mode = normalizeCustomApiModeByBaseUrl(
+    baseUrlInput.value.trim(),
+    customApiModeInput.value.trim()
+  );
+  const baseUrl = buildCloudflareBaseUrl(accountId, gatewayId, mode);
+  baseUrlInput.value = baseUrl;
+  return baseUrl;
+}
+
+function hydrateCloudflareInputsFromBaseUrl(baseUrl) {
+  const parsed = parseCloudflareBaseUrl(baseUrl);
+  if (cloudflareAccountIdInput) {
+    cloudflareAccountIdInput.value = parsed?.accountId || '';
+  }
+  if (cloudflareGatewayIdInput) {
+    cloudflareGatewayIdInput.value = parsed?.gatewayId || '';
+  }
+}
+
+function resolveProviderBaseUrl(preset) {
+  if (isCloudflarePreset(preset)) {
+    return syncCloudflareBaseUrlFromInputs();
+  }
+  return baseUrlInput.value.trim();
+}
 
 function t(key, params = {}) {
   const dict = I18N[currentLang] || I18N['zh-CN'];
@@ -386,6 +1018,11 @@ function applyI18n() {
     renderPairChannelCards();
     updatePairButtons();
   }
+  if (providerInput) {
+    const selected = providerInput.value || activeProviderId || 'openai';
+    populateProviderOptions();
+    applyProviderPreset(selected, { hydrate: true });
+  }
 }
 
 function initLanguage() {
@@ -396,6 +1033,365 @@ function initLanguage() {
     currentLang = navigator.language?.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en-US';
   }
   applyI18n();
+}
+
+function textByLang(value) {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (!value || typeof value !== 'object') {
+    return '';
+  }
+  if (currentLang === 'en-US') {
+    return value.en || value.zh || '';
+  }
+  return value.zh || value.en || '';
+}
+
+function normalizeUrl(value) {
+  return String(value || '').trim().replace(/\/+$/, '').toLowerCase();
+}
+
+function defaultCustomHeadersText() {
+  return JSON.stringify(DEFAULT_CUSTOM_HEADERS, null, 2);
+}
+
+function applyDefaultCustomHeadersIfNeeded(preset = getActiveProviderPreset()) {
+  if (!preset?.showCustomOptions) {
+    customHeadersInput.value = '';
+    return;
+  }
+  if (!String(customHeadersInput?.value || '').trim()) {
+    customHeadersInput.value = defaultCustomHeadersText();
+  }
+}
+
+function getProviderPreset(id) {
+  return providerPresetMap.get(String(id || '').trim()) || providerPresetMap.get('custom');
+}
+
+function getActiveProviderPreset() {
+  return getProviderPreset(activeProviderId || providerInput.value);
+}
+
+function isManagedAuthPreset(preset) {
+  return String(preset?.authKind || '').trim() === 'managed-auth';
+}
+
+function isAdvancedProviderPreset(preset) {
+  const kind = String(preset?.authKind || '').trim();
+  return kind === 'managed-auth' || kind === 'cloud-credentials';
+}
+
+function getProviderLoginCommand(preset) {
+  if (!isManagedAuthPreset(preset)) {
+    return '';
+  }
+  const providerId = String(preset?.runtimeProvider || preset?.id || '').trim();
+  if (!providerId) {
+    return '';
+  }
+  return `openclaw models auth login --provider ${providerId}`;
+}
+
+function initProviderFilter() {
+  showAdvancedProviders = localStorage.getItem('openclaw.ui.provider.showAdvanced') === '1';
+  if (providerShowAdvancedToggle) {
+    providerShowAdvancedToggle.checked = showAdvancedProviders;
+  }
+}
+
+function resolveFallbackApiKeyForPreset(preset) {
+  if (!rawConfig) {
+    return '';
+  }
+  const configPresetId = detectProviderPresetId(rawConfig || {});
+  if (configPresetId !== preset.id) {
+    return '';
+  }
+  return String(rawConfig?.apiKey || '').trim();
+}
+
+function customApiModeMemoryKey(preset, model) {
+  const presetId = String(preset?.id || '').trim();
+  const modelId = String(model || '').trim().toLowerCase();
+  if (!presetId || !modelId) {
+    return '';
+  }
+  return `${presetId}::${modelId}`;
+}
+
+function readCustomApiModeMemory() {
+  try {
+    const raw = localStorage.getItem(CUSTOM_API_MODE_STORAGE_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {};
+    }
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+function writeCustomApiModeMemory(memory) {
+  localStorage.setItem(CUSTOM_API_MODE_STORAGE_KEY, JSON.stringify(memory || {}));
+}
+
+function getRememberedCustomApiModeForCurrentModel(preset = getActiveProviderPreset()) {
+  if (!preset?.showCustomOptions) {
+    return '';
+  }
+  const key = customApiModeMemoryKey(preset, modelInput?.value || '');
+  if (!key) {
+    return '';
+  }
+  const memory = readCustomApiModeMemory();
+  return normalizeCustomApiModeByBaseUrl('', memory[key] || '');
+}
+
+function rememberCustomApiModeForCurrentModel(preset = getActiveProviderPreset()) {
+  if (!preset?.showCustomOptions) {
+    return;
+  }
+  const key = customApiModeMemoryKey(preset, modelInput?.value || '');
+  if (!key) {
+    return;
+  }
+  const mode = normalizeCustomApiModeByBaseUrl('', customApiModeInput?.value || '');
+  const memory = readCustomApiModeMemory();
+  if (mode) {
+    memory[key] = mode;
+  } else {
+    delete memory[key];
+  }
+  writeCustomApiModeMemory(memory);
+}
+
+function syncCustomApiModeForCurrentModel({ clearIfMissing = true } = {}) {
+  const preset = getActiveProviderPreset();
+  if (!preset.showCustomOptions) {
+    customApiModeInput.value = '';
+    return '';
+  }
+  const remembered = getRememberedCustomApiModeForCurrentModel(preset);
+  if (remembered) {
+    customApiModeInput.value = remembered;
+    return remembered;
+  }
+  const current = normalizeCustomApiModeByBaseUrl('', customApiModeInput.value);
+  if (current && !clearIfMissing) {
+    customApiModeInput.value = current;
+    return current;
+  }
+  customApiModeInput.value = '';
+  return '';
+}
+
+function renderChips(container, items, subtle = false) {
+  container.innerHTML = '';
+  const list = Array.isArray(items) ? items : [];
+  for (const item of list) {
+    const chip = document.createElement('span');
+    chip.className = subtle ? 'chip subtle' : 'chip';
+    chip.textContent = textByLang(item);
+    container.appendChild(chip);
+  }
+}
+
+function populateProviderOptions() {
+  const selected = providerInput.value || activeProviderId || 'openai';
+  const selectedPreset = getProviderPreset(selected);
+  if (isAdvancedProviderPreset(selectedPreset) && !showAdvancedProviders) {
+    showAdvancedProviders = true;
+    localStorage.setItem('openclaw.ui.provider.showAdvanced', '1');
+    if (providerShowAdvancedToggle) {
+      providerShowAdvancedToggle.checked = true;
+    }
+  }
+
+  const grouped = new Map();
+  const visiblePresetIds = new Set();
+
+  for (const preset of PROVIDER_PRESETS) {
+    if (!showAdvancedProviders && isAdvancedProviderPreset(preset)) {
+      continue;
+    }
+    const groupName = textByLang(preset.category);
+    if (!grouped.has(groupName)) {
+      grouped.set(groupName, []);
+    }
+    grouped.get(groupName).push(preset);
+    visiblePresetIds.add(preset.id);
+  }
+
+  providerInput.innerHTML = '';
+  for (const [groupName, presets] of grouped.entries()) {
+    const group = document.createElement('optgroup');
+    group.label = groupName;
+    for (const preset of presets) {
+      const option = document.createElement('option');
+      option.value = preset.id;
+      option.textContent = textByLang(preset.label);
+      group.appendChild(option);
+    }
+    providerInput.appendChild(group);
+  }
+
+  const defaultVisible = PROVIDER_PRESETS.find((preset) => visiblePresetIds.has(preset.id))?.id || 'openai';
+  providerInput.value = visiblePresetIds.has(selected) ? selected : defaultVisible;
+  activeProviderId = providerInput.value;
+}
+
+function detectProviderPresetId(config) {
+  const provider = String(config?.provider || '').trim().toLowerCase();
+  const baseUrl = normalizeUrl(config?.baseUrl || '');
+
+  if (!provider) {
+    return 'openai';
+  }
+
+  if (provider && provider !== 'custom' && providerPresetMap.has(provider)) {
+    return provider;
+  }
+  if (provider !== 'custom') {
+    return 'custom';
+  }
+
+  for (const preset of PROVIDER_PRESETS) {
+    if (preset.runtimeProvider !== 'custom' || preset.id === 'custom') {
+      continue;
+    }
+    const expected = normalizeUrl(preset.baseUrlDefault || '');
+    if (expected && baseUrl === expected) {
+      return preset.id;
+    }
+    for (const host of preset.detectHosts || []) {
+      if (baseUrl.includes(host.toLowerCase())) {
+        return preset.id;
+      }
+    }
+  }
+
+  return 'custom';
+}
+
+function applyProviderPreset(presetId, { hydrate = false } = {}) {
+  const preset = getProviderPreset(presetId);
+  if (isAdvancedProviderPreset(preset) && !showAdvancedProviders) {
+    showAdvancedProviders = true;
+    localStorage.setItem('openclaw.ui.provider.showAdvanced', '1');
+    if (providerShowAdvancedToggle) {
+      providerShowAdvancedToggle.checked = true;
+    }
+    populateProviderOptions();
+  }
+  activeProviderId = preset.id;
+  providerInput.value = preset.id;
+
+  providerDescription.textContent = textByLang(preset.description);
+  renderChips(providerRequiredList, preset.requiredFields || []);
+  renderChips(providerTips, preset.tips || [], true);
+  providerDocsLink.href = preset.docs || DOC_PROVIDER_OVERVIEW;
+  providerDocsLink.textContent = currentLang === 'en-US' ? 'Open provider integration docs' : '查看该提供商接入文档';
+
+  const loginCommand = getProviderLoginCommand(preset);
+  if (providerAuthNotice) {
+    providerAuthNotice.style.display = loginCommand ? '' : 'none';
+  }
+  if (providerAuthHint) {
+    providerAuthHint.textContent = loginCommand
+      ? t('provider.loginRequiredHint', { cmd: loginCommand })
+      : '';
+  }
+  if (copyProviderAuthCmdBtn) {
+    copyProviderAuthCmdBtn.style.display = loginCommand ? '' : 'none';
+  }
+
+  apiKeyLabel.textContent = textByLang(preset.keyLabel) || t('field.apiKey');
+  if (isManagedAuthPreset(preset)) {
+    apiKeyHint.textContent = t('provider.loginRequiredShort');
+  } else {
+    apiKeyHint.textContent = preset.keyRequired
+      ? (currentLang === 'en-US' ? 'Required for this provider.' : '当前提供商要求填写 API Key。')
+      : (currentLang === 'en-US' ? 'Optional for this provider.' : '当前提供商可选填写 API Key。');
+  }
+  apiKeyInput.placeholder = preset.keyRequired
+    ? (currentLang === 'en-US' ? 'Required' : '必填')
+    : (currentLang === 'en-US' ? 'Optional' : '可选');
+
+  const cloudflareMode = isCloudflarePreset(preset);
+  if (cloudflareFields) {
+    cloudflareFields.style.display = cloudflareMode ? '' : 'none';
+  }
+  baseUrlField.style.display = preset.showBaseUrl ? '' : 'none';
+  if (preset.showBaseUrl) {
+    baseUrlHint.textContent = cloudflareMode
+      ? (currentLang === 'en-US'
+          ? 'Base URL is generated automatically from Account ID + Gateway ID.'
+          : '将根据 Account ID + Gateway ID 自动生成 Base URL。')
+      : textByLang(preset.baseUrlHint);
+    baseUrlInput.placeholder = preset.baseUrlDefault || 'e.g. https://api.openai.com/v1';
+    if (!hydrate) {
+      const current = baseUrlInput.value.trim();
+      if (!current || current === normalizeUrl(rawConfig?.baseUrl || '')) {
+        baseUrlInput.value = preset.baseUrlDefault || '';
+      }
+    }
+    baseUrlInput.readOnly = cloudflareMode;
+    if (cloudflareMode) {
+      if (hydrate && baseUrlInput.value.trim()) {
+        hydrateCloudflareInputsFromBaseUrl(baseUrlInput.value.trim());
+      }
+      syncCloudflareBaseUrlFromInputs();
+    }
+  } else {
+    baseUrlInput.value = '';
+    baseUrlHint.textContent = '';
+    baseUrlInput.readOnly = false;
+    if (cloudflareAccountIdInput) {
+      cloudflareAccountIdInput.value = '';
+    }
+    if (cloudflareGatewayIdInput) {
+      cloudflareGatewayIdInput.value = '';
+    }
+  }
+
+  customApiModeField.style.display = preset.showCustomOptions ? '' : 'none';
+  customHeadersField.style.display = preset.showCustomOptions ? '' : 'none';
+  fetchModelsBtn.style.display = preset.fetchModels ? '' : 'none';
+  fetchModelsBtn.disabled = !preset.fetchModels;
+
+  if (preset.showCustomOptions) {
+    const normalized = normalizeCustomApiModeByBaseUrl(
+      baseUrlInput.value.trim(),
+      customApiModeInput.value.trim()
+    );
+    customApiModeInput.value = normalized;
+    applyDefaultCustomHeadersIfNeeded(preset);
+    if (!hydrate || !normalized) {
+      syncCustomApiModeForCurrentModel();
+    }
+    if (cloudflareMode) {
+      syncCloudflareBaseUrlFromInputs();
+    }
+  } else {
+    customApiModeInput.value = '';
+    customHeadersInput.value = '';
+  }
+
+  if (!hydrate) {
+    if (!preset.keyRequired && preset.autoApiKey && !apiKeyInput.value.trim()) {
+      apiKeyInput.value = '';
+    }
+    renderModelSuggestions([]);
+    lastModelFetchKey = '';
+  }
+  modelInput.placeholder = textByLang(preset.modelHint) || (currentLang === 'en-US' ? 'Model ID' : '模型 ID');
+  modelHint.textContent = textByLang(preset.modelHint);
 }
 
 function setSetupMessage(message, type = '') {
@@ -1280,80 +2276,148 @@ function dedupeSkillsDirs(items) {
   return Array.from(uniq);
 }
 
-function setModelValue(value) {
+function setModelValue(value, { syncApiMode = true } = {}) {
   const model = String(value || '').trim();
-  if (!model) {
-    modelInput.value = '';
+  modelInput.value = model;
+  if (syncApiMode) {
+    syncCustomApiModeForCurrentModel();
+  }
+}
+
+function closeModelDropdown() {
+  if (!modelDropdown) {
+    return;
+  }
+  modelDropdownQuery = '';
+  isModelDropdownOpen = false;
+  modelDropdown.classList.add('hidden');
+}
+
+function getFilteredModelOptions() {
+  const keyword = String(modelDropdownQuery || '').trim().toLowerCase();
+  if (!keyword) {
+    return cachedModelOptions.slice(0, 200);
+  }
+  return cachedModelOptions
+    .filter((modelId) => modelId.toLowerCase().includes(keyword))
+    .slice(0, 200);
+}
+
+function renderModelDropdown() {
+  if (!modelDropdown) {
+    return;
+  }
+  modelDropdown.innerHTML = '';
+
+  const options = getFilteredModelOptions();
+  if (options.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'model-dropdown-empty';
+    empty.textContent = t('model.dropdown.empty');
+    modelDropdown.appendChild(empty);
     return;
   }
 
-  let option = Array.from(modelInput.options).find((item) => item.value === model);
-  if (!option) {
-    option = document.createElement('option');
-    option.value = model;
-    option.textContent = t('model.currentValue', { value: model });
-    modelInput.appendChild(option);
+  for (const modelId of options) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'model-dropdown-item';
+    item.textContent = modelId;
+    item.addEventListener('mousedown', (event) => {
+      event.preventDefault();
+    });
+    item.addEventListener('click', () => {
+      setModelValue(modelId);
+      closeModelDropdown();
+      modelInput.focus();
+    });
+    modelDropdown.appendChild(item);
   }
-  modelInput.value = model;
+}
+
+function openModelDropdown() {
+  if (!modelDropdown || cachedModelOptions.length === 0) {
+    closeModelDropdown();
+    return;
+  }
+  modelDropdownQuery = '';
+  isModelDropdownOpen = true;
+  modelDropdown.classList.remove('hidden');
+  renderModelDropdown();
 }
 
 function renderModelSuggestions(models = []) {
   const current = modelInput.value.trim();
-  modelInput.innerHTML = '';
+  modelSuggestions.innerHTML = '';
 
-  const placeholder = document.createElement('option');
-  placeholder.value = '';
-  placeholder.textContent = models.length > 0 ? t('model.placeholder.select') : t('model.placeholder.fetch');
-  modelInput.appendChild(placeholder);
-
+  const nextOptions = [];
   const seen = new Set();
   for (const modelIdRaw of models) {
     const modelId = String(modelIdRaw || '').trim();
-    if (!modelId || seen.has(modelId)) {
+    if (!modelId || seen.has(modelId.toLowerCase())) {
       continue;
     }
-    seen.add(modelId);
+    seen.add(modelId.toLowerCase());
+    nextOptions.push(modelId);
 
     const option = document.createElement('option');
     option.value = modelId;
-    option.textContent = modelId;
-    modelInput.appendChild(option);
+    modelSuggestions.appendChild(option);
   }
+  cachedModelOptions = nextOptions;
 
-  if (current && seen.has(current)) {
+  if (current) {
     modelInput.value = current;
-    return;
+  } else {
+    modelInput.value = '';
   }
 
-  if (current && !seen.has(current)) {
-    const option = document.createElement('option');
-    option.value = current;
-    option.textContent = t('model.currentValue', { value: current });
-    modelInput.appendChild(option);
-    modelInput.value = current;
-    return;
+  if (cachedModelOptions.length === 0) {
+    closeModelDropdown();
+  } else if (isModelDropdownOpen) {
+    renderModelDropdown();
   }
-
-  modelInput.value = '';
+  syncCustomApiModeForCurrentModel({ clearIfMissing: false });
 }
 
 function currentFetchKey() {
-  const provider = providerInput.value.trim();
-  const baseUrl = baseUrlInput.value.trim();
-  const apiKey = (apiKeyInput.value.trim() || rawConfig?.apiKey || '').trim();
-  const customApiMode = customApiModeInput.value.trim();
-  const customHeadersJson = customHeadersInput.value.trim();
-  return [provider, baseUrl, apiKey, customApiMode, customHeadersJson].join('||');
+  const preset = getActiveProviderPreset();
+  const baseUrl = resolveProviderBaseUrl(preset);
+  const fallbackApiKey = resolveFallbackApiKeyForPreset(preset);
+  const apiKey = (
+    apiKeyInput.value.trim() ||
+    fallbackApiKey ||
+    (!preset.keyRequired ? preset.autoApiKey || '' : '')
+  ).trim();
+  const customApiMode = normalizeCustomApiModeByBaseUrl(baseUrl, customApiModeInput.value.trim());
+  const customHeadersJson = preset.showCustomOptions ? customHeadersInput.value.trim() : '';
+  return [preset.id, baseUrl, apiKey, customApiMode, customHeadersJson].join('||');
 }
 
 async function fetchModels({ silent = false, force = false } = {}) {
-  const provider = providerInput.value.trim();
-  const baseUrl = baseUrlInput.value.trim();
-  const apiKey = (apiKeyInput.value.trim() || rawConfig?.apiKey || '').trim();
-  const customApiMode = customApiModeInput.value.trim() || DEFAULT_CUSTOM_API_MODE;
-  const customHeadersJson = customHeadersInput.value.trim();
+  const preset = getActiveProviderPreset();
+  const provider = preset.runtimeProvider;
+  const baseUrl = resolveProviderBaseUrl(preset);
+  const fallbackApiKey = resolveFallbackApiKeyForPreset(preset);
+  const apiKey = (
+    apiKeyInput.value.trim() ||
+    fallbackApiKey ||
+    (!preset.keyRequired ? preset.autoApiKey || '' : '')
+  ).trim();
+  const customApiMode = normalizeCustomApiModeByBaseUrl(
+    baseUrl,
+    customApiModeInput.value.trim()
+  );
+  const customHeadersJson = preset.showCustomOptions ? customHeadersInput.value.trim() : '';
 
-  if (provider !== 'custom') {
+  if (preset.showCustomOptions && !customApiMode) {
+    if (!silent) {
+      setSetupMessage(t('msg.customApiModeRequired'), 'error');
+    }
+    return false;
+  }
+
+  if (provider !== 'custom' || !preset.fetchModels) {
     if (!silent) {
       setSetupMessage(t('msg.onlyCustomFetch'), 'error');
     }
@@ -1447,15 +2511,20 @@ function renderSkillsDirs() {
 }
 
 function renderSummary(config, configPath) {
+  const presetId = detectProviderPresetId(config);
+  const preset = getProviderPreset(presetId);
+  summaryProvider.textContent = textByLang(preset.label) || config.provider || '-';
   summaryModel.textContent = config.model || '-';
   summaryApiKey.textContent = config.apiKeyMasked || '********';
   summaryBaseUrl.textContent = config.baseUrl || '-';
   summaryCommand.textContent = config.openclawCommand || 'openclaw';
-  const summaryMode = config.customApiMode || DEFAULT_CUSTOM_API_MODE;
+  const summaryMode = normalizeCustomApiModeByBaseUrl(config.baseUrl || '', config.customApiMode || '');
+  const isCustomProvider = String(config.provider || '').trim().toLowerCase() === 'custom';
   if (summaryCustomApiMode instanceof HTMLSelectElement) {
-    summaryCustomApiMode.value = summaryMode;
+    summaryCustomApiMode.value = summaryMode || '';
+    summaryCustomApiMode.disabled = !isCustomProvider;
   } else {
-    summaryCustomApiMode.textContent = summaryMode;
+    summaryCustomApiMode.textContent = summaryMode || '-';
   }
   const headers = config.customHeaders || {};
   summaryCustomHeaders.textContent = Object.keys(headers).length
@@ -1525,10 +2594,7 @@ function showMain() {
 }
 
 function refreshCustomInputs() {
-  const isCustom = providerInput.value.trim() === 'custom';
-  customApiModeInput.disabled = !isCustom;
-  customHeadersInput.disabled = !isCustom;
-  fetchModelsBtn.disabled = !isCustom;
+  applyProviderPreset(providerInput.value || activeProviderId || 'openai', { hydrate: true });
 }
 
 function schedulePairReconnect() {
@@ -2075,7 +3141,7 @@ function initPairCenter() {
 
 async function loadState() {
   const state = await invoke('get_state');
-  platformBadge.textContent = `${state.platform} · v${state.version}`;
+  platformBadge.textContent = `${state.platform} | v${state.version}`;
 
   if (state.isConfigured && state.config) {
     rawConfig = await invoke('read_raw_config');
@@ -2095,21 +3161,46 @@ async function loadState() {
     return;
   }
 
-  rawConfig = state.config;
+  rawConfig = state.config || null;
   applyPairConfigFromRawConfig();
-  providerInput.value = 'custom';
+  const presetId = detectProviderPresetId(rawConfig || {});
+  providerInput.value = presetId;
+  applyProviderPreset(presetId, { hydrate: true });
+  const preset = getActiveProviderPreset();
+
   setModelValue(rawConfig?.model || '');
-  baseUrlInput.value = rawConfig?.baseUrl || '';
-  commandInput.value = rawConfig?.openclawCommand || 'openclaw';
-  customApiModeInput.value = rawConfig?.customApiMode || DEFAULT_CUSTOM_API_MODE;
-  customHeadersInput.value = rawConfig?.customHeaders
-    ? JSON.stringify(rawConfig.customHeaders, null, 2)
+  baseUrlInput.value = preset.showBaseUrl
+    ? rawConfig?.baseUrl || preset.baseUrlDefault || ''
     : '';
+  commandInput.value = rawConfig?.openclawCommand || 'openclaw';
+  const hydratedCustomApiMode = preset.showCustomOptions
+    ? normalizeCustomApiModeByBaseUrl(
+        baseUrlInput.value,
+        rawConfig?.customApiMode || ''
+      )
+    : '';
+  customApiModeInput.value = hydratedCustomApiMode;
+  if (preset.showCustomOptions && hydratedCustomApiMode) {
+    rememberCustomApiModeForCurrentModel(preset);
+  } else if (preset.showCustomOptions) {
+    syncCustomApiModeForCurrentModel();
+  }
+  if (preset.showCustomOptions && rawConfig?.customHeaders && Object.keys(rawConfig.customHeaders).length > 0) {
+    customHeadersInput.value = JSON.stringify(rawConfig.customHeaders, null, 2);
+  } else if (preset.showCustomOptions) {
+    customHeadersInput.value = defaultCustomHeadersText();
+  } else {
+    customHeadersInput.value = '';
+  }
+  if (isCloudflarePreset(preset)) {
+    hydrateCloudflareInputsFromBaseUrl(baseUrlInput.value.trim());
+    baseUrlInput.value = resolveProviderBaseUrl(preset);
+  }
   apiKeyInput.value = '';
   skillsDirs = dedupeSkillsDirs(rawConfig?.skillsDirs || []);
   renderSkillsDirs();
   refreshCustomInputs();
-  if (providerInput.value === 'custom' && baseUrlInput.value.trim()) {
+  if (preset.fetchModels && preset.runtimeProvider === 'custom' && resolveProviderBaseUrl(preset)) {
     await fetchModels({ silent: true });
   }
   await refreshKernelStatus();
@@ -2158,24 +3249,67 @@ installDefaultsBtn.addEventListener('click', async () => {
 });
 
 saveBtn.addEventListener('click', async () => {
-  const apiKey = apiKeyInput.value.trim() || rawConfig?.apiKey || '';
+  const preset = getActiveProviderPreset();
+  const fallbackApiKey = resolveFallbackApiKeyForPreset(preset);
+  let apiKey = apiKeyInput.value.trim() || fallbackApiKey || '';
   const model = modelInput.value.trim();
-  const baseUrl = baseUrlInput.value.trim();
-  const provider = providerInput.value.trim();
-  const customApiMode = customApiModeInput.value.trim() || DEFAULT_CUSTOM_API_MODE;
-  const customHeadersJson = customHeadersInput.value.trim();
+  let baseUrl = resolveProviderBaseUrl(preset);
+  const provider = preset.runtimeProvider;
+  if (isCloudflarePreset(preset)) {
+    const accountId = String(cloudflareAccountIdInput?.value || '').trim();
+    const gatewayId = String(cloudflareGatewayIdInput?.value || '').trim();
+    if (!accountId) {
+      setSetupMessage(t('msg.cloudflareAccountIdRequired'), 'error');
+      return;
+    }
+    if (!gatewayId) {
+      setSetupMessage(t('msg.cloudflareGatewayIdRequired'), 'error');
+      return;
+    }
+    baseUrl = resolveProviderBaseUrl(preset);
+  }
+  const customApiMode = normalizeCustomApiModeByBaseUrl(
+    baseUrl,
+    customApiModeInput.value.trim()
+  );
+  const customHeadersJson = preset.showCustomOptions ? customHeadersInput.value.trim() : '';
 
   if (!model) {
     setSetupMessage(t('msg.modelRequired'), 'error');
     return;
   }
 
-  if (provider === 'custom' && !baseUrl) {
-    setSetupMessage(t('msg.baseUrlRequiredForCustom'), 'error');
+  if (preset.showCustomOptions && !customApiMode) {
+    setSetupMessage(t('msg.customApiModeRequired'), 'error');
     return;
   }
 
-  if (provider === 'custom' && customHeadersJson) {
+  if (isManagedAuthPreset(preset)) {
+    setSetupMessage(t('msg.authChecking'));
+    const authResult = await invoke('check_provider_auth', {
+      provider: preset.runtimeProvider || preset.id
+    });
+    if (!authResult?.ok) {
+      setSetupMessage(authResult?.message || t('msg.authNotReady'), 'error');
+      doctorOutput.textContent = authResult?.detail || '';
+      return;
+    }
+  }
+
+  if (preset.showBaseUrl && preset.baseUrlRequired && !baseUrl) {
+    setSetupMessage(t('msg.baseUrlRequiredForProvider'), 'error');
+    return;
+  }
+
+  if (!apiKey && !preset.keyRequired) {
+    apiKey = preset.autoApiKey || 'local';
+  }
+  if (!apiKey && preset.keyRequired) {
+    setSetupMessage(t('msg.apiKeyRequiredForProvider'), 'error');
+    return;
+  }
+
+  if (provider === 'custom' && preset.showCustomOptions && customHeadersJson) {
     try {
       const parsed = JSON.parse(customHeadersJson);
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -2195,10 +3329,10 @@ saveBtn.addEventListener('click', async () => {
   const payload = {
     provider,
     model,
-    baseUrl,
+    baseUrl: preset.showBaseUrl ? baseUrl : '',
     apiKey,
-    customApiMode,
-    customHeadersJson,
+    customApiMode: preset.showCustomOptions ? customApiMode : '',
+    customHeadersJson: preset.showCustomOptions ? customHeadersJson : '',
     openclawCommand: commandInput.value,
     skillsDirs
   };
@@ -2210,6 +3344,8 @@ saveBtn.addEventListener('click', async () => {
     setSetupMessage(result.message || t('msg.saveFailed'), 'error');
     return;
   }
+
+  rememberCustomApiModeForCurrentModel(preset);
 
   setSetupMessage(t('msg.saveSuccess'));
   await refreshKernelStatus();
@@ -2242,7 +3378,7 @@ async function handleKernelInstall(buttonLabel) {
     return;
   }
 
-  setSetupMessage(result.message || `${buttonLabel}成功。`, 'success');
+  setSetupMessage(result.message || t('msg.actionCompleted', { label: buttonLabel }), 'success');
   doctorOutput.textContent = `${result.message}\n\n${result.detail || ''}`.trim();
   await refreshKernelStatus();
 }
@@ -2305,32 +3441,106 @@ reconfigureBtn.addEventListener('click', async () => {
   rawConfig = await invoke('read_raw_config');
   applyPairConfigFromRawConfig();
   updatePairButtons();
-  providerInput.value = 'custom';
+  const presetId = detectProviderPresetId(rawConfig || {});
+  providerInput.value = presetId;
+  applyProviderPreset(presetId, { hydrate: true });
+  const preset = getActiveProviderPreset();
   setModelValue(rawConfig?.model || '');
-  baseUrlInput.value = rawConfig?.baseUrl || '';
-  commandInput.value = rawConfig?.openclawCommand || 'openclaw';
-  customApiModeInput.value = rawConfig?.customApiMode || DEFAULT_CUSTOM_API_MODE;
-  customHeadersInput.value = rawConfig?.customHeaders
-    ? JSON.stringify(rawConfig.customHeaders, null, 2)
+  baseUrlInput.value = preset.showBaseUrl
+    ? rawConfig?.baseUrl || preset.baseUrlDefault || ''
     : '';
+  commandInput.value = rawConfig?.openclawCommand || 'openclaw';
+  const reconfiguredCustomApiMode = preset.showCustomOptions
+    ? normalizeCustomApiModeByBaseUrl(
+        baseUrlInput.value,
+        rawConfig?.customApiMode || ''
+      )
+    : '';
+  customApiModeInput.value = reconfiguredCustomApiMode;
+  if (preset.showCustomOptions && reconfiguredCustomApiMode) {
+    rememberCustomApiModeForCurrentModel(preset);
+  } else if (preset.showCustomOptions) {
+    syncCustomApiModeForCurrentModel();
+  }
+  if (preset.showCustomOptions && rawConfig?.customHeaders && Object.keys(rawConfig.customHeaders).length > 0) {
+    customHeadersInput.value = JSON.stringify(rawConfig.customHeaders, null, 2);
+  } else if (preset.showCustomOptions) {
+    customHeadersInput.value = defaultCustomHeadersText();
+  } else {
+    customHeadersInput.value = '';
+  }
+  if (isCloudflarePreset(preset)) {
+    hydrateCloudflareInputsFromBaseUrl(baseUrlInput.value.trim());
+    baseUrlInput.value = resolveProviderBaseUrl(preset);
+  }
   apiKeyInput.value = rawConfig?.apiKey || '';
   skillsDirs = dedupeSkillsDirs(rawConfig?.skillsDirs || []);
   renderSkillsDirs();
   refreshCustomInputs();
   renderModelSuggestions([]);
   lastModelFetchKey = '';
-  if (providerInput.value === 'custom' && baseUrlInput.value.trim()) {
+  if (preset.fetchModels && preset.runtimeProvider === 'custom' && resolveProviderBaseUrl(preset)) {
     await fetchModels({ silent: true });
   }
   setSetupMessage('');
   showSetup();
 });
 
-providerInput.addEventListener('change', async () => {
-  refreshCustomInputs();
+providerShowAdvancedToggle?.addEventListener('change', () => {
+  showAdvancedProviders = Boolean(providerShowAdvancedToggle.checked);
+  localStorage.setItem('openclaw.ui.provider.showAdvanced', showAdvancedProviders ? '1' : '0');
+  if (!showAdvancedProviders && isAdvancedProviderPreset(getActiveProviderPreset())) {
+    providerInput.value = 'openai';
+    activeProviderId = 'openai';
+  }
+  populateProviderOptions();
+  applyProviderPreset(providerInput.value, { hydrate: false });
+  apiKeyInput.value = '';
+  setModelValue('');
   renderModelSuggestions([]);
   lastModelFetchKey = '';
-  if (providerInput.value.trim() === 'custom' && baseUrlInput.value.trim()) {
+});
+
+copyProviderAuthCmdBtn?.addEventListener('click', async () => {
+  const command = getProviderLoginCommand(getActiveProviderPreset());
+  if (!command) {
+    return;
+  }
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(command);
+    } else {
+      throw new Error('Clipboard API unavailable');
+    }
+    setSetupMessage(t('msg.loginCommandCopied'), 'success');
+  } catch {
+    setSetupMessage(t('msg.loginCommandCopyFailed', { cmd: command }), 'error');
+  }
+});
+
+providerInput.addEventListener('change', async () => {
+  applyProviderPreset(providerInput.value, { hydrate: false });
+  const preset = getActiveProviderPreset();
+  apiKeyInput.value = '';
+  setModelValue('');
+  if (preset.showBaseUrl && !isCloudflarePreset(preset)) {
+    baseUrlInput.value = preset.baseUrlDefault || '';
+  }
+  if (preset.showCustomOptions) {
+    customHeadersInput.value = defaultCustomHeadersText();
+  }
+  if (isCloudflarePreset(preset)) {
+    if (cloudflareAccountIdInput) {
+      cloudflareAccountIdInput.value = '';
+    }
+    if (cloudflareGatewayIdInput) {
+      cloudflareGatewayIdInput.value = '';
+    }
+    resolveProviderBaseUrl(preset);
+  }
+  renderModelSuggestions([]);
+  lastModelFetchKey = '';
+  if (preset.fetchModels && preset.runtimeProvider === 'custom' && resolveProviderBaseUrl(preset)) {
     await fetchModels({ silent: true });
   }
 });
@@ -2339,7 +3549,54 @@ fetchModelsBtn.addEventListener('click', async () => {
   await fetchModels({ force: true });
 });
 
+modelInput.addEventListener('focus', () => {
+  openModelDropdown();
+});
+
+modelInput.addEventListener('click', () => {
+  openModelDropdown();
+});
+
+modelInput.addEventListener('input', () => {
+  modelDropdownQuery = modelInput.value || '';
+  syncCustomApiModeForCurrentModel();
+  if (isModelDropdownOpen) {
+    renderModelDropdown();
+  }
+});
+
+modelInput.addEventListener('keydown', (event) => {
+  if (event.key === 'ArrowDown') {
+    openModelDropdown();
+    event.preventDefault();
+    return;
+  }
+  if (event.key === 'Escape') {
+    closeModelDropdown();
+  }
+});
+
+document.addEventListener('pointerdown', (event) => {
+  const target = event.target instanceof Node ? event.target : null;
+  if (!target) {
+    return;
+  }
+  if (modelInput?.contains(target) || modelDropdown?.contains(target)) {
+    return;
+  }
+  closeModelDropdown();
+});
+
 baseUrlInput.addEventListener('blur', async () => {
+  const preset = getActiveProviderPreset();
+  const baseUrl = resolveProviderBaseUrl(preset);
+  customApiModeInput.value = normalizeCustomApiModeByBaseUrl(
+    baseUrl,
+    customApiModeInput.value.trim()
+  );
+  if (isCloudflarePreset(preset)) {
+    resolveProviderBaseUrl(preset);
+  }
   await fetchModels({ silent: true, force: true });
 });
 
@@ -2348,8 +3605,30 @@ apiKeyInput.addEventListener('blur', async () => {
 });
 
 customApiModeInput.addEventListener('change', async () => {
+  const preset = getActiveProviderPreset();
+  const baseUrl = resolveProviderBaseUrl(preset);
+  customApiModeInput.value = normalizeCustomApiModeByBaseUrl(
+    baseUrl,
+    customApiModeInput.value.trim()
+  );
+  rememberCustomApiModeForCurrentModel(preset);
+  if (isCloudflarePreset(preset)) {
+    resolveProviderBaseUrl(preset);
+  }
   await fetchModels({ silent: true, force: true });
 });
+
+const onCloudflareFieldChanged = async () => {
+  const preset = getActiveProviderPreset();
+  if (!isCloudflarePreset(preset)) {
+    return;
+  }
+  resolveProviderBaseUrl(preset);
+  await fetchModels({ silent: true, force: true });
+};
+
+cloudflareAccountIdInput?.addEventListener('input', onCloudflareFieldChanged);
+cloudflareGatewayIdInput?.addEventListener('input', onCloudflareFieldChanged);
 
 customHeadersInput.addEventListener('blur', async () => {
   await fetchModels({ silent: true, force: true });
@@ -2364,13 +3643,25 @@ summaryCustomApiMode.addEventListener('change', async () => {
   if (!current) {
     return;
   }
+  if (String(current.provider || '').trim().toLowerCase() !== 'custom') {
+    return;
+  }
+
+  const summaryMode = normalizeCustomApiModeByBaseUrl(
+    current.baseUrl || '',
+    summaryCustomApiMode.value || ''
+  );
+  if (!summaryMode) {
+    doctorOutput.textContent = t('msg.customApiModeRequired');
+    return;
+  }
 
   const payload = {
     provider: current.provider || 'custom',
     model: current.model || '',
     baseUrl: current.baseUrl || '',
     apiKey: current.apiKey || '',
-    customApiMode: summaryCustomApiMode.value || DEFAULT_CUSTOM_API_MODE,
+    customApiMode: summaryMode,
     customHeadersJson: current.customHeaders ? JSON.stringify(current.customHeaders) : '',
     openclawCommand: current.openclawCommand || 'openclaw',
     skillsDirs: current.skillsDirs || []
@@ -2419,6 +3710,10 @@ langSelect.addEventListener('change', async () => {
   }
 });
 
+initProviderFilter();
 initLanguage();
 initPairCenter();
 loadState();
+
+
+

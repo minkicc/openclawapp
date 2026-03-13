@@ -27,37 +27,98 @@
         <section class="card" id="setupView">
           <h2 data-i18n="setup.title">配置 OpenClaw（核心项）</h2>
           <p class="hint" data-i18n="setup.hint">
-            已统一使用 Custom Provider，请填写 Base URL、Model API Key、Model。
+            先选择模型提供商，再按提示填写必填项即可。
           </p>
 
           <div class="form-grid">
-            <input id="providerInput" type="hidden" value="custom" />
+            <label class="full-row provider-advanced-toggle">
+              <input id="providerShowAdvancedToggle" type="checkbox" />
+              <span data-i18n="provider.showAdvanced">显示高级提供商（OAuth/云凭据）</span>
+            </label>
+            <label class="full-row" id="providerField">
+              <span data-i18n="field.provider">模型提供商</span>
+              <select id="providerInput"></select>
+            </label>
 
-            <label>
-              <span data-i18n="field.baseUrl">Base URL</span>
+            <article class="provider-guide full-row" id="providerGuide">
+              <p id="providerDescription"></p>
+              <div class="chips" id="providerRequiredList"></div>
+              <div class="chips subtle" id="providerTips"></div>
+              <div class="provider-auth-notice" id="providerAuthNotice" style="display: none">
+                <p id="providerAuthHint"></p>
+                <button id="copyProviderAuthCmdBtn" class="btn-secondary" type="button" data-i18n="btn.copyLoginCommand">
+                  复制登录命令
+                </button>
+              </div>
+              <a
+                id="providerDocsLink"
+                target="_blank"
+                rel="noreferrer noopener"
+                href="https://docs.openclaw.ai/concepts/model-providers"
+              >
+                查看该提供商接入文档
+              </a>
+            </article>
+
+            <label id="baseUrlField">
+              <span id="baseUrlLabel" data-i18n="field.baseUrl">Base URL</span>
               <input
                 id="baseUrlInput"
                 type="text"
                 placeholder="例如 https://api.openai.com/v1"
                 data-i18n-placeholder="ph.baseUrl"
               />
+              <p class="field-hint" id="baseUrlHint"></p>
             </label>
 
-            <label>
-              <span data-i18n="field.apiKey">Model API Key</span>
-              <input id="apiKeyInput" type="password" placeholder="必须填写" data-i18n-placeholder="ph.required" />
+            <div class="full-row cloudflare-fields" id="cloudflareFields" style="display: none">
+              <label>
+                <span data-i18n="field.cloudflareAccountId">Cloudflare Account ID</span>
+                <input
+                  id="cloudflareAccountIdInput"
+                  type="text"
+                  placeholder="Cloudflare Account ID"
+                  data-i18n-placeholder="ph.cloudflareAccountId"
+                />
+              </label>
+              <label>
+                <span data-i18n="field.cloudflareGatewayId">Cloudflare Gateway ID</span>
+                <input
+                  id="cloudflareGatewayIdInput"
+                  type="text"
+                  placeholder="Cloudflare Gateway ID"
+                  data-i18n-placeholder="ph.cloudflareGatewayId"
+                />
+              </label>
+            </div>
+
+            <label id="apiKeyField">
+              <span id="apiKeyLabel" data-i18n="field.apiKey">Model API Key</span>
+              <input id="apiKeyInput" type="password" placeholder="必填" data-i18n-placeholder="ph.required" />
+              <p class="field-hint" id="apiKeyHint"></p>
             </label>
 
-            <label>
-              <span data-i18n="field.model">Model</span>
+            <label id="customApiModeField">
+              <span data-i18n="field.customApiMode">Custom API 模式（仅 Custom）</span>
+              <select id="customApiModeInput">
+                <option value="" data-i18n="customApiMode.placeholder">请选择 API 模式</option>
+                <option value="openai-responses">openai-responses</option>
+                <option value="openai-completions">openai-completions</option>
+                <option value="anthropic-messages">anthropic-messages</option>
+              </select>
+            </label>
+
+            <label class="full-row" id="modelField">
+              <span id="modelLabel" data-i18n="field.model">Model</span>
               <div class="inline-row">
-                <select id="modelInput">
-                  <option id="modelPlaceholderOption" value="" data-i18n="model.placeholder.fetch">
-                    请选择模型（先点击“拉取模型”）
-                  </option>
-                </select>
+                <div class="model-input-wrap">
+                  <input id="modelInput" type="text" list="modelSuggestions" />
+                  <datalist id="modelSuggestions"></datalist>
+                  <div id="modelDropdown" class="model-dropdown hidden"></div>
+                </div>
                 <button id="fetchModelsBtn" class="btn-secondary" type="button" data-i18n="btn.fetchModels">拉取模型</button>
               </div>
+              <p class="field-hint" id="modelHint"></p>
             </label>
           </div>
 
@@ -66,20 +127,11 @@
             <div class="advanced-content">
               <div class="form-grid">
                 <label>
-                  <span data-i18n="field.command">OpenClaw 命令（覆盖默认内置内核）</span>
+                  <span data-i18n="field.command">OpenClaw 命令（覆盖内置内核）</span>
                   <input id="commandInput" type="text" value="openclaw" />
                 </label>
 
-                <label>
-                  <span data-i18n="field.customApiMode">Custom API 模式（仅 Custom）</span>
-                  <select id="customApiModeInput">
-                    <option value="openai-responses">openai-responses</option>
-                    <option value="openai-completions">openai-completions</option>
-                    <option value="anthropic-messages">anthropic-messages</option>
-                  </select>
-                </label>
-
-                <label>
+                <label id="customHeadersField">
                   <span data-i18n="field.customHeaders">Custom Headers JSON（仅 Custom，可选）</span>
                   <textarea
                     id="customHeadersInput"
@@ -116,9 +168,10 @@
 
         <section class="card hidden" id="mainView">
           <h2 data-i18n="main.readyTitle">OpenClaw 已就绪</h2>
-          <p class="hint" data-i18n="main.readyHint">核心信息已配置完成，直接点击“开始使用”即可。</p>
+          <p class="hint" data-i18n="main.readyHint">核心设置已完成，点击“开始使用”继续。</p>
 
           <div class="kv">
+            <div><span data-i18n="field.provider">模型提供商</span><strong id="summaryProvider"></strong></div>
             <div><span data-i18n="field.model">Model</span><strong id="summaryModel"></strong></div>
             <div><span data-i18n="field.apiKeyShort">API Key</span><strong id="summaryApiKey"></strong></div>
             <div><span data-i18n="field.baseUrl">Base URL</span><strong id="summaryBaseUrl"></strong></div>
@@ -186,37 +239,37 @@
             <summary data-i18n="advanced.infoTitle">高级信息（可选）</summary>
             <div class="advanced-content">
               <div class="kv">
-                <div><span data-i18n="field.commandShort">OpenClaw 命令</span><strong id="summaryCommand"></strong></div>
+                <div><span data-i18n="field.commandShort">OpenClaw Command</span><strong id="summaryCommand"></strong></div>
                 <div>
-                  <span data-i18n="field.customApiModeShort">Custom API 模式</span>
+                  <span data-i18n="field.customApiModeShort">Custom API Mode</span>
                   <select id="summaryCustomApiMode">
+                    <option value="" data-i18n="customApiMode.placeholder">请选择 API 模式</option>
                     <option value="openai-responses">openai-responses</option>
                     <option value="openai-completions">openai-completions</option>
                     <option value="anthropic-messages">anthropic-messages</option>
                   </select>
                 </div>
                 <div><span data-i18n="field.customHeadersShort">Custom Headers</span><strong id="summaryCustomHeaders"></strong></div>
-                <div><span data-i18n="field.kernelStatus">内核状态</span><strong id="summaryKernel"></strong></div>
-                <div><span data-i18n="field.configPath">配置文件</span><strong id="summaryConfigPath"></strong></div>
+                <div><span data-i18n="field.kernelStatus">Kernel Status</span><strong id="summaryKernel"></strong></div>
+                <div><span data-i18n="field.configPath">Config File</span><strong id="summaryConfigPath"></strong></div>
               </div>
 
               <div class="skills-block compact">
-                <h3 data-i18n="skills.title">Skills 目录</h3>
+                <h3 data-i18n="skills.title">Skills Directory</h3>
                 <ul id="summarySkillsList"></ul>
               </div>
 
               <div class="actions bottom">
-                <button id="reconfigureBtn" class="btn-secondary" data-i18n="btn.reconfigure">重新配置</button>
-                <button id="doctorBtn" class="btn-secondary" data-i18n="btn.checkCommand">检查 OpenClaw 命令</button>
-                <button id="updateKernelBtn" class="btn-secondary" data-i18n="btn.updateKernel">更新内核（npm）</button>
-                <button id="openSkillDirBtn" class="btn-secondary" data-i18n="btn.openFirstSkillDir">打开首个 Skills 目录</button>
+                <button id="reconfigureBtn" class="btn-secondary" data-i18n="btn.reconfigure">Reconfigure</button>
+                <button id="doctorBtn" class="btn-secondary" data-i18n="btn.checkCommand">Check OpenClaw Command</button>
+                <button id="updateKernelBtn" class="btn-secondary" data-i18n="btn.updateKernel">Update Kernel (npm)</button>
+                <button id="openSkillDirBtn" class="btn-secondary" data-i18n="btn.openFirstSkillDir">Open First Skills Directory</button>
               </div>
 
               <pre id="doctorOutput"></pre>
             </div>
           </details>
         </section>
-
       </main>
     </div>
 

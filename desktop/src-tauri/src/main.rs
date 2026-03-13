@@ -17,6 +17,7 @@ const MANAGED_KERNEL_DIR_NAME: &str = "managed-kernel";
 const BUNDLED_KERNEL_DIR_NAME: &str = "kernel";
 const OPENCLAW_RUNTIME_HOME_DIR_NAME: &str = "openclaw-home";
 const OPENCLAW_RUNTIME_WORKSPACE_DIR_NAME: &str = "openclaw-workspace";
+const GATEWAY_RUNTIME_FINGERPRINT_FILE_NAME: &str = "gateway-runtime-fingerprint.txt";
 const APP_GATEWAY_PORT: u16 = 28789;
 const APP_GATEWAY_TOKEN: &str = "openclaw-desktop-local";
 const DEFAULT_CUSTOM_API_MODE: &str = "openai-responses";
@@ -225,6 +226,11 @@ fn maybe_apply_mdlbus_header_defaults(
     }
 }
 
+fn normalize_custom_api_mode_for_base_url(base_url: Option<&str>, custom_api_mode: &str) -> String {
+    let _ = base_url;
+    custom_api_mode.to_string()
+}
+
 fn normalized_base_url(value: &str) -> String {
     value.trim().trim_end_matches('/').to_string()
 }
@@ -339,6 +345,10 @@ fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join(CONFIG_FILE_NAME))
 }
 
+fn trim_utf8_bom(raw: &str) -> &str {
+    raw.strip_prefix('\u{feff}').unwrap_or(raw)
+}
+
 fn read_config(app: &AppHandle) -> Result<Option<StoredConfig>, String> {
     migrate_legacy_app_data_if_needed(app)?;
 
@@ -349,7 +359,7 @@ fn read_config(app: &AppHandle) -> Result<Option<StoredConfig>, String> {
 
     let raw = fs::read_to_string(&path).map_err(|e| format!("读取配置失败: {}", e))?;
     let cfg: StoredConfig =
-        serde_json::from_str(&raw).map_err(|e| format!("配置格式错误: {}", e))?;
+        serde_json::from_str(trim_utf8_bom(&raw)).map_err(|e| format!("配置格式错误: {}", e))?;
     Ok(Some(cfg))
 }
 
@@ -887,6 +897,39 @@ fn app_gateway_ws_url() -> String {
     format!("ws://127.0.0.1:{}", APP_GATEWAY_PORT)
 }
 
+fn gateway_runtime_fingerprint_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app_config_dir(app)?;
+    Ok(dir.join(GATEWAY_RUNTIME_FINGERPRINT_FILE_NAME))
+}
+
+fn gateway_runtime_fingerprint(cfg: &StoredConfig) -> String {
+    serde_json::to_string(cfg).unwrap_or_else(|_| {
+        format!(
+            "{}|{}|{}|{}",
+            cfg.provider,
+            cfg.model,
+            cfg.base_url.clone().unwrap_or_default(),
+            cfg.custom_api_mode
+        )
+    })
+}
+
+fn should_force_restart_gateway(app: &AppHandle, cfg: &StoredConfig) -> bool {
+    let path = match gateway_runtime_fingerprint_path(app) {
+        Ok(v) => v,
+        Err(_) => return true,
+    };
+    let expected = gateway_runtime_fingerprint(cfg);
+    let current = fs::read_to_string(path).unwrap_or_default();
+    current.trim() != expected.trim()
+}
+
+fn persist_gateway_runtime_fingerprint(app: &AppHandle, cfg: &StoredConfig) {
+    if let Ok(path) = gateway_runtime_fingerprint_path(app) {
+        let _ = fs::write(path, gateway_runtime_fingerprint(cfg));
+    }
+}
+
 fn build_openclaw_command(resolved: &ResolvedOpenClawCommand) -> Command {
     let mut command = Command::new(&resolved.program);
     for arg in &resolved.prefix_args {
@@ -1044,10 +1087,12 @@ fn ensure_json_object_mut(
 fn upsert_custom_model(
     provider: &mut serde_json::Map<String, serde_json::Value>,
     model: &str,
+    custom_api_mode: &str,
 ) -> Result<(), String> {
     let model_stub = serde_json::json!({
         "id": model,
         "name": format!("{} (Custom Provider)", model),
+        "api": custom_api_mode,
         "reasoning": false,
         "input": ["text"],
         "cost": {
@@ -1074,6 +1119,7 @@ fn upsert_custom_model(
                     "name".to_string(),
                     serde_json::json!(format!("{} (Custom Provider)", model)),
                 );
+                obj.insert("api".to_string(), serde_json::json!(custom_api_mode));
                 if !obj.contains_key("input") {
                     obj.insert("input".to_string(), serde_json::json!(["text"]));
                 }
@@ -1164,61 +1210,14 @@ fn maybe_migrate_legacy_custom_api_mode(cfg: &mut StoredConfig) -> bool {
     true
 }
 
-fn read_runtime_custom_api_mode(
-    app: &AppHandle,
-    cfg: &StoredConfig,
-    resolved: &ResolvedOpenClawCommand,
-) -> Option<(String, DateTime<Utc>)> {
-    let config_file = resolve_openclaw_config_file(app, cfg, resolved).ok()?;
-    if !config_file.exists() {
-        return None;
-    }
-
-    let modified_at = fs::metadata(&config_file)
-        .ok()
-        .and_then(|meta| meta.modified().ok())
-        .map(DateTime::<Utc>::from)
-        .unwrap_or_else(Utc::now);
-
-    let raw = fs::read_to_string(&config_file).ok()?;
-    let root: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let runtime_mode = root
-        .get("models")
-        .and_then(|v| v.get("providers"))
-        .and_then(|v| v.get("custom"))
-        .and_then(|v| v.get("api"))
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())?;
-
-    let normalized = normalize_custom_api_mode(Some(runtime_mode)).ok()?;
-    Some((normalized, modified_at))
-}
-
 fn sync_custom_api_mode_from_runtime_if_newer(
     app: &AppHandle,
     cfg: &mut StoredConfig,
     resolved: &ResolvedOpenClawCommand,
 ) -> Result<(), String> {
-    if !cfg.provider.trim().eq_ignore_ascii_case("custom") {
-        return Ok(());
-    }
-
-    let Some((runtime_mode, runtime_modified_at)) = read_runtime_custom_api_mode(app, cfg, resolved)
-    else {
-        return Ok(());
-    };
-
-    let cfg_updated_at = parse_config_updated_at(&cfg.updated_at)
-        .unwrap_or_else(|| DateTime::<Utc>::from(std::time::UNIX_EPOCH));
-
-    if runtime_modified_at <= cfg_updated_at || runtime_mode == cfg.custom_api_mode {
-        return Ok(());
-    }
-
-    cfg.custom_api_mode = runtime_mode;
-    cfg.updated_at = Utc::now().to_rfc3339();
-    write_config(app, cfg)?;
+    // Do not sync custom API mode from runtime back to app config.
+    // The app config is the source of truth and user selection must remain stable.
+    let _ = (app, cfg, resolved);
     Ok(())
 }
 
@@ -1233,6 +1232,12 @@ fn read_config_with_runtime_custom_api_mode_sync(app: &AppHandle) -> Result<Opti
 
     let resolved = resolve_openclaw_command(&cfg, app);
     sync_custom_api_mode_from_runtime_if_newer(app, &mut cfg, &resolved)?;
+    let normalized = normalize_custom_api_mode_for_base_url(cfg.base_url.as_deref(), &cfg.custom_api_mode);
+    if normalized != cfg.custom_api_mode {
+        cfg.custom_api_mode = normalized;
+        cfg.updated_at = Utc::now().to_rfc3339();
+        write_config(app, &cfg)?;
+    }
     Ok(Some(cfg))
 }
 
@@ -1260,8 +1265,8 @@ fn apply_custom_provider_overrides(
 
     let raw = fs::read_to_string(&config_file)
         .map_err(|e| format!("读取 OpenClaw 配置失败 ({}): {}", config_file.display(), e))?;
-    let mut root: serde_json::Value =
-        serde_json::from_str(&raw).map_err(|e| format!("解析 OpenClaw 配置失败: {}", e))?;
+    let mut root: serde_json::Value = serde_json::from_str(trim_utf8_bom(&raw))
+        .map_err(|e| format!("解析 OpenClaw 配置失败: {}", e))?;
 
     {
         let root_obj = ensure_json_object_mut(&mut root);
@@ -1291,11 +1296,74 @@ fn apply_custom_provider_overrides(
             custom_obj.insert("headers".to_string(), serde_json::json!(cfg.custom_headers));
         }
 
-        upsert_custom_model(custom_obj, model)?;
+        upsert_custom_model(custom_obj, model, custom_api_mode)?;
     }
 
     {
         let model_ref = normalize_model_ref("custom", model);
+        let root_obj = ensure_json_object_mut(&mut root);
+        let agents_value = root_obj
+            .entry("agents".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let agents_obj = ensure_json_object_mut(agents_value);
+        let defaults_value = agents_obj
+            .entry("defaults".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let defaults_obj = ensure_json_object_mut(defaults_value);
+        let model_value = defaults_obj
+            .entry("model".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let model_obj = ensure_json_object_mut(model_value);
+        model_obj.insert("primary".to_string(), serde_json::json!(model_ref.clone()));
+
+        let defaults_models_value = defaults_obj
+            .entry("models".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let defaults_models_obj = ensure_json_object_mut(defaults_models_value);
+        defaults_models_obj
+            .entry(model_ref)
+            .or_insert_with(|| serde_json::json!({}));
+    }
+
+    let data =
+        serde_json::to_string_pretty(&root).map_err(|e| format!("序列化 OpenClaw 配置失败: {}", e))?;
+    fs::write(&config_file, data)
+        .map_err(|e| format!("写入 OpenClaw 配置失败 ({}): {}", config_file.display(), e))?;
+    Ok(())
+}
+
+fn apply_runtime_default_model_overrides(
+    app: &AppHandle,
+    cfg: &StoredConfig,
+    resolved: &ResolvedOpenClawCommand,
+) -> Result<(), String> {
+    let provider = cfg.provider.trim();
+    if provider.is_empty() {
+        return Err("Provider 不能为空。".to_string());
+    }
+
+    let model = cfg.model.trim();
+    if model.is_empty() {
+        return Err("Model 不能为空。".to_string());
+    }
+
+    let config_file = resolve_openclaw_config_file(app, cfg, resolved)?;
+    if let Some(parent) = config_file.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("创建 OpenClaw 配置目录失败 ({}): {}", parent.display(), e))?;
+    }
+
+    let raw = if config_file.exists() {
+        fs::read_to_string(&config_file)
+            .map_err(|e| format!("读取 OpenClaw 配置失败 ({}): {}", config_file.display(), e))?
+    } else {
+        "{}".to_string()
+    };
+    let mut root: serde_json::Value = serde_json::from_str(trim_utf8_bom(&raw))
+        .map_err(|e| format!("解析 OpenClaw 配置失败: {}", e))?;
+
+    let model_ref = normalize_model_ref(provider, model);
+    {
         let root_obj = ensure_json_object_mut(&mut root);
         let agents_value = root_obj
             .entry("agents".to_string())
@@ -1522,8 +1590,9 @@ fn ensure_gateway_running(
     app: &AppHandle,
     cfg: &StoredConfig,
     resolved: &ResolvedOpenClawCommand,
+    force_restart: bool,
 ) -> Result<bool, String> {
-    if is_gateway_healthy(app, cfg, resolved) {
+    if !force_restart && is_gateway_healthy(app, cfg, resolved) {
         return Ok(false);
     }
 
@@ -1850,7 +1919,17 @@ fn get_dashboard_url(app: AppHandle) -> Result<ActionResponse, String> {
             copied_to: None,
         });
     }
-    let started = match ensure_gateway_running(&app, &cfg, &resolved) {
+    if let Err(e) = apply_runtime_default_model_overrides(&app, &cfg, &resolved) {
+        return Ok(ActionResponse {
+            ok: false,
+            message: "同步 OpenClaw 默认模型配置失败。".to_string(),
+            detail: Some(e),
+            copied_from: None,
+            copied_to: None,
+        });
+    }
+    let force_restart = should_force_restart_gateway(&app, &cfg);
+    let started = match ensure_gateway_running(&app, &cfg, &resolved, force_restart) {
         Ok(v) => v,
         Err(e) => {
             return Ok(ActionResponse {
@@ -1877,6 +1956,8 @@ fn get_dashboard_url(app: AppHandle) -> Result<ActionResponse, String> {
             copied_to: None,
         });
     }
+
+    persist_gateway_runtime_fingerprint(&app, &cfg);
 
     Ok(ActionResponse {
         ok: true,
@@ -1946,6 +2027,11 @@ fn save_config(payload: SavePayload, app: AppHandle) -> Result<ActionResponse, S
                 copied_to: None,
             })
         }
+    };
+    let custom_api_mode = if is_custom_provider {
+        normalize_custom_api_mode_for_base_url(base_url.as_deref(), &custom_api_mode)
+    } else {
+        custom_api_mode
     };
     let mut custom_headers = match parse_custom_headers_json(payload.custom_headers_json.as_deref()) {
         Ok(headers) => headers,
@@ -2017,6 +2103,16 @@ fn save_config(payload: SavePayload, app: AppHandle) -> Result<ActionResponse, S
     };
 
     write_config(&app, &cfg)?;
+    let resolved = resolve_openclaw_command(&cfg, &app);
+    if let Err(e) = apply_runtime_default_model_overrides(&app, &cfg, &resolved) {
+        return Ok(ActionResponse {
+            ok: false,
+            message: "同步 OpenClaw 默认模型配置失败。".to_string(),
+            detail: Some(e),
+            copied_from: None,
+            copied_to: None,
+        });
+    }
 
     Ok(ActionResponse {
         ok: true,
@@ -2064,6 +2160,10 @@ fn fetch_models(payload: FetchModelsPayload) -> Result<FetchModelsResponse, Stri
             })
         }
     };
+    let custom_api_mode = normalize_custom_api_mode_for_base_url(
+        Some(base_url_raw.as_str()),
+        &custom_api_mode,
+    );
 
     let mut custom_headers = match parse_custom_headers_json(payload.custom_headers_json.as_deref()) {
         Ok(headers) => headers,
@@ -2320,6 +2420,159 @@ fn run_doctor(app: AppHandle) -> Result<ActionResponse, String> {
     })
 }
 
+fn is_managed_auth_provider(provider: &str) -> bool {
+    matches!(
+        provider,
+        "openai-codex" | "qwen-portal" | "opencode" | "opencode-go" | "minimax-portal"
+    )
+}
+
+fn auth_profiles_path_candidates(app: &AppHandle) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(home_dir) = openclaw_runtime_home_dir(app) {
+        let home = home_dir.to_string_lossy().to_string();
+        candidates.push(
+            PathBuf::from(format!("{}.openclaw", home))
+                .join("agents")
+                .join("main")
+                .join("agent")
+                .join("auth-profiles.json"),
+        );
+        candidates.push(
+            home_dir
+                .join("agents")
+                .join("main")
+                .join("agent")
+                .join("auth-profiles.json"),
+        );
+        candidates.push(
+            home_dir
+                .join(".openclaw")
+                .join("agents")
+                .join("main")
+                .join("agent")
+                .join("auth-profiles.json"),
+        );
+    }
+    candidates
+}
+
+fn provider_has_auth_profile(auth_store_path: &Path, provider: &str) -> Result<bool, String> {
+    let raw = fs::read_to_string(auth_store_path)
+        .map_err(|e| format!("读取 auth-profiles.json 失败: {}", e))?;
+    let json: serde_json::Value = serde_json::from_str(trim_utf8_bom(&raw))
+        .map_err(|e| format!("auth-profiles.json 解析失败: {}", e))?;
+    let Some(profiles) = json.get("profiles").and_then(|v| v.as_object()) else {
+        return Ok(false);
+    };
+
+    let key_fields = [
+        "key",
+        "token",
+        "accessToken",
+        "access_token",
+        "apiKey",
+        "api_key",
+    ];
+
+    for profile in profiles.values() {
+        let Some(obj) = profile.as_object() else {
+            continue;
+        };
+        let Some(profile_provider) = obj.get("provider").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if !profile_provider.eq_ignore_ascii_case(provider) {
+            continue;
+        }
+
+        let has_credentials = key_fields.iter().any(|field| {
+            obj.get(*field)
+                .and_then(|v| v.as_str())
+                .map(|v| !v.trim().is_empty())
+                .unwrap_or(false)
+        });
+        if has_credentials {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+#[tauri::command]
+fn check_provider_auth(provider: String, app: AppHandle) -> Result<ActionResponse, String> {
+    let provider_id = provider.trim().to_lowercase();
+    if provider_id.is_empty() {
+        return Ok(ActionResponse {
+            ok: false,
+            message: "Provider 不能为空。".to_string(),
+            detail: None,
+            copied_from: None,
+            copied_to: None,
+        });
+    }
+
+    if !is_managed_auth_provider(provider_id.as_str()) {
+        return Ok(ActionResponse {
+            ok: true,
+            message: "当前 Provider 无需 OAuth/CLI 登录校验。".to_string(),
+            detail: None,
+            copied_from: None,
+            copied_to: None,
+        });
+    }
+
+    let login_command = format!("openclaw models auth login --provider {}", provider_id);
+    let candidates = auth_profiles_path_candidates(&app);
+    let auth_store = candidates.iter().find(|path| path.exists()).cloned();
+
+    let Some(auth_store_path) = auth_store else {
+        let default_path = candidates
+            .first()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "<unknown>".to_string());
+        return Ok(ActionResponse {
+            ok: false,
+            message: format!("Provider `{}` 尚未登录。", provider_id),
+            detail: Some(format!(
+                "请先执行：{}\nAuth store: {}",
+                login_command, default_path
+            )),
+            copied_from: None,
+            copied_to: None,
+        });
+    };
+
+    match provider_has_auth_profile(&auth_store_path, provider_id.as_str()) {
+        Ok(true) => Ok(ActionResponse {
+            ok: true,
+            message: format!("Provider `{}` 已检测到登录凭据。", provider_id),
+            detail: Some(auth_store_path.to_string_lossy().to_string()),
+            copied_from: None,
+            copied_to: None,
+        }),
+        Ok(false) => Ok(ActionResponse {
+            ok: false,
+            message: format!("Provider `{}` 尚未登录。", provider_id),
+            detail: Some(format!(
+                "请先执行：{}\nAuth store: {}",
+                login_command,
+                auth_store_path.to_string_lossy()
+            )),
+            copied_from: None,
+            copied_to: None,
+        }),
+        Err(e) => Ok(ActionResponse {
+            ok: false,
+            message: format!("Provider `{}` 登录状态检查失败。", provider_id),
+            detail: Some(format!("{}\n请先执行：{}", e, login_command)),
+            copied_from: None,
+            copied_to: None,
+        }),
+    }
+}
+
 fn path_delimiter() -> &'static str {
     if cfg!(target_os = "windows") {
         ";"
@@ -2359,6 +2612,54 @@ fn get_primary_lan_ipv4() -> Result<String, String> {
     Ok(String::new())
 }
 
+fn provider_api_key_env_var(provider: &str) -> Option<&'static str> {
+    match provider {
+        "openai" => Some("OPENAI_API_KEY"),
+        "anthropic" => Some("ANTHROPIC_API_KEY"),
+        "google" => Some("GEMINI_API_KEY"),
+        "zai" => Some("ZAI_API_KEY"),
+        "openrouter" => Some("OPENROUTER_API_KEY"),
+        "xai" => Some("XAI_API_KEY"),
+        "mistral" => Some("MISTRAL_API_KEY"),
+        "groq" => Some("GROQ_API_KEY"),
+        "cerebras" => Some("CEREBRAS_API_KEY"),
+        "huggingface" => Some("HUGGINGFACE_HUB_TOKEN"),
+        "github-copilot" => Some("COPILOT_GITHUB_TOKEN"),
+        "vercel-ai-gateway" => Some("AI_GATEWAY_API_KEY"),
+        "kilocode" => Some("KILOCODE_API_KEY"),
+        "moonshot" => Some("MOONSHOT_API_KEY"),
+        "kimi-coding" | "kimi-code" => Some("KIMI_API_KEY"),
+        "together" => Some("TOGETHER_API_KEY"),
+        "nvidia" => Some("NVIDIA_API_KEY"),
+        "qianfan" => Some("QIANFAN_API_KEY"),
+        "modelstudio" => Some("MODELSTUDIO_API_KEY"),
+        "minimax" | "minimax-cn" => Some("MINIMAX_API_KEY"),
+        "xiaomi" => Some("XIAOMI_API_KEY"),
+        "synthetic" => Some("SYNTHETIC_API_KEY"),
+        "venice" => Some("VENICE_API_KEY"),
+        "volcengine" | "volcengine-plan" => Some("VOLCANO_ENGINE_API_KEY"),
+        "byteplus" | "byteplus-plan" => Some("BYTEPLUS_API_KEY"),
+        "litellm" => Some("LITELLM_API_KEY"),
+        "cloudflare-ai-gateway" => Some("CLOUDFLARE_AI_GATEWAY_API_KEY"),
+        "ollama" => Some("OLLAMA_API_KEY"),
+        "vllm" => Some("VLLM_API_KEY"),
+        _ => None,
+    }
+}
+
+fn is_anthropic_compatible_provider(provider: &str) -> bool {
+    matches!(
+        provider,
+        "anthropic"
+            | "minimax"
+            | "minimax-cn"
+            | "xiaomi"
+            | "synthetic"
+            | "kimi-coding"
+            | "cloudflare-ai-gateway"
+    )
+}
+
 fn apply_provider_env(
     cmd: &mut Command,
     provider_raw: &str,
@@ -2368,32 +2669,21 @@ fn apply_provider_env(
     let provider = provider_raw.trim().to_lowercase();
 
     if !api_key.is_empty() {
-        match provider.as_str() {
-            "anthropic" => {
-                cmd.env("ANTHROPIC_API_KEY", api_key);
-            }
-            "openai" => {
-                cmd.env("OPENAI_API_KEY", api_key);
-            }
-            _ => {
-                // Most custom gateways expose OpenAI-compatible APIs.
-                cmd.env("OPENAI_API_KEY", api_key);
-            }
+        if let Some(env_var) = provider_api_key_env_var(provider.as_str()) {
+            cmd.env(env_var, api_key);
+        } else if provider == "custom" {
+            // Custom provider defaults to OpenAI-compatible auth semantics.
+            cmd.env("OPENAI_API_KEY", api_key);
         }
     }
 
     if let Some(url) = base_url.filter(|v| !v.is_empty()) {
         cmd.env("OPENCLAW_BASE_URL", url);
-        match provider.as_str() {
-            "anthropic" => {
-                cmd.env("ANTHROPIC_BASE_URL", url);
-            }
-            "openai" => {
-                cmd.env("OPENAI_BASE_URL", url);
-            }
-            _ => {
-                cmd.env("OPENAI_BASE_URL", url);
-            }
+        if provider == "custom" || is_anthropic_compatible_provider(provider.as_str()) {
+            cmd.env("ANTHROPIC_BASE_URL", url);
+        }
+        if provider == "custom" || !is_anthropic_compatible_provider(provider.as_str()) {
+            cmd.env("OPENAI_BASE_URL", url);
         }
     }
 }
@@ -2417,6 +2707,7 @@ fn main() {
             fetch_models,
             install_default_skills,
             run_doctor,
+            check_provider_auth,
             get_primary_lan_ipv4
         ])
         .run(tauri::generate_context!())

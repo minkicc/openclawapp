@@ -41,5 +41,10 @@
     "dist:linux": "npm run desktop:dist:linux",
     "dist:linux:ci": "npm run desktop:dist:linux:ci",
     "dist:linux:appimage": "npm run desktop:dist:linux:appimage"
+  },
+  "devDependencies": {
+    "@esbuild/win32-x64": "^0.21.5",
+    "@rollup/rollup-win32-x64-msvc": "^4.52.5",
+    "@tauri-apps/cli-win32-x64-msvc": "^1.6.2"
   }
 }
