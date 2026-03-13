@@ -1437,7 +1437,7 @@ fn apply_openclaw_mobile_channel_overrides(
         .map(str::to_string);
 
     let should_enable = base_url.is_some() && device_id.is_some();
-    {
+    if should_enable {
         let root_obj = ensure_json_object_mut(&mut root);
         let plugins_value = root_obj
             .entry("plugins".to_string())
@@ -1451,9 +1451,43 @@ fn apply_openclaw_mobile_channel_overrides(
             .entry("openclaw-mobile".to_string())
             .or_insert_with(|| serde_json::json!({}));
         let plugin_entry_obj = ensure_json_object_mut(plugin_entry_value);
-        plugin_entry_obj.insert("enabled".to_string(), serde_json::json!(should_enable));
+        plugin_entry_obj.insert("enabled".to_string(), serde_json::json!(true));
+    } else {
+        let root_obj = ensure_json_object_mut(&mut root);
+        let mut drop_plugins_root = false;
+        if let Some(plugins_value) = root_obj.get_mut("plugins") {
+            let plugins_is_empty;
+            if let Some(plugins_obj) = plugins_value.as_object_mut() {
+                let mut drop_entries = false;
+                if let Some(entries_value) = plugins_obj.get_mut("entries") {
+                    let entries_is_empty;
+                    if let Some(entries_obj) = entries_value.as_object_mut() {
+                        entries_obj.remove("openclaw-mobile");
+                        entries_is_empty = entries_obj.is_empty();
+                    } else {
+                        entries_is_empty = true;
+                    }
+                    if entries_is_empty {
+                        drop_entries = true;
+                    }
+                }
+                if drop_entries {
+                    plugins_obj.remove("entries");
+                }
+                plugins_is_empty = plugins_obj.is_empty();
+            } else {
+                plugins_is_empty = true;
+            }
+            if plugins_is_empty {
+                drop_plugins_root = true;
+            }
+        }
+        if drop_plugins_root {
+            root_obj.remove("plugins");
+        }
     }
-    {
+
+    if should_enable {
         let root_obj = ensure_json_object_mut(&mut root);
         let channels_value = root_obj
             .entry("channels".to_string())
@@ -1467,10 +1501,24 @@ fn apply_openclaw_mobile_channel_overrides(
             channel_obj.insert("enabled".to_string(), serde_json::json!(true));
             channel_obj.insert("serverBaseUrl".to_string(), serde_json::json!(url));
             channel_obj.insert("desktopDeviceId".to_string(), serde_json::json!(device));
-        } else {
-            channel_obj.insert("enabled".to_string(), serde_json::json!(false));
-            channel_obj.remove("serverBaseUrl");
-            channel_obj.remove("desktopDeviceId");
+        }
+    } else {
+        let root_obj = ensure_json_object_mut(&mut root);
+        let mut drop_channels_root = false;
+        if let Some(channels_value) = root_obj.get_mut("channels") {
+            let channels_is_empty;
+            if let Some(channels_obj) = channels_value.as_object_mut() {
+                channels_obj.remove("openclaw-mobile");
+                channels_is_empty = channels_obj.is_empty();
+            } else {
+                channels_is_empty = true;
+            }
+            if channels_is_empty {
+                drop_channels_root = true;
+            }
+        }
+        if drop_channels_root {
+            root_obj.remove("channels");
         }
     }
 
@@ -2570,6 +2618,48 @@ fn is_managed_auth_provider(provider: &str) -> bool {
     )
 }
 
+fn managed_auth_plugin_id(provider: &str) -> Option<&'static str> {
+    match provider {
+        "qwen-portal" => Some("qwen-portal-auth"),
+        "minimax-portal" => Some("minimax-portal-auth"),
+        "google-gemini-cli" => Some("google-gemini-cli-auth"),
+        "google-antigravity" => Some("google-antigravity-auth"),
+        "copilot-proxy" => Some("copilot-proxy"),
+        _ => None,
+    }
+}
+
+fn ensure_managed_auth_plugin_enabled(
+    app: &AppHandle,
+    cfg: &StoredConfig,
+    resolved: &ResolvedOpenClawCommand,
+    provider: &str,
+) -> Result<Option<String>, String> {
+    let Some(plugin_id) = managed_auth_plugin_id(provider) else {
+        return Ok(None);
+    };
+
+    let args = ["plugins", "enable", plugin_id];
+    let (ok, output) = run_openclaw_capture(app, cfg, resolved, &args)?;
+    if ok {
+        return Ok(Some(plugin_id.to_string()));
+    }
+
+    if output.to_ascii_lowercase().contains("already enabled") {
+        return Ok(None);
+    }
+
+    if output.trim().is_empty() {
+        return Err(format!("自动启用插件 `{}` 失败。", plugin_id));
+    }
+
+    Err(format!(
+        "自动启用插件 `{}` 失败：{}",
+        plugin_id,
+        output.trim()
+    ))
+}
+
 fn auth_profiles_path_candidates(app: &AppHandle) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(home_dir) = openclaw_runtime_home_dir(app) {
@@ -2986,15 +3076,34 @@ fn start_provider_auth_login(provider: String, app: AppHandle) -> Result<ActionR
 
     let cfg = read_config(&app)?.unwrap_or_else(runtime_stub_config);
     let resolved = resolve_openclaw_command(&cfg, &app);
+    let auto_enabled_plugin =
+        match ensure_managed_auth_plugin_enabled(&app, &cfg, &resolved, provider_id.as_str()) {
+            Ok(value) => value,
+            Err(e) => {
+                return Ok(ActionResponse {
+                    ok: false,
+                    message: "启用 Provider 登录插件失败。".to_string(),
+                    detail: Some(e),
+                    copied_from: None,
+                    copied_to: None,
+                });
+            }
+        };
     let login_command = format!("openclaw models auth login --provider {}", provider_id);
     match spawn_provider_auth_login_terminal(&app, &resolved, provider_id.as_str()) {
         Ok(()) => Ok(ActionResponse {
             ok: true,
             message: "已在新终端打开提供商登录流程，请在终端完成登录后返回应用继续。".to_string(),
-            detail: Some(format!(
-                "命令来源: {}\n执行路径: {}\n登录命令: {}",
-                resolved.source, resolved.display_path, login_command
-            )),
+            detail: Some({
+                let mut detail = format!(
+                    "命令来源: {}\n执行路径: {}\n登录命令: {}",
+                    resolved.source, resolved.display_path, login_command
+                );
+                if let Some(plugin_id) = auto_enabled_plugin {
+                    detail.push_str(&format!("\n已自动启用插件: {}", plugin_id));
+                }
+                detail
+            }),
             copied_from: None,
             copied_to: None,
         }),
