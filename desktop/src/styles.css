@@ -379,6 +379,10 @@ textarea {
   flex-wrap: wrap;
 }
 
+#mainView > .actions {
+  margin-top: 16px;
+}
+
 .actions.bottom {
   margin-top: 18px;
 }
