@@ -383,6 +383,16 @@ textarea {
   margin-top: 18px;
 }
 
+.kernel-version-meta {
+  align-self: center;
+  font-size: 12px;
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: #fff;
+  padding: 6px 10px;
+}
+
 .advanced-block {
   margin-top: 18px;
   border: 1px solid var(--line);

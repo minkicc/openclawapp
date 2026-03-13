@@ -6,6 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, TcpStream, ToSocketAddrs, UdpSocket};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -94,6 +96,16 @@ struct KernelStatusResponse {
     version: String,
     source: String,
     npm_available: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KernelVersionMetaResponse {
+    current_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    latest_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    latest_error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1872,6 +1884,30 @@ fn get_kernel_status(app: AppHandle) -> Result<KernelStatusResponse, String> {
 }
 
 #[tauri::command]
+fn get_kernel_version_meta(app: AppHandle) -> Result<KernelVersionMetaResponse, String> {
+    let status = get_kernel_status(app)?;
+    let current = status.version.trim();
+    let current_version = if current.is_empty() {
+        "unknown".to_string()
+    } else {
+        current.to_string()
+    };
+
+    match latest_openclaw_version_from_npm() {
+        Ok(latest) => Ok(KernelVersionMetaResponse {
+            current_version,
+            latest_version: Some(latest),
+            latest_error: None,
+        }),
+        Err(error) => Ok(KernelVersionMetaResponse {
+            current_version,
+            latest_version: None,
+            latest_error: Some(error),
+        }),
+    }
+}
+
+#[tauri::command]
 fn install_or_update_kernel(app: AppHandle) -> Result<ActionResponse, String> {
     let npm = npm_command_name();
     if !is_command_available(npm) {
@@ -2564,6 +2600,217 @@ fn auth_profiles_path_candidates(app: &AppHandle) -> Vec<PathBuf> {
     candidates
 }
 
+fn runtime_stub_config() -> StoredConfig {
+    StoredConfig {
+        provider: "openai".to_string(),
+        model: "gpt-4.1".to_string(),
+        api_key: "stub".to_string(),
+        base_url: None,
+        custom_api_mode: default_custom_api_mode(),
+        custom_headers: BTreeMap::new(),
+        skills_dirs: Vec::new(),
+        openclaw_command: "openclaw".to_string(),
+        channel_server_base_url: None,
+        channel_device_id: None,
+        updated_at: Utc::now().to_rfc3339(),
+    }
+}
+
+fn looks_like_semverish(version: &str) -> bool {
+    let trimmed = version.trim().trim_start_matches('v');
+    if trimmed.is_empty() {
+        return false;
+    }
+    let mut dot_count = 0usize;
+    for ch in trimmed.chars() {
+        if ch == '.' {
+            dot_count += 1;
+            continue;
+        }
+        if !ch.is_ascii_digit() {
+            return false;
+        }
+    }
+    dot_count >= 2
+}
+
+fn parse_latest_openclaw_version(raw: &str) -> Option<String> {
+    let text = raw.trim();
+    if text.is_empty() {
+        return None;
+    }
+
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
+        if let Some(value) = json.as_str() {
+            let normalized = value.trim().trim_start_matches('v').to_string();
+            if looks_like_semverish(&normalized) {
+                return Some(normalized);
+            }
+        }
+    }
+
+    for token in text.split(|ch: char| ch.is_whitespace() || matches!(ch, '"' | '\'' | ',')) {
+        let normalized = token.trim().trim_start_matches('v').to_string();
+        if looks_like_semverish(&normalized) {
+            return Some(normalized);
+        }
+    }
+
+    None
+}
+
+fn latest_openclaw_version_from_npm() -> Result<String, String> {
+    let npm = npm_command_name();
+    if !is_command_available(npm) {
+        return Err("npm 不可用".to_string());
+    }
+
+    let output = Command::new(npm)
+        .arg("view")
+        .arg("openclaw")
+        .arg("version")
+        .arg("--json")
+        .arg("--fetch-retries")
+        .arg("0")
+        .arg("--fetch-timeout")
+        .arg("5000")
+        .output()
+        .map_err(|e| format!("执行 npm view 失败: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() { stderr } else { stdout };
+        let message = if detail.is_empty() {
+            format!("npm view openclaw version 失败 (exit code: {:?})", output.status.code())
+        } else {
+            detail
+        };
+        return Err(message);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    parse_latest_openclaw_version(&stdout)
+        .ok_or_else(|| format!("无法从 npm 输出中解析版本: {}", stdout))
+}
+
+#[cfg(target_os = "windows")]
+fn quote_windows_cmd_arg(arg: &str) -> String {
+    if arg.is_empty()
+        || arg.chars().any(|ch| {
+            ch.is_whitespace() || matches!(ch, '"' | '&' | '|' | '<' | '>' | '^' | '(' | ')')
+        })
+    {
+        format!("\"{}\"", arg.replace('"', "\"\""))
+    } else {
+        arg.to_string()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn normalize_windows_program_path(program: &str) -> String {
+    let trimmed = program.trim();
+    let unquoted = if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
+        trimmed[1..trimmed.len() - 1].trim().to_string()
+    } else {
+        trimmed.to_string()
+    };
+
+    // Tauri/Windows may return verbatim paths (e.g. \\?\C:\...),
+    // but cmd.exe cannot always execute them directly.
+    if let Some(rest) = unquoted.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{}", rest)
+    } else if let Some(rest) = unquoted.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        unquoted
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_provider_auth_login_terminal(
+    app: &AppHandle,
+    resolved: &ResolvedOpenClawCommand,
+    provider_id: &str,
+) -> Result<(), String> {
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+
+    let mut command_parts: Vec<String> = Vec::new();
+    let normalized_program = normalize_windows_program_path(&resolved.program);
+    if normalized_program.trim().is_empty() {
+        return Err("登录命令路径为空".to_string());
+    }
+    command_parts.push(quote_windows_cmd_arg(&normalized_program));
+    for arg in &resolved.prefix_args {
+        let normalized_arg = normalize_windows_program_path(arg);
+        if !normalized_arg.trim().is_empty() {
+            command_parts.push(quote_windows_cmd_arg(&normalized_arg));
+        }
+    }
+    for arg in ["models", "auth", "login", "--provider", provider_id] {
+        command_parts.push(quote_windows_cmd_arg(arg));
+    }
+
+    let script_content = format!(
+        "@echo off\r\nsetlocal\r\n{}\r\nset \"OPENCLAW_LOGIN_EXIT=%ERRORLEVEL%\"\r\necho.\r\nif \"%OPENCLAW_LOGIN_EXIT%\"==\"0\" (\r\n  echo [OpenClaw] Login command finished. You can close this window.\r\n) else (\r\n  echo [OpenClaw] Login command failed with exit code %OPENCLAW_LOGIN_EXIT%.\r\n)\r\n",
+        command_parts.join(" ")
+    );
+    let script_path = env::temp_dir().join(format!(
+        "openclaw-auth-login-{}-{}.cmd",
+        provider_id.replace(|ch: char| !ch.is_ascii_alphanumeric(), "_"),
+        Utc::now().timestamp_millis()
+    ));
+    fs::write(&script_path, script_content)
+        .map_err(|e| format!("写入登录脚本失败: {}", e))?;
+
+    let mut cmd = Command::new("cmd.exe");
+    cmd.arg("/k")
+        .arg(script_path.to_string_lossy().to_string());
+
+    if let Ok(home_dir) = openclaw_runtime_home_dir(app) {
+        let home = home_dir.to_string_lossy().to_string();
+        cmd.env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .env("OPENCLAW_HOME", &home);
+    }
+
+    if let Ok(workspace_dir) = openclaw_runtime_workspace_dir(app) {
+        let workspace = workspace_dir.to_string_lossy().to_string();
+        cmd.current_dir(&workspace_dir)
+            .env("PWD", &workspace)
+            .env("OPENCLAW_WORKSPACE", &workspace);
+    }
+
+    if let Some(bin_dir) = resolve_bundled_bin_dir(app) {
+        let existing = env::var("PATH").unwrap_or_default();
+        let merged_path = if existing.trim().is_empty() {
+            bin_dir.to_string_lossy().to_string()
+        } else {
+            format!(
+                "{}{}{}",
+                bin_dir.to_string_lossy(),
+                path_delimiter(),
+                existing
+            )
+        };
+        cmd.env("PATH", merged_path);
+    }
+
+    cmd.creation_flags(CREATE_NEW_CONSOLE);
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("启动登录终端失败: {}", e))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn spawn_provider_auth_login_terminal(
+    _app: &AppHandle,
+    _resolved: &ResolvedOpenClawCommand,
+    _provider_id: &str,
+) -> Result<(), String> {
+    Err("当前平台暂不支持应用内打开交互式登录终端，请手动执行登录命令。".to_string())
+}
+
 fn provider_has_auth_profile(auth_store_path: &Path, provider: &str) -> Result<bool, String> {
     let raw = fs::read_to_string(auth_store_path)
         .map_err(|e| format!("读取 auth-profiles.json 失败: {}", e))?;
@@ -2580,6 +2827,8 @@ fn provider_has_auth_profile(auth_store_path: &Path, provider: &str) -> Result<b
         "access_token",
         "apiKey",
         "api_key",
+        "refreshToken",
+        "refresh_token",
     ];
 
     for profile in profiles.values() {
@@ -2591,6 +2840,15 @@ fn provider_has_auth_profile(auth_store_path: &Path, provider: &str) -> Result<b
         };
         if !profile_provider.eq_ignore_ascii_case(provider) {
             continue;
+        }
+
+        let is_oauth_profile = obj
+            .get("type")
+            .and_then(|v| v.as_str())
+            .map(|v| v.eq_ignore_ascii_case("oauth"))
+            .unwrap_or(false);
+        if is_oauth_profile {
+            return Ok(true);
         }
 
         let has_credentials = key_fields.iter().any(|field| {
@@ -2632,9 +2890,13 @@ fn check_provider_auth(provider: String, app: AppHandle) -> Result<ActionRespons
 
     let login_command = format!("openclaw models auth login --provider {}", provider_id);
     let candidates = auth_profiles_path_candidates(&app);
-    let auth_store = candidates.iter().find(|path| path.exists()).cloned();
+    let existing_stores: Vec<PathBuf> = candidates
+        .iter()
+        .filter(|path| path.exists())
+        .cloned()
+        .collect();
 
-    let Some(auth_store_path) = auth_store else {
+    if existing_stores.is_empty() {
         let default_path = candidates
             .first()
             .map(|p| p.to_string_lossy().to_string())
@@ -2649,31 +2911,97 @@ fn check_provider_auth(provider: String, app: AppHandle) -> Result<ActionRespons
             copied_from: None,
             copied_to: None,
         });
-    };
 
-    match provider_has_auth_profile(&auth_store_path, provider_id.as_str()) {
-        Ok(true) => Ok(ActionResponse {
+    }
+
+    let mut matched_auth_store: Option<PathBuf> = None;
+    let mut check_errors: Vec<String> = Vec::new();
+    for auth_store_path in &existing_stores {
+        match provider_has_auth_profile(auth_store_path, provider_id.as_str()) {
+            Ok(true) => {
+                matched_auth_store = Some(auth_store_path.clone());
+                break;
+            }
+            Ok(false) => {}
+            Err(e) => check_errors.push(format!("{} => {}", auth_store_path.to_string_lossy(), e)),
+        }
+    }
+
+    if let Some(auth_store_path) = matched_auth_store {
+        return Ok(ActionResponse {
             ok: true,
             message: format!("Provider `{}` 已检测到登录凭据。", provider_id),
             detail: Some(auth_store_path.to_string_lossy().to_string()),
             copied_from: None,
             copied_to: None,
-        }),
-        Ok(false) => Ok(ActionResponse {
+        });
+    }
+
+    let checked_paths = existing_stores
+        .iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect::<Vec<String>>()
+        .join("\n- ");
+    let mut detail = format!(
+        "请先执行：{}\nChecked auth stores:\n- {}",
+        login_command, checked_paths
+    );
+    if !check_errors.is_empty() {
+        detail.push_str(&format!(
+            "\n读取异常:\n- {}",
+            check_errors.join("\n- ")
+        ));
+    }
+    Ok(ActionResponse {
+        ok: false,
+        message: format!("Provider `{}` 尚未登录。", provider_id),
+        detail: Some(detail),
+        copied_from: None,
+        copied_to: None,
+    })
+}
+
+#[tauri::command]
+fn start_provider_auth_login(provider: String, app: AppHandle) -> Result<ActionResponse, String> {
+    let provider_id = provider.trim().to_lowercase();
+    if provider_id.is_empty() {
+        return Ok(ActionResponse {
             ok: false,
-            message: format!("Provider `{}` 尚未登录。", provider_id),
+            message: "Provider 不能为空。".to_string(),
+            detail: None,
+            copied_from: None,
+            copied_to: None,
+        });
+    }
+
+    if !is_managed_auth_provider(provider_id.as_str()) {
+        return Ok(ActionResponse {
+            ok: false,
+            message: format!("Provider `{}` 不需要 OAuth/CLI 登录。", provider_id),
+            detail: None,
+            copied_from: None,
+            copied_to: None,
+        });
+    }
+
+    let cfg = read_config(&app)?.unwrap_or_else(runtime_stub_config);
+    let resolved = resolve_openclaw_command(&cfg, &app);
+    let login_command = format!("openclaw models auth login --provider {}", provider_id);
+    match spawn_provider_auth_login_terminal(&app, &resolved, provider_id.as_str()) {
+        Ok(()) => Ok(ActionResponse {
+            ok: true,
+            message: "已在新终端打开提供商登录流程，请在终端完成登录后返回应用继续。".to_string(),
             detail: Some(format!(
-                "请先执行：{}\nAuth store: {}",
-                login_command,
-                auth_store_path.to_string_lossy()
+                "命令来源: {}\n执行路径: {}\n登录命令: {}",
+                resolved.source, resolved.display_path, login_command
             )),
             copied_from: None,
             copied_to: None,
         }),
         Err(e) => Ok(ActionResponse {
             ok: false,
-            message: format!("Provider `{}` 登录状态检查失败。", provider_id),
-            detail: Some(format!("{}\n请先执行：{}", e, login_command)),
+            message: "启动提供商登录流程失败。".to_string(),
+            detail: Some(format!("{}\n请手动执行: {}", e, login_command)),
             copied_from: None,
             copied_to: None,
         }),
@@ -2808,6 +3136,7 @@ fn main() {
             read_raw_config,
             get_config_path,
             get_kernel_status,
+            get_kernel_version_meta,
             install_or_update_kernel,
             get_dashboard_url,
             save_config,
@@ -2815,6 +3144,7 @@ fn main() {
             install_default_skills,
             run_doctor,
             check_provider_auth,
+            start_provider_auth_login,
             get_primary_lan_ipv4
         ])
         .run(tauri::generate_context!())

@@ -58,6 +58,8 @@ const installKernelBtn = document.getElementById('installKernelBtn') as any;
 const openWebBtn = document.getElementById('openWebBtn') as any;
 const doctorBtn = document.getElementById('doctorBtn') as any;
 const updateKernelBtn = document.getElementById('updateKernelBtn') as any;
+const kernelVersionMetaSetup = document.getElementById('kernelVersionMetaSetup') as any;
+const kernelVersionMetaMain = document.getElementById('kernelVersionMetaMain') as any;
 const openSkillDirBtn = document.getElementById('openSkillDirBtn') as any;
 const reconfigureBtn = document.getElementById('reconfigureBtn') as any;
 const langSelect = document.getElementById('langSelect') as any;
@@ -82,8 +84,11 @@ const pairEventLog = document.getElementById('pairEventLog') as any;
 let skillsDirs = [];
 let rawConfig = null;
 let kernelStatus = null;
+let kernelVersionMeta = null;
+let kernelVersionMetaCheckedAt = 0;
 let lastModelFetchKey = '';
 let currentLang = 'zh-CN';
+const KERNEL_VERSION_META_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_CUSTOM_API_MODE = 'openai-responses';
 const CUSTOM_API_MODE_STORAGE_KEY = 'openclaw.ui.customApiModeByModel';
 const SUPPORTED_CUSTOM_API_MODES = new Set([
@@ -671,7 +676,7 @@ const EN_I18N = {
   'btn.checkCommand': 'Check OpenClaw Command',
   'btn.updateKernel': 'Update Kernel (npm)',
   'btn.openFirstSkillDir': 'Open First Skills Directory',
-  'btn.copyLoginCommand': 'Copy Login Command',
+  'btn.copyLoginCommand': 'Start Login',
   'btn.pairConnect': 'Connect Channel',
   'btn.pairDisconnect': 'Disconnect Channel',
   'btn.pairCreate': 'Create Pair Session',
@@ -712,6 +717,9 @@ const EN_I18N = {
   'msg.headersJsonInvalid': 'Custom Headers JSON error: {detail}',
   'msg.authChecking': 'Checking provider login status...',
   'msg.authNotReady': 'This provider is not logged in yet. Please complete login first.',
+  'msg.authLaunching': 'Opening provider login in a new terminal...',
+  'msg.authLaunchStarted': 'Login terminal opened. Complete login there, then return to continue.',
+  'msg.authLaunchFailed': 'Failed to open login terminal.',
   'msg.loginCommandCopied': 'Login command copied. Run it in terminal.',
   'msg.loginCommandCopyFailed': 'Copy failed. Run manually: {cmd}',
   'msg.savingConfig': 'Saving configuration...',
@@ -795,7 +803,11 @@ const EN_I18N = {
   'kernel.installed': 'Installed ({version})',
   'kernel.available': 'Available ({version})',
   'kernel.notInstalledNoNpm': 'Not installed (npm not found and no bundled kernel detected)',
-  'kernel.notInstalled': 'Not installed'
+  'kernel.notInstalled': 'Not installed',
+  'kernel.version.loading': 'Current: checking... | Latest: checking...',
+  'kernel.version.meta': 'Current: {current} | Latest: {latest}',
+  'kernel.version.metaUnknownLatest': 'Current: {current} | Latest: unavailable',
+  'kernel.version.failed': 'Current: {current} | Latest: check failed'
 };
 
 const ZH_I18N = {
@@ -839,7 +851,7 @@ const ZH_I18N = {
   "btn.checkCommand": "检查 OpenClaw 命令",
   "btn.updateKernel": "更新内核（npm）",
   "btn.openFirstSkillDir": "打开首个 Skills 目录",
-  "btn.copyLoginCommand": "复制登录命令",
+  "btn.copyLoginCommand": "开始登录",
   "btn.pairConnect": "连接通道",
   "btn.pairDisconnect": "断开通道",
   "btn.pairCreate": "创建配对会话",
@@ -880,6 +892,9 @@ const ZH_I18N = {
   "msg.headersJsonInvalid": "Custom Headers JSON 格式错误：{detail}",
   "msg.authChecking": "正在检查提供商登录状态...",
   "msg.authNotReady": "该提供商尚未登录，请先完成登录。",
+  "msg.authLaunching": "正在打开登录终端...",
+  "msg.authLaunchStarted": "已打开登录终端，请在终端完成登录后返回继续。",
+  "msg.authLaunchFailed": "打开登录终端失败。",
   "msg.loginCommandCopied": "登录命令已复制，请到终端执行。",
   "msg.loginCommandCopyFailed": "复制失败，请手动执行：{cmd}",
   "msg.savingConfig": "正在保存配置...",
@@ -964,6 +979,10 @@ const ZH_I18N = {
   "kernel.available": "可用 ({version})",
   "kernel.notInstalledNoNpm": "未安装（未检测到 npm，且未发现内置内核）",
   "kernel.notInstalled": "未安装",
+  "kernel.version.loading": "当前：检查中... | 最新：检查中...",
+  "kernel.version.meta": "当前：{current} | 最新：{latest}",
+  "kernel.version.metaUnknownLatest": "当前：{current} | 最新：不可用",
+  "kernel.version.failed": "当前：{current} | 最新：检查失败",
 };
 const I18N = {
   'zh-CN': ZH_I18N,
@@ -1092,6 +1111,12 @@ function applyI18n() {
     const selected = providerInput.value || activeProviderId || 'openai';
     populateProviderOptions();
     applyProviderPreset(selected, { hydrate: true });
+  }
+
+  if (kernelVersionMeta) {
+    renderKernelVersionMeta(kernelVersionMeta);
+  } else {
+    setKernelVersionMetaText(t('kernel.version.loading'));
   }
 }
 
@@ -2651,7 +2676,88 @@ function formatKernelStatus(status) {
   return t('kernel.notInstalled');
 }
 
-async function refreshKernelStatus() {
+function setKernelVersionMetaText(text) {
+  if (kernelVersionMetaSetup) {
+    kernelVersionMetaSetup.textContent = text;
+  }
+  if (kernelVersionMetaMain) {
+    kernelVersionMetaMain.textContent = text;
+  }
+}
+
+function normalizeKernelVersionLabel(rawVersion) {
+  const version = String(rawVersion || '').trim();
+  if (!version) {
+    return t('kernel.unknown');
+  }
+
+  // Keep only semantic-like version for display, hide commit hash/build suffix.
+  const match = version.match(/v?\d+\.\d+\.\d+/);
+  if (match?.[0]) {
+    return match[0].replace(/^v/i, '');
+  }
+  return version;
+}
+
+function renderKernelVersionMeta(meta) {
+  const currentVersion = normalizeKernelVersionLabel(meta?.currentVersion || kernelStatus?.version);
+  const latestVersion = normalizeKernelVersionLabel(meta?.latestVersion);
+  if (latestVersion) {
+    setKernelVersionMetaText(
+      t('kernel.version.meta', {
+        current: currentVersion,
+        latest: latestVersion
+      })
+    );
+    return;
+  }
+
+  if (meta?.latestError) {
+    setKernelVersionMetaText(
+      t('kernel.version.failed', {
+        current: currentVersion
+      })
+    );
+    return;
+  }
+
+  setKernelVersionMetaText(
+    t('kernel.version.metaUnknownLatest', {
+      current: currentVersion
+    })
+  );
+}
+
+async function refreshKernelVersionMeta(force = false) {
+  if (!kernelVersionMetaSetup && !kernelVersionMetaMain) {
+    return;
+  }
+
+  const cacheFresh =
+    kernelVersionMeta &&
+    Date.now() - kernelVersionMetaCheckedAt < KERNEL_VERSION_META_TTL_MS;
+  if (!force && cacheFresh) {
+    renderKernelVersionMeta(kernelVersionMeta);
+    return;
+  }
+
+  setKernelVersionMetaText(t('kernel.version.loading'));
+  try {
+    kernelVersionMeta = await invoke('get_kernel_version_meta');
+    kernelVersionMetaCheckedAt = Date.now();
+    renderKernelVersionMeta(kernelVersionMeta);
+  } catch {
+    kernelVersionMeta = null;
+    kernelVersionMetaCheckedAt = 0;
+    setKernelVersionMetaText(
+      t('kernel.version.failed', {
+        current: normalizeKernelVersionLabel(kernelStatus?.version)
+      })
+    );
+  }
+}
+
+async function refreshKernelStatus(forceVersionCheck = false) {
   try {
     kernelStatus = await invoke('get_kernel_status');
     summaryKernel.textContent = formatKernelStatus(kernelStatus);
@@ -2659,6 +2765,7 @@ async function refreshKernelStatus() {
     kernelStatus = null;
     summaryKernel.textContent = t('kernel.unknown');
   }
+  await refreshKernelVersionMeta(forceVersionCheck);
 }
 
 function showSetup() {
@@ -3456,13 +3563,13 @@ async function handleKernelInstall(buttonLabel) {
   if (!result.ok) {
     setSetupMessage(t('msg.actionFailed', { label: buttonLabel, message: result.message }), 'error');
     doctorOutput.textContent = `${result.message}\n\n${result.detail || ''}`.trim();
-    await refreshKernelStatus();
+    await refreshKernelStatus(true);
     return;
   }
 
   setSetupMessage(result.message || t('msg.actionCompleted', { label: buttonLabel }), 'success');
   doctorOutput.textContent = `${result.message}\n\n${result.detail || ''}`.trim();
-  await refreshKernelStatus();
+  await refreshKernelStatus(true);
 }
 
 async function openOpenClawWeb() {
@@ -3584,19 +3691,33 @@ providerShowAdvancedToggle?.addEventListener('change', () => {
 });
 
 copyProviderAuthCmdBtn?.addEventListener('click', async () => {
-  const command = getProviderLoginCommand(getActiveProviderPreset());
+  const preset = getActiveProviderPreset();
+  const command = getProviderLoginCommand(preset);
   if (!command) {
     return;
   }
+
+  const provider = String(preset?.runtimeProvider || preset?.id || '').trim();
+  if (!provider) {
+    return;
+  }
+
+  setSetupMessage(t('msg.authLaunching'));
+
   try {
-    if (navigator?.clipboard?.writeText) {
-      await navigator.clipboard.writeText(command);
-    } else {
-      throw new Error('Clipboard API unavailable');
+    const result = await invoke('start_provider_auth_login', { provider });
+    if (!result?.ok) {
+      setSetupMessage(result?.message || t('msg.authLaunchFailed'), 'error');
+      doctorOutput.textContent = `${result?.message || t('msg.authLaunchFailed')}\n\n${result?.detail || ''}`.trim();
+      return;
     }
-    setSetupMessage(t('msg.loginCommandCopied'), 'success');
-  } catch {
-    setSetupMessage(t('msg.loginCommandCopyFailed', { cmd: command }), 'error');
+
+    setSetupMessage(result.message || t('msg.authLaunchStarted'), 'success');
+    doctorOutput.textContent = `${result.message || t('msg.authLaunchStarted')}\n\n${result.detail || ''}`.trim();
+  } catch (error) {
+    const detail = String(error || '');
+    setSetupMessage(t('msg.authLaunchFailed'), 'error');
+    doctorOutput.textContent = `${t('msg.authLaunchFailed')}\n\n${detail}\n${t('msg.loginCommandCopyFailed', { cmd: command })}`.trim();
   }
 });
 
