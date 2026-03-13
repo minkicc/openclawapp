@@ -79,6 +79,7 @@ const pairChatDialogTitle = document.getElementById('pairChatDialogTitle') as an
 const pairChatMessages = document.getElementById('pairChatMessages') as any;
 const pairQrCloseBtn = document.getElementById('pairQrCloseBtn') as any;
 const pairQrImage = document.getElementById('pairQrImage') as any;
+const pairQrCountdown = document.getElementById('pairQrCountdown') as any;
 const pairEventLog = document.getElementById('pairEventLog') as any;
 
 let skillsDirs = [];
@@ -91,6 +92,9 @@ let currentLang = 'zh-CN';
 const KERNEL_VERSION_META_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_CUSTOM_API_MODE = 'openai-responses';
 const CUSTOM_API_MODE_STORAGE_KEY = 'openclaw.ui.customApiModeByModel';
+const PAIR_DEVICE_TOKEN_STORAGE_KEY = 'openclaw.ui.pair.deviceTokens.v1';
+const PAIR_SESSION_TTL_SECONDS = 60;
+const PAIR_QR_REFRESH_RETRY_MS = 5000;
 const SUPPORTED_CUSTOM_API_MODES = new Set([
   'openai-responses',
   'openai-completions',
@@ -106,6 +110,11 @@ let pairWsRequestSeq = 0;
 let pairChannelOpen = false;
 let pairConfiguredServerUrl = '';
 let pairConfiguredDeviceId = '';
+let pairQrRefreshTimer = null;
+let pairQrCountdownTimer = null;
+let pairQrActiveChannelId = '';
+let pairQrExpiresAtMs = 0;
+let pairQrRefreshInFlight = false;
 let activeChatChannelId = '';
 const pairChannels = [];
 const pairWsPendingRequests = new Map();
@@ -753,6 +762,8 @@ const EN_I18N = {
   'pair.expiresAt': 'Expires At',
   'pair.claimedUser': 'Bound User',
   'pair.qrDialogTitle': 'Channel QR Code',
+  'pair.qrCountdown': 'QR auto refresh in {seconds}s',
+  'pair.qrRefreshing': 'Refreshing QR code...',
   'pair.chatDialogTitle': 'Channel Chat',
   'pair.chatDraft': 'Message',
   'pair.chatDraftPlaceholder': 'Type message, Ctrl/Cmd + Enter to send',
@@ -787,6 +798,9 @@ const EN_I18N = {
   'msg.pairCreateRunning': 'Creating pair session...',
   'msg.pairCreateFailed': 'Failed to create pair session: {message}',
   'msg.pairCreated': 'Pair session created. Waiting for mobile claim.',
+  'msg.pairAuthEnsuring': 'Verifying desktop authentication...',
+  'msg.pairAuthFailed': 'Desktop authentication failed: {message}',
+  'msg.pairQrAutoRefreshFailed': 'QR auto refresh failed: {message}',
   'msg.pairClaimed': 'Pair completed: bound user {userId}.',
   'msg.pairMissingConfig': 'Pairing config is missing. Please set channelServerBaseUrl and channelDeviceId first.',
   'msg.pairConfigReloaded': 'Pairing config reloaded.',
@@ -928,6 +942,8 @@ const ZH_I18N = {
   "pair.expiresAt": "过期时间",
   "pair.claimedUser": "已绑定用户",
   "pair.qrDialogTitle": "渠道二维码",
+  "pair.qrCountdown": "二维码将在 {seconds}s 后自动刷新",
+  "pair.qrRefreshing": "正在刷新二维码...",
   "pair.chatDialogTitle": "渠道会话",
   "pair.chatDraft": "发送消息",
   "pair.chatDraftPlaceholder": "输入消息，Ctrl/Cmd + Enter 发送",
@@ -962,6 +978,9 @@ const ZH_I18N = {
   "msg.pairCreateRunning": "正在创建配对会话...",
   "msg.pairCreateFailed": "创建配对会话失败：{message}",
   "msg.pairCreated": "配对会话已创建，等待移动端扫码认领。",
+  "msg.pairAuthEnsuring": "正在校验桌面端鉴权...",
+  "msg.pairAuthFailed": "桌面端鉴权失败：{message}",
+  "msg.pairQrAutoRefreshFailed": "二维码自动刷新失败：{message}",
   "msg.pairClaimed": "配对成功：已绑定用户 {userId}。",
   "msg.pairMissingConfig": "通信渠道配置缺失，请先填写 channelServerBaseUrl 和 channelDeviceId。",
   "msg.pairConfigReloaded": "已刷新通信渠道配置。",
@@ -1773,6 +1792,134 @@ function openPairChatDialog(channelId) {
   updatePairButtons();
 }
 
+function setPairQrCountdownText(text) {
+  if (!pairQrCountdown) {
+    return;
+  }
+  pairQrCountdown.textContent = String(text || '');
+}
+
+function stopPairQrAutoRefresh() {
+  if (pairQrRefreshTimer) {
+    clearTimeout(pairQrRefreshTimer);
+    pairQrRefreshTimer = null;
+  }
+  if (pairQrCountdownTimer) {
+    clearInterval(pairQrCountdownTimer);
+    pairQrCountdownTimer = null;
+  }
+  pairQrActiveChannelId = '';
+  pairQrExpiresAtMs = 0;
+  pairQrRefreshInFlight = false;
+  setPairQrCountdownText('');
+}
+
+function parsePairQrExpiresAtMs(channel) {
+  if (!channel || typeof channel !== 'object') {
+    return 0;
+  }
+  if (Number.isFinite(channel.expiresAt) && Number(channel.expiresAt) > 0) {
+    return Number(channel.expiresAt);
+  }
+  const payload = channel.qrPayload && typeof channel.qrPayload === 'object' ? channel.qrPayload : {};
+  const raw = String(payload.expires_at || payload.expiresAt || '').trim();
+  if (!raw) {
+    return 0;
+  }
+  const parsed = Date.parse(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 0;
+  }
+  return parsed;
+}
+
+function updatePairQrCountdown() {
+  if (!pairQrActiveChannelId || !pairQrExpiresAtMs) {
+    setPairQrCountdownText('');
+    return;
+  }
+  const channel = findPairChannelById(pairQrActiveChannelId);
+  if (!channel || channel.status !== 'pending') {
+    setPairQrCountdownText('');
+    return;
+  }
+  const seconds = Math.max(0, Math.ceil((pairQrExpiresAtMs - Date.now()) / 1000));
+  if (seconds > 0) {
+    setPairQrCountdownText(t('pair.qrCountdown', { seconds }));
+    return;
+  }
+  setPairQrCountdownText(t('pair.qrRefreshing'));
+}
+
+async function triggerPairQrAutoRefresh(channelId) {
+  if (pairQrRefreshInFlight) {
+    return;
+  }
+  const normalizedChannelId = String(channelId || '').trim();
+  if (!normalizedChannelId) {
+    return;
+  }
+  if (!pairQrDialog?.open || pairQrActiveChannelId !== normalizedChannelId) {
+    return;
+  }
+  const channel = findPairChannelById(normalizedChannelId);
+  if (!channel || channel.status !== 'pending') {
+    stopPairQrAutoRefresh();
+    return;
+  }
+
+  pairQrRefreshInFlight = true;
+  try {
+    await refreshPairSessionForChannel(channel, { autoRefresh: true });
+  } catch (error) {
+    setPairMessage(t('msg.pairQrAutoRefreshFailed', { message: error?.message || String(error) }), 'error');
+    pairQrRefreshTimer = setTimeout(() => {
+      triggerPairQrAutoRefresh(normalizedChannelId).catch(() => {
+        // no-op
+      });
+    }, PAIR_QR_REFRESH_RETRY_MS);
+  } finally {
+    pairQrRefreshInFlight = false;
+  }
+}
+
+function schedulePairQrAutoRefresh(channel) {
+  if (!pairQrDialog?.open) {
+    stopPairQrAutoRefresh();
+    return;
+  }
+  if (!channel || channel.status !== 'pending') {
+    stopPairQrAutoRefresh();
+    return;
+  }
+  const expiresAtMs = parsePairQrExpiresAtMs(channel);
+  if (!expiresAtMs) {
+    stopPairQrAutoRefresh();
+    return;
+  }
+
+  if (pairQrRefreshTimer) {
+    clearTimeout(pairQrRefreshTimer);
+    pairQrRefreshTimer = null;
+  }
+  if (pairQrCountdownTimer) {
+    clearInterval(pairQrCountdownTimer);
+    pairQrCountdownTimer = null;
+  }
+
+  pairQrActiveChannelId = channel.channelId;
+  pairQrExpiresAtMs = expiresAtMs;
+  updatePairQrCountdown();
+  pairQrCountdownTimer = setInterval(updatePairQrCountdown, 1000);
+
+  const delay = Math.max(500, expiresAtMs - Date.now());
+  pairQrRefreshTimer = setTimeout(() => {
+    triggerPairQrAutoRefresh(channel.channelId).catch(() => {
+      // no-op
+    });
+  }, delay);
+}
+
 async function openPairQrDialogForChannel(channel) {
   if (!channel) {
     setPairMessage(t('msg.pairCreateFailed', { message: 'channel not found' }), 'error');
@@ -1781,6 +1928,11 @@ async function openPairQrDialogForChannel(channel) {
   const payload = channel.qrPayload && typeof channel.qrPayload === 'object' ? channel.qrPayload : {};
   await renderPairQrPreview(payload);
   openDialogSafe(pairQrDialog);
+  if (channel.status === 'pending') {
+    schedulePairQrAutoRefresh(channel);
+  } else {
+    stopPairQrAutoRefresh();
+  }
 }
 
 async function openPairQrDialog(channelId) {
@@ -1794,12 +1946,17 @@ async function revokePairBinding(bindingId) {
     return;
   }
   const baseUrl = getPairServerBaseUrl();
+  const serverToken = await ensurePairServerToken();
   const endpoint = buildPairHttpUrl(baseUrl, '/v1/pair/revoke');
+  const headers = {
+    'Content-Type': 'application/json'
+  };
+  if (serverToken) {
+    headers.Authorization = `Bearer ${serverToken}`;
+  }
   const response = await fetch(endpoint, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
+    headers,
     body: JSON.stringify({
       bindingId: id
     })
@@ -1826,6 +1983,9 @@ function removePairChannelLocal(channelId) {
     return null;
   }
   const [removed] = pairChannels.splice(index, 1);
+  if (removed && removed.channelId === pairQrActiveChannelId) {
+    stopPairQrAutoRefresh();
+  }
   if (activeChatChannelId === normalizedId) {
     activeChatChannelId = '';
     closeDialogSafe(pairChatDialog);
@@ -1912,6 +2072,7 @@ function clearPairQrPreview() {
   }
   pairQrImage.removeAttribute('src');
   pairQrImage.classList.add('hidden');
+  setPairQrCountdownText('');
 }
 
 async function renderPairQrPreview(payload) {
@@ -2100,8 +2261,145 @@ function getPairDeviceId() {
   return raw;
 }
 
+function pairDeviceTokenKey(baseUrl, deviceId) {
+  const normalizedBaseUrl = normalizePairBaseUrl(baseUrl);
+  const normalizedDeviceId = String(deviceId || '').trim();
+  return `${normalizedBaseUrl}::${normalizedDeviceId}`;
+}
+
+function readPairDeviceTokenStore() {
+  const raw = localStorage.getItem(PAIR_DEVICE_TOKEN_STORAGE_KEY);
+  if (!raw) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {};
+    }
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+function writePairDeviceTokenStore(store) {
+  localStorage.setItem(PAIR_DEVICE_TOKEN_STORAGE_KEY, JSON.stringify(store || {}));
+}
+
+function getStoredPairDeviceToken(baseUrl, deviceId) {
+  const key = pairDeviceTokenKey(baseUrl, deviceId);
+  if (!key || key === '::') {
+    return '';
+  }
+  const store = readPairDeviceTokenStore();
+  return String(store[key] || '').trim();
+}
+
+function setStoredPairDeviceToken(baseUrl, deviceId, token) {
+  const key = pairDeviceTokenKey(baseUrl, deviceId);
+  const normalizedToken = String(token || '').trim();
+  if (!key || key === '::' || !normalizedToken) {
+    return;
+  }
+  const store = readPairDeviceTokenStore();
+  store[key] = normalizedToken;
+  writePairDeviceTokenStore(store);
+}
+
+function clearStoredPairDeviceToken(baseUrl, deviceId) {
+  const key = pairDeviceTokenKey(baseUrl, deviceId);
+  if (!key || key === '::') {
+    return;
+  }
+  const store = readPairDeviceTokenStore();
+  if (!(key in store)) {
+    return;
+  }
+  delete store[key];
+  writePairDeviceTokenStore(store);
+}
+
+async function requestPairDeviceRegister(baseUrl, deviceId, token) {
+  const endpoint = buildPairHttpUrl(baseUrl, '/v1/devices/register');
+  const headers = {
+    'Content-Type': 'application/json'
+  };
+  const authToken = String(token || '').trim();
+  if (authToken) {
+    headers.Authorization = `Bearer ${authToken}`;
+  }
+
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        deviceId,
+        platform: 'desktop',
+        appVersion: 'openclaw-desktop'
+      })
+    });
+  } catch (error) {
+    throw new Error(`register device network failed: ${error?.message || String(error)}`);
+  }
+
+  let result = null;
+  try {
+    result = await response.json();
+  } catch {
+    result = null;
+  }
+
+  if (!response.ok || !result?.ok || !result?.device) {
+    const message = result?.message || result?.error || `HTTP ${response.status}`;
+    throw new Error(String(message));
+  }
+
+  const nextToken = String(result.device.deviceToken || result.device.device_token || '').trim();
+  if (!nextToken) {
+    throw new Error('device token missing in register response');
+  }
+  setStoredPairDeviceToken(baseUrl, deviceId, nextToken);
+  return nextToken;
+}
+
+async function ensurePairServerToken({ forceRegister = false } = {}) {
+  const baseUrl = getPairServerBaseUrl();
+  const deviceId = getPairDeviceId();
+
+  if (!forceRegister) {
+    const existing = getStoredPairDeviceToken(baseUrl, deviceId);
+    if (existing) {
+      return existing;
+    }
+  }
+
+  const cached = getStoredPairDeviceToken(baseUrl, deviceId);
+  if (cached) {
+    try {
+      return await requestPairDeviceRegister(baseUrl, deviceId, cached);
+    } catch (error) {
+      const message = String(error?.message || error || '').toLowerCase();
+      if (!message.includes('unauthorized') && !message.includes('forbidden') && !message.includes('token')) {
+        throw error;
+      }
+      clearStoredPairDeviceToken(baseUrl, deviceId);
+    }
+  }
+
+  return requestPairDeviceRegister(baseUrl, deviceId, '');
+}
+
 function getPairServerToken() {
-  return '';
+  try {
+    const baseUrl = getPairServerBaseUrl();
+    const deviceId = getPairDeviceId();
+    return getStoredPairDeviceToken(baseUrl, deviceId);
+  } catch {
+    return '';
+  }
 }
 
 function buildPairHttpUrl(baseUrl, path) {
@@ -2220,45 +2518,62 @@ async function sendPairSignal({ toType, toId, type, payload = {} }) {
   const baseUrl = getPairServerBaseUrl();
   const fromId = getPairDeviceId();
   const endpoint = buildPairHttpUrl(baseUrl, '/v1/signal/send');
-  const serverToken = getPairServerToken();
-  const headers = {
-    'Content-Type': 'application/json'
+
+  const sendViaHttp = async (serverToken) => {
+    const headers = {
+      'Content-Type': 'application/json'
+    };
+    if (serverToken) {
+      headers.Authorization = `Bearer ${serverToken}`;
+    }
+
+    let response;
+    try {
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          fromType: 'desktop',
+          fromId,
+          toType,
+          toId,
+          type,
+          payload
+        })
+      });
+    } catch (error) {
+      throw new Error(`send ${type} network failed: ${error?.message || String(error)}`);
+    }
+
+    let result;
+    try {
+      result = await response.json();
+    } catch {
+      result = null;
+    }
+
+    if (!response.ok || !result?.ok) {
+      const message = result?.message || result?.error || `HTTP ${response.status}`;
+      throw new Error(`send ${type} failed: ${message}`);
+    }
+
+    return result;
   };
-  if (serverToken) {
-    headers.Authorization = `Bearer ${serverToken}`;
+
+  let token = getPairServerToken();
+  if (!token) {
+    token = await ensurePairServerToken({ forceRegister: true });
   }
 
-  let response;
   try {
-    response = await fetch(endpoint, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        fromType: 'desktop',
-        fromId,
-        toType,
-        toId,
-        type,
-        payload
-      })
-    });
+    return await sendViaHttp(token);
   } catch (error) {
-    throw new Error(`send ${type} network failed: ${error?.message || String(error)}`);
+    if (!isPairAuthFailure(error)) {
+      throw error;
+    }
+    token = await ensurePairServerToken({ forceRegister: true });
+    return sendViaHttp(token);
   }
-
-  let result;
-  try {
-    result = await response.json();
-  } catch {
-    result = null;
-  }
-
-  if (!response.ok || !result?.ok) {
-    const message = result?.message || result?.error || `HTTP ${response.status}`;
-    throw new Error(`send ${type} failed: ${message}`);
-  }
-
-  return result;
 }
 
 async function sendPairChatMessage() {
@@ -2837,6 +3152,7 @@ async function bindPairEnvelope(envelope) {
       }
       removePairChannelLocal(channelBySession.channelId);
       closeDialogSafe(pairQrDialog);
+      stopPairQrAutoRefresh();
       renderPairChannelCards();
       updatePairButtons();
       setPairMessage(t('msg.pairAlreadyPaired', { mobileId: mobileId || '-' }), 'error');
@@ -2877,6 +3193,7 @@ async function bindPairEnvelope(envelope) {
       updatePairButtons();
     }
     closeDialogSafe(pairQrDialog);
+    stopPairQrAutoRefresh();
     setPairMessage(t('msg.pairClaimed'), 'success');
     appendPairEvent(`channel claimed: session=${sessionId || '-'} mobile=${mobileId || '-'} user=${userId || '-'}`);
     return;
@@ -2953,6 +3270,17 @@ async function connectPairChannel({ fromReconnect = false } = {}) {
   }
 
   syncPairStorage();
+  try {
+    setPairMessage(t('msg.pairAuthEnsuring'));
+    await ensurePairServerToken({ forceRegister: true });
+  } catch (error) {
+    pairDesiredConnected = false;
+    renderPairWsStatus('disconnected');
+    setPairMessage(t('msg.pairAuthFailed', { message: error?.message || String(error) }), 'error');
+    updatePairButtons();
+    return;
+  }
+
   pairDesiredConnected = true;
   resetPairReconnectTimer();
   cleanupPairWebSocket();
@@ -3125,6 +3453,7 @@ function disconnectPairChannel() {
   pairReconnectAttempts = 0;
   resetPairReconnectTimer();
   cleanupPairWebSocket();
+  stopPairQrAutoRefresh();
   renderPairWsStatus('disconnected');
   setPairMessage(t('msg.pairDisconnected'));
   appendPairEvent('ws disconnected by user');
@@ -3156,18 +3485,116 @@ async function createPairSession() {
   if (!isPairChannelOpen()) {
     await connectPairChannel();
   }
+  clearPairQrPreview();
+  setPairMessage(t('msg.pairCreateRunning'));
 
-  const endpoint = buildPairHttpUrl(baseUrl, '/pair/create');
-  const serverToken = getPairServerToken();
+  let serverToken = '';
+  try {
+    setPairMessage(t('msg.pairAuthEnsuring'));
+    serverToken = await ensurePairServerToken({ forceRegister: true });
+  } catch (error) {
+    setPairMessage(t('msg.pairAuthFailed', { message: error?.message || String(error) }), 'error');
+    return;
+  }
+
+  let session;
+  try {
+    session = await requestPairSession({ baseUrl, deviceId, serverToken });
+  } catch (error) {
+    setPairMessage(t('msg.pairCreateFailed', { message: error?.message || String(error) }), 'error');
+    appendPairEvent(`create failed: ${error?.message || String(error)}`);
+    return;
+  }
+
+  const qrPayload = await sanitizePairQrPayload(buildPairQrPayload(session, baseUrl), baseUrl);
+  const createdChannel = upsertPairChannel({
+    channelId: String(session.sessionId || `ch_${Date.now()}`),
+    sessionId: String(session.sessionId || ''),
+    status: 'pending',
+    mobileId: '',
+    userId: '',
+    bindingId: '',
+    createdAt: Date.now(),
+    expiresAt: session.expiresAt,
+    qrPayload,
+    messages: []
+  });
+  renderPairChannelCards();
+  setPairMessage(t('msg.pairCreated'), 'success');
+  appendPairEvent(`session ${session.sessionId || '-'} created`);
+  await openPairQrDialogForChannel(createdChannel);
+  updatePairButtons();
+}
+
+function toMillis(rawValue) {
+  if (rawValue === null || rawValue === undefined || rawValue === '') {
+    return 0;
+  }
+  if (typeof rawValue === 'number' && Number.isFinite(rawValue) && rawValue > 0) {
+    return rawValue;
+  }
+  if (typeof rawValue === 'string') {
+    const numeric = Number(rawValue);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric;
+    }
+    const parsed = Date.parse(rawValue);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return 0;
+}
+
+function normalizePairSession(rawSession) {
+  const source = rawSession && typeof rawSession === 'object' ? rawSession : {};
+  const sessionId = String(
+    source.pairSessionId || source.pair_session_id || source.sessionId || source.session_id || ''
+  ).trim();
+  const pairCode = String(source.pairCode || source.pair_code || '').trim();
+  const pairToken = String(source.pairToken || source.pair_token || '').trim();
+  const deviceId = String(source.deviceId || source.device_id || '').trim();
+  const expiresAt = toMillis(source.expiresAt || source.expires_at);
+  return {
+    sessionId,
+    pairCode,
+    pairToken,
+    deviceId,
+    expiresAt: expiresAt || Date.now() + PAIR_SESSION_TTL_SECONDS * 1000
+  };
+}
+
+function buildPairQrPayload(session, baseUrl) {
+  const expiresAtIso = new Date(session.expiresAt).toISOString();
+  return {
+    kind: 'openclaw.pair',
+    version: 'v1',
+    base_url: baseUrl,
+    session_id: session.sessionId,
+    pair_code: session.pairCode,
+    pair_token: session.pairToken,
+    expires_at: expiresAtIso
+  };
+}
+
+function isPairAuthFailure(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  if (!message) {
+    return false;
+  }
+  return message.includes('unauthorized') || message.includes('forbidden') || message.includes('token');
+}
+
+async function requestPairSession({ baseUrl, deviceId, serverToken }) {
+  const endpoint = buildPairHttpUrl(baseUrl, '/v1/pair/sessions');
+  appendPairEvent(`create pair session -> ${endpoint}`);
+
   const headers = {
     'Content-Type': 'application/json'
   };
   if (serverToken) {
     headers.Authorization = `Bearer ${serverToken}`;
   }
-  setPairMessage(t('msg.pairCreateRunning'));
-  appendPairEvent(`create pair session -> ${endpoint}`);
-  clearPairQrPreview();
 
   let response;
   try {
@@ -3175,46 +3602,85 @@ async function createPairSession() {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        device_id: deviceId,
-        device_name: pairDeviceName()
+        deviceId,
+        ttlSeconds: PAIR_SESSION_TTL_SECONDS
       })
     });
   } catch (error) {
-    setPairMessage(t('msg.pairCreateFailed', { message: error.message || String(error) }), 'error');
-    return;
+    throw new Error(`network failed: ${error?.message || String(error)}`);
   }
 
-  let result;
+  let result = null;
   try {
     result = await response.json();
   } catch {
     result = null;
   }
 
-  if (!response.ok || !result?.ok || !result?.data) {
-    const message = result?.error || result?.message || `HTTP ${response.status}`;
-    setPairMessage(t('msg.pairCreateFailed', { message }), 'error');
-    appendPairEvent(`create failed: ${message}`);
-    return;
+  if (!response.ok || !result?.ok) {
+    const message = result?.message || result?.error || `HTTP ${response.status}`;
+    throw new Error(String(message));
   }
 
-  const data = result.data;
-  const qrPayload = await sanitizePairQrPayload(data.qr_payload || {}, baseUrl);
-  const createdChannel = upsertPairChannel({
-    channelId: String(data.session_id || `ch_${Date.now()}`),
-    sessionId: String(data.session_id || ''),
-    status: 'pending',
-    mobileId: '',
-    userId: '',
-    createdAt: Date.now(),
-    qrPayload,
-    messages: []
-  });
+  const session = normalizePairSession(result.session || result.data || {});
+  if (!session.sessionId || !session.pairToken || !session.pairCode) {
+    throw new Error('invalid pair session payload');
+  }
+  return session;
+}
+
+async function refreshPairSessionForChannel(channel, { autoRefresh = false } = {}) {
+  if (!channel) {
+    throw new Error('channel not found');
+  }
+  let baseUrl;
+  let deviceId;
+  try {
+    baseUrl = getPairServerBaseUrl();
+    deviceId = getPairDeviceId();
+  } catch (error) {
+    throw new Error(error?.message || String(error));
+  }
+
+  let serverToken = getPairServerToken();
+  if (!serverToken) {
+    serverToken = await ensurePairServerToken({ forceRegister: true });
+  }
+
+  let session;
+  try {
+    session = await requestPairSession({ baseUrl, deviceId, serverToken });
+  } catch (error) {
+    if (!isPairAuthFailure(error)) {
+      throw error;
+    }
+    const refreshedToken = await ensurePairServerToken({ forceRegister: true });
+    session = await requestPairSession({ baseUrl, deviceId, serverToken: refreshedToken });
+  }
+
+  channel.sessionId = session.sessionId;
+  channel.status = 'pending';
+  channel.mobileId = '';
+  channel.userId = '';
+  channel.bindingId = '';
+  channel.expiresAt = session.expiresAt;
+  channel.qrPayload = await sanitizePairQrPayload(buildPairQrPayload(session, baseUrl), baseUrl);
   renderPairChannelCards();
-  setPairMessage(t('msg.pairCreated'), 'success');
-  appendPairEvent(`session ${data.session_id || '-'} created`);
-  await openPairQrDialogForChannel(createdChannel);
+
+  if (!autoRefresh) {
+    setPairMessage(t('msg.pairCreated'), 'success');
+    appendPairEvent(`session ${session.sessionId || '-'} refreshed`);
+  } else {
+    appendPairEvent(`session ${session.sessionId || '-'} auto-refreshed`);
+  }
+
+  if (pairQrDialog?.open && pairQrActiveChannelId === channel.channelId) {
+    await renderPairQrPreview(channel.qrPayload);
+    schedulePairQrAutoRefresh(channel);
+  }
+
   updatePairButtons();
+  return channel;
 }
 
 function applyPairConfigFromRawConfig() {
@@ -3267,6 +3733,7 @@ function initPairCenter() {
   activeChatChannelId = '';
   pairChatDraftInput.value = '';
   clearPairQrPreview();
+  stopPairQrAutoRefresh();
   pairEventLog.textContent = `${t('pair.logPrefix')}: ready`;
   pairChannelOpen = false;
   renderPairWsStatus('disconnected');
@@ -3319,6 +3786,13 @@ function initPairCenter() {
   });
   pairQrCloseBtn.addEventListener('click', () => {
     closeDialogSafe(pairQrDialog);
+    stopPairQrAutoRefresh();
+  });
+  pairQrDialog?.addEventListener?.('close', () => {
+    stopPairQrAutoRefresh();
+  });
+  pairQrDialog?.addEventListener?.('cancel', () => {
+    stopPairQrAutoRefresh();
   });
   pairChatDraftInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
@@ -3887,6 +4361,7 @@ summaryCustomApiMode.addEventListener('change', async () => {
 window.addEventListener('beforeunload', () => {
   pairDesiredConnected = false;
   resetPairReconnectTimer();
+  stopPairQrAutoRefresh();
   cleanupPairWebSocket();
 });
 

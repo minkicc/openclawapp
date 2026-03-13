@@ -661,6 +661,13 @@ button {
   min-height: 248px;
 }
 
+.pair-qr-countdown {
+  margin: 10px 0 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 #pairQrImage {
   width: 220px;
   height: 220px;

@@ -25,6 +25,8 @@ type SessionEntry = {
 
 type ClaimResponse = {
   ok: boolean;
+  authToken?: string;
+  auth_token?: string;
   session: {
     pairSessionId?: string;
     pair_session_id?: string;
@@ -78,6 +80,7 @@ let signalWs: WebSocket | null = null;
 let signalMode: SignalMode = "none";
 let signalBaseUrl = "";
 let signalMobileId = "";
+let signalToken = "";
 let signalWsRequestSeq = 0;
 const signalWsPending = new Map<
   string,
@@ -498,6 +501,7 @@ function closeSignal(silent = false) {
   signalMode = "none";
   signalBaseUrl = "";
   signalMobileId = "";
+  signalToken = "";
   clearSignalWsPending("signal closed");
   setSessionStatus("disconnected");
   if (!silent) {
@@ -616,21 +620,27 @@ function sendSignalViaWs(
   });
 }
 
-async function connectSignal(baseUrl: string, mobileId: string) {
+async function connectSignal(baseUrl: string, mobileId: string, token = "") {
   const normalizedBaseUrl = normalizeServerBaseUrl(baseUrl);
-  if (isSignalOpenFor(normalizedBaseUrl) || isSignalConnectingFor(normalizedBaseUrl)) {
+  const normalizedToken = String(token || "").trim();
+  const sameToken = signalToken === normalizedToken;
+  if ((isSignalOpenFor(normalizedBaseUrl) || isSignalConnectingFor(normalizedBaseUrl)) && sameToken) {
     return;
   }
 
   closeSignal(true);
   signalBaseUrl = normalizedBaseUrl;
   signalMobileId = mobileId;
+  signalToken = normalizedToken;
   setSessionStatus("connecting", normalizedBaseUrl);
 
   const params = new URLSearchParams({
     clientType: "mobile",
     clientId: mobileId,
   });
+  if (normalizedToken) {
+    params.set("token", normalizedToken);
+  }
 
   const wsUrl = buildWsUrl(normalizedBaseUrl, "/v1/signal/ws", params);
   const ws = new WebSocket(wsUrl);
@@ -743,15 +753,16 @@ function sleep(ms: number) {
   });
 }
 
-async function ensureSignalConnected(baseUrl: string, mobileId: string, timeoutMs = 5000) {
+async function ensureSignalConnected(baseUrl: string, mobileId: string, token = "", timeoutMs = 5000) {
   const normalized = normalizeServerBaseUrl(baseUrl);
-  if (isSignalOpenFor(normalized)) {
+  const normalizedToken = String(token || "").trim();
+  if (isSignalOpenFor(normalized) && signalToken === normalizedToken) {
     return true;
   }
-  await connectSignal(normalized, mobileId);
+  await connectSignal(normalized, mobileId, normalizedToken);
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
-    if (isSignalOpenFor(normalized)) {
+    if (isSignalOpenFor(normalized) && signalToken === normalizedToken) {
       return true;
     }
     await sleep(120);
@@ -846,7 +857,8 @@ async function claimByToken(
   const sessionId = String(result.session?.pairSessionId || result.session?.pair_session_id || "").trim();
   const deviceId = String(result.binding?.deviceId || result.binding?.device_id || result.session?.deviceId || result.session?.device_id || "").trim();
   const bindingId = String(result.binding?.bindingId || result.binding?.binding_id || "").trim();
-  return { sessionId, deviceId, bindingId };
+  const authToken = String(result.authToken || result.auth_token || "").trim();
+  return { sessionId, deviceId, bindingId, authToken };
 }
 
 async function claimByCode(
@@ -854,41 +866,17 @@ async function claimByCode(
   pairCode: string,
   userId: string,
   mobileId: string,
-  pairSessionId = "",
   serverToken = ""
 ) {
-  try {
-    const result = await requestJson<ClaimResponse>(baseUrl, "/v1/pair/claim-by-code", {
-      method: "POST",
-      body: JSON.stringify({ pairCode, userId, mobileId }),
-    }, serverToken);
-    const sessionId = String(result.session?.pairSessionId || result.session?.pair_session_id || "").trim();
-    const deviceId = String(result.binding?.deviceId || result.binding?.device_id || result.session?.deviceId || result.session?.device_id || "").trim();
-    const bindingId = String(result.binding?.bindingId || result.binding?.binding_id || "").trim();
-    return { sessionId, deviceId, bindingId };
-  } catch (error) {
-    const message = (error as Error)?.message || String(error);
-    if (!/route not found/i.test(message)) {
-      throw error;
-    }
-    if (!pairSessionId) {
-      throw new Error("缺少 session_id，无法兼容旧版 claim");
-    }
-    const legacy = await requestJson<Record<string, unknown>>(baseUrl, "/pair/claim", {
-      method: "POST",
-      body: JSON.stringify({
-        session_id: pairSessionId,
-        pair_code: pairCode,
-        user_id: userId,
-      }),
-    }, serverToken);
-    const data = (legacy.data || {}) as Record<string, unknown>;
-    return {
-      sessionId: String(data.session_id || pairSessionId).trim(),
-      deviceId: String(data.device_id || data.deviceId || "").trim(),
-      bindingId: "",
-    };
-  }
+  const result = await requestJson<ClaimResponse>(baseUrl, "/v1/pair/claim-by-code", {
+    method: "POST",
+    body: JSON.stringify({ pairCode, userId, mobileId }),
+  }, serverToken);
+  const sessionId = String(result.session?.pairSessionId || result.session?.pair_session_id || "").trim();
+  const deviceId = String(result.binding?.deviceId || result.binding?.device_id || result.session?.deviceId || result.session?.device_id || "").trim();
+  const bindingId = String(result.binding?.bindingId || result.binding?.binding_id || "").trim();
+  const authToken = String(result.authToken || result.auth_token || "").trim();
+  return { sessionId, deviceId, bindingId, authToken };
 }
 
 async function scanQrByCamera() {
@@ -1015,7 +1003,7 @@ async function pairByQr() {
 
     const baseUrl = normalizeServerBaseUrl(parsed.baseUrl);
     const { userId, mobileId } = ensureIdentityValues();
-    let claimed: { sessionId: string; deviceId: string; bindingId: string };
+    let claimed: { sessionId: string; deviceId: string; bindingId: string; authToken: string };
     if (parsed.pairToken) {
       claimed = await claimByToken(baseUrl, parsed.pairToken, userId, mobileId, parsed.serverToken);
     } else {
@@ -1024,7 +1012,6 @@ async function pairByQr() {
         parsed.pairCode,
         userId,
         mobileId,
-        parsed.sessionId,
         parsed.serverToken
       );
     }
@@ -1034,6 +1021,7 @@ async function pairByQr() {
       throw new Error("认领成功但未返回目标设备 ID");
     }
 
+    const authToken = claimed.authToken || parsed.serverToken;
     let session = findSessionByDeviceId(deviceId);
     if (!session) {
       session = {
@@ -1042,7 +1030,7 @@ async function pairByQr() {
         createdAt: Date.now(),
         status: "connecting",
         serverBaseUrl: baseUrl,
-        serverToken: parsed.serverToken,
+        serverToken: authToken,
         deviceId,
         pairSessionId: claimed.sessionId || parsed.sessionId,
         bindingId: claimed.bindingId,
@@ -1051,7 +1039,7 @@ async function pairByQr() {
       sessions.push(session);
     } else {
       session.serverBaseUrl = baseUrl;
-      session.serverToken = parsed.serverToken;
+      session.serverToken = authToken;
       session.pairSessionId = claimed.sessionId || parsed.sessionId || session.pairSessionId;
       session.bindingId = claimed.bindingId || session.bindingId;
       session.status = "connecting";
@@ -1059,7 +1047,7 @@ async function pairByQr() {
 
     saveSessions();
     renderSessionList();
-    const connected = await ensureSignalConnected(baseUrl, mobileId);
+    const connected = await ensureSignalConnected(baseUrl, mobileId, session.serverToken);
     session.status = connected ? "connected" : "disconnected";
     saveSessions();
     renderSessionList();
@@ -1083,7 +1071,7 @@ async function sendChatMessage() {
     return;
   }
   const { mobileId } = ensureIdentityValues();
-  const connected = await ensureSignalConnected(session.serverBaseUrl, mobileId);
+  const connected = await ensureSignalConnected(session.serverBaseUrl, mobileId, session.serverToken);
   if (!connected) {
     session.status = "disconnected";
     saveSessions();
@@ -1147,7 +1135,7 @@ function bootstrap() {
   if (sessions.length > 0) {
     const first = sessions[0];
     const { mobileId } = ensureIdentityValues();
-    void ensureSignalConnected(first.serverBaseUrl, mobileId);
+    void ensureSignalConnected(first.serverBaseUrl, mobileId, first.serverToken);
   }
 }
 

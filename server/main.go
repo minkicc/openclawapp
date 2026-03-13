@@ -28,6 +28,7 @@ import (
 const (
 	maxBodyBytes       = 1024 * 1024
 	maxSignalQueuePull = 500
+	deviceInactiveTTL  = 30 * 24 * time.Hour
 )
 
 type codedError struct {
@@ -57,6 +58,10 @@ func errorStatus(err error) int {
 		return http.StatusBadRequest
 	case "BODY_TOO_LARGE":
 		return http.StatusRequestEntityTooLarge
+	case "UNAUTHORIZED":
+		return http.StatusUnauthorized
+	case "FORBIDDEN":
+		return http.StatusForbidden
 	case "NOT_FOUND":
 		return http.StatusNotFound
 	case "EXPIRED":
@@ -94,13 +99,14 @@ type PairSession struct {
 }
 
 type Binding struct {
-	BindingID string `json:"bindingId"`
-	UserID    string `json:"userId"`
-	DeviceID  string `json:"deviceId"`
-	MobileID  string `json:"mobileId"`
-	Status    string `json:"status"`
-	CreatedAt int64  `json:"createdAt"`
-	UpdatedAt int64  `json:"updatedAt"`
+	BindingID   string `json:"bindingId"`
+	UserID      string `json:"userId"`
+	DeviceID    string `json:"deviceId"`
+	MobileID    string `json:"mobileId"`
+	MobileToken string `json:"mobileToken,omitempty"`
+	Status      string `json:"status"`
+	CreatedAt   int64  `json:"createdAt"`
+	UpdatedAt   int64  `json:"updatedAt"`
 }
 
 type SignalParty struct {
@@ -129,25 +135,29 @@ type StoreSnapshot struct {
 }
 
 type Store struct {
-	mu             sync.RWMutex
-	devices        map[string]Device
-	pairSessions   map[string]PairSession
-	pairTokenIndex map[string]string
-	pairCodeIndex  map[string]string
-	bindings       map[string]Binding
-	signalQueues   map[string][]SignalEvent
-	subscribers    map[string]map[chan SignalEvent]struct{}
+	mu               sync.RWMutex
+	devices          map[string]Device
+	deviceTokenIndex map[string]string
+	pairSessions     map[string]PairSession
+	pairTokenIndex   map[string]string
+	pairCodeIndex    map[string]string
+	bindings         map[string]Binding
+	mobileTokenIndex map[string]string
+	signalQueues     map[string][]SignalEvent
+	subscribers      map[string]map[chan SignalEvent]struct{}
 }
 
 func newStore() *Store {
 	return &Store{
-		devices:        map[string]Device{},
-		pairSessions:   map[string]PairSession{},
-		pairTokenIndex: map[string]string{},
-		pairCodeIndex:  map[string]string{},
-		bindings:       map[string]Binding{},
-		signalQueues:   map[string][]SignalEvent{},
-		subscribers:    map[string]map[chan SignalEvent]struct{}{},
+		devices:          map[string]Device{},
+		deviceTokenIndex: map[string]string{},
+		pairSessions:     map[string]PairSession{},
+		pairTokenIndex:   map[string]string{},
+		pairCodeIndex:    map[string]string{},
+		bindings:         map[string]Binding{},
+		mobileTokenIndex: map[string]string{},
+		signalQueues:     map[string][]SignalEvent{},
+		subscribers:      map[string]map[chan SignalEvent]struct{}{},
 	}
 }
 
@@ -175,6 +185,10 @@ func clampInt(value int, min int, max int) int {
 		return max
 	}
 	return value
+}
+
+func deviceInactiveCutoff(now int64) int64 {
+	return now - deviceInactiveTTL.Milliseconds()
 }
 
 func randomHex(bytesLen int) (string, error) {
@@ -322,7 +336,99 @@ func (s *Store) applySnapshot(snap StoreSnapshot) {
 		s.signalQueues[k] = copied
 	}
 
+	s.rebuildAuthIndexesLocked()
 	s.subscribers = map[string]map[chan SignalEvent]struct{}{}
+}
+
+func (s *Store) rebuildAuthIndexesLocked() {
+	s.deviceTokenIndex = map[string]string{}
+	for deviceID, device := range s.devices {
+		token := strings.TrimSpace(device.DeviceToken)
+		if token == "" {
+			continue
+		}
+		s.deviceTokenIndex[token] = deviceID
+	}
+
+	s.mobileTokenIndex = map[string]string{}
+	for bindingID, binding := range s.bindings {
+		if binding.Status != "active" {
+			continue
+		}
+		token := strings.TrimSpace(binding.MobileToken)
+		if token == "" {
+			continue
+		}
+		s.mobileTokenIndex[token] = bindingID
+	}
+}
+
+func (s *Store) removePairSessionIndexesLocked(session PairSession) {
+	if token := strings.TrimSpace(session.PairToken); token != "" {
+		delete(s.pairTokenIndex, token)
+	}
+	if code := strings.TrimSpace(session.PairCode); code != "" {
+		delete(s.pairCodeIndex, code)
+	}
+}
+
+func (s *Store) pruneInactiveDevicesLocked(now int64) int {
+	cutoff := deviceInactiveCutoff(now)
+	if cutoff <= 0 {
+		return 0
+	}
+
+	removedDeviceIDs := map[string]struct{}{}
+	for deviceID, device := range s.devices {
+		if device.LastSeenAt > cutoff {
+			continue
+		}
+		removedDeviceIDs[deviceID] = struct{}{}
+		if token := strings.TrimSpace(device.DeviceToken); token != "" {
+			delete(s.deviceTokenIndex, token)
+		}
+		delete(s.devices, deviceID)
+	}
+	if len(removedDeviceIDs) == 0 {
+		return 0
+	}
+
+	for sessionID, session := range s.pairSessions {
+		if _, remove := removedDeviceIDs[session.DeviceID]; !remove {
+			continue
+		}
+		s.removePairSessionIndexesLocked(session)
+		delete(s.pairSessions, sessionID)
+	}
+
+	for bindingID, binding := range s.bindings {
+		if _, remove := removedDeviceIDs[binding.DeviceID]; !remove {
+			continue
+		}
+		if token := strings.TrimSpace(binding.MobileToken); token != "" {
+			delete(s.mobileTokenIndex, token)
+		}
+		delete(s.bindings, bindingID)
+	}
+
+	for key := range s.signalQueues {
+		clientType, clientID, ok := splitClientKey(key)
+		if !ok || clientType != "desktop" {
+			continue
+		}
+		if _, remove := removedDeviceIDs[clientID]; remove {
+			delete(s.signalQueues, key)
+		}
+	}
+
+	return len(removedDeviceIDs)
+}
+
+func (s *Store) pruneInactiveDevices() int {
+	now := nowMillis()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pruneInactiveDevicesLocked(now)
 }
 
 type storeStats struct {
@@ -341,6 +447,83 @@ func (s *Store) stats() storeStats {
 	}
 }
 
+func (s *Store) deviceByToken(token string) (Device, bool) {
+	normalized := strings.TrimSpace(token)
+	if normalized == "" {
+		return Device{}, false
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	deviceID, exists := s.deviceTokenIndex[normalized]
+	if !exists {
+		return Device{}, false
+	}
+	device, exists := s.devices[deviceID]
+	if !exists {
+		return Device{}, false
+	}
+	return device, true
+}
+
+func (s *Store) activeBindingByMobileToken(token string) (Binding, bool) {
+	normalized := strings.TrimSpace(token)
+	if normalized == "" {
+		return Binding{}, false
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	bindingID, exists := s.mobileTokenIndex[normalized]
+	if !exists {
+		return Binding{}, false
+	}
+	binding, exists := s.bindings[bindingID]
+	if !exists || binding.Status != "active" {
+		return Binding{}, false
+	}
+	return binding, true
+}
+
+func (s *Store) bindingByID(bindingID string) (Binding, bool) {
+	normalized := strings.TrimSpace(bindingID)
+	if normalized == "" {
+		return Binding{}, false
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	binding, exists := s.bindings[normalized]
+	if !exists {
+		return Binding{}, false
+	}
+	return binding, true
+}
+
+func (s *Store) hasActiveBindingBetween(deviceID string, mobileID string) bool {
+	normalizedDeviceID := strings.TrimSpace(deviceID)
+	normalizedMobileID := strings.TrimSpace(mobileID)
+	if normalizedDeviceID == "" || normalizedMobileID == "" {
+		return false
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, binding := range s.bindings {
+		if binding.Status != "active" {
+			continue
+		}
+		if binding.DeviceID == normalizedDeviceID && binding.MobileID == normalizedMobileID {
+			return true
+		}
+	}
+	return false
+}
+
 type registerDeviceRequest struct {
 	DeviceID     string         `json:"deviceId"`
 	Platform     string         `json:"platform"`
@@ -348,7 +531,7 @@ type registerDeviceRequest struct {
 	Capabilities map[string]any `json:"capabilities"`
 }
 
-func (s *Store) registerDevice(req registerDeviceRequest) (Device, error) {
+func (s *Store) registerDevice(req registerDeviceRequest, credentialToken string) (Device, error) {
 	deviceID, err := trimRequired(req.DeviceID, "deviceId")
 	if err != nil {
 		return Device{}, err
@@ -366,9 +549,15 @@ func (s *Store) registerDevice(req registerDeviceRequest) (Device, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.pruneInactiveDevicesLocked(now)
 
 	device, exists := s.devices[deviceID]
-	if !exists {
+	if exists {
+		presentedToken := strings.TrimSpace(credentialToken)
+		if presentedToken == "" || presentedToken != strings.TrimSpace(device.DeviceToken) {
+			return Device{}, newError("UNAUTHORIZED", "device token is required to update existing device")
+		}
+	} else {
 		token, tokenErr := makeID("devtok")
 		if tokenErr != nil {
 			return Device{}, newError("INTERNAL_ERROR", "failed to generate device token")
@@ -392,6 +581,9 @@ func (s *Store) registerDevice(req registerDeviceRequest) (Device, error) {
 	device.UpdatedAt = now
 
 	s.devices[deviceID] = device
+	if strings.TrimSpace(device.DeviceToken) != "" {
+		s.deviceTokenIndex[device.DeviceToken] = deviceID
+	}
 	return device, nil
 }
 
@@ -407,6 +599,7 @@ func (s *Store) heartbeatDevice(req heartbeatRequest) (Device, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.pruneInactiveDevicesLocked(nowMillis())
 
 	device, exists := s.devices[deviceID]
 	if !exists {
@@ -465,19 +658,6 @@ type createPairSessionRequest struct {
 	TTLSeconds int    `json:"ttlSeconds"`
 }
 
-type legacyCreatePairSessionRequest struct {
-	DeviceID   string `json:"device_id"`
-	DeviceName string `json:"device_name"`
-	TTLSeconds int    `json:"ttl_seconds"`
-}
-
-type legacyClaimPairRequest struct {
-	SessionID string `json:"session_id"`
-	PairCode  string `json:"pair_code"`
-	UserID    string `json:"user_id"`
-	MobileID  string `json:"mobile_id"`
-}
-
 func (s *Store) createPairSession(req createPairSessionRequest) (PairSession, error) {
 	deviceID, err := trimRequired(req.DeviceID, "deviceId")
 	if err != nil {
@@ -486,6 +666,7 @@ func (s *Store) createPairSession(req createPairSessionRequest) (PairSession, er
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.pruneInactiveDevicesLocked(nowMillis())
 
 	if _, exists := s.devices[deviceID]; !exists {
 		return PairSession{}, newError("NOT_FOUND", "device not registered")
@@ -553,22 +734,34 @@ func (s *Store) getActiveBindingLocked(userID string, deviceID string) (Binding,
 
 func (s *Store) claimSessionLocked(session PairSession, userID string, mobileID string) (PairSession, Binding) {
 	now := nowMillis()
+	mobileToken, _ := makeID("mobtok")
+	if strings.TrimSpace(mobileToken) == "" {
+		mobileToken = fmt.Sprintf("mobtok_%d", now)
+	}
 
 	binding, exists := s.getActiveBindingLocked(userID, session.DeviceID)
 	if !exists {
 		bindingID, _ := makeID("bind")
 		binding = Binding{
-			BindingID: bindingID,
-			UserID:    userID,
-			DeviceID:  session.DeviceID,
-			MobileID:  mobileID,
-			Status:    "active",
-			CreatedAt: now,
-			UpdatedAt: now,
+			BindingID:   bindingID,
+			UserID:      userID,
+			DeviceID:    session.DeviceID,
+			MobileID:    mobileID,
+			MobileToken: mobileToken,
+			Status:      "active",
+			CreatedAt:   now,
+			UpdatedAt:   now,
 		}
 	} else {
+		if binding.MobileToken != "" {
+			delete(s.mobileTokenIndex, binding.MobileToken)
+		}
 		binding.MobileID = mobileID
+		binding.MobileToken = mobileToken
 		binding.UpdatedAt = now
+	}
+	if binding.MobileToken != "" {
+		s.mobileTokenIndex[binding.MobileToken] = binding.BindingID
 	}
 	s.bindings[binding.BindingID] = binding
 
@@ -706,62 +899,6 @@ func (s *Store) claimByCode(req claimByCodeRequest) (PairSession, Binding, error
 	return session, binding, nil
 }
 
-func (s *Store) claimBySessionAndCode(sessionID string, pairCode string, userID string, mobileID string) (PairSession, Binding, error) {
-	normalizedSessionID, err := trimRequired(sessionID, "sessionId")
-	if err != nil {
-		return PairSession{}, Binding{}, err
-	}
-	normalizedPairCode, err := trimRequired(pairCode, "pairCode")
-	if err != nil {
-		return PairSession{}, Binding{}, err
-	}
-	normalizedUserID := strings.TrimSpace(userID)
-	if normalizedUserID == "" {
-		fallback, idErr := makeID("user")
-		if idErr != nil {
-			return PairSession{}, Binding{}, idErr
-		}
-		normalizedUserID = fallback
-	}
-	normalizedMobileID := strings.TrimSpace(mobileID)
-	if normalizedMobileID == "" {
-		fallback, idErr := makeID("mobile")
-		if idErr != nil {
-			return PairSession{}, Binding{}, idErr
-		}
-		normalizedMobileID = fallback
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	session, exists := s.pairSessions[normalizedSessionID]
-	if !exists {
-		return PairSession{}, Binding{}, newError("NOT_FOUND", "pair session not found")
-	}
-	if session.PairCode != normalizedPairCode {
-		return PairSession{}, Binding{}, newError("NOT_FOUND", "pair session not found")
-	}
-	if session.Status != "pending" {
-		if session.Status == "claimed" {
-			if claimedUserID(session) == normalizedUserID {
-				session, binding := s.claimSessionLocked(session, normalizedUserID, normalizedMobileID)
-				return session, binding, nil
-			}
-			return PairSession{}, Binding{}, newError("ALREADY_CLAIMED", "pair session already claimed by another user")
-		}
-		return PairSession{}, Binding{}, newError("INVALID_STATE", "pair session is not claimable")
-	}
-	if session.ExpiresAt < nowMillis() {
-		session.Status = "expired"
-		s.pairSessions[normalizedSessionID] = session
-		return PairSession{}, Binding{}, newError("EXPIRED", "pair session expired")
-	}
-
-	session, binding := s.claimSessionLocked(session, normalizedUserID, normalizedMobileID)
-	return session, binding, nil
-}
-
 type revokePairRequest struct {
 	BindingID string `json:"bindingId"`
 	UserID    string `json:"userId"`
@@ -793,6 +930,9 @@ func (s *Store) revokePair(req revokePairRequest) (Binding, error) {
 		return Binding{}, newError("NOT_FOUND", "binding not found")
 	}
 
+	if binding.MobileToken != "" {
+		delete(s.mobileTokenIndex, binding.MobileToken)
+	}
 	binding.Status = "revoked"
 	binding.UpdatedAt = nowMillis()
 	s.bindings[binding.BindingID] = binding
@@ -1063,6 +1203,14 @@ func (r *redisPersistence) keyDevices() string {
 	return r.keyPrefix + ":devices"
 }
 
+func (r *redisPersistence) keyDeviceLeasePrefix() string {
+	return r.keyPrefix + ":device:lease:"
+}
+
+func (r *redisPersistence) keyDeviceLease(deviceID string) string {
+	return r.keyDeviceLeasePrefix() + deviceID
+}
+
 func (r *redisPersistence) keyPairSessions() string {
 	return r.keyPrefix + ":pair:sessions"
 }
@@ -1168,18 +1316,73 @@ func (r *redisPersistence) hydrateFromRedis() error {
 		}
 	}
 
-	snapshot := StoreSnapshot{
-		Version:        1,
-		SavedAt:        nowMillis(),
-		Devices:        decodeStructMap[Device](devicesRaw),
-		PairSessions:   decodeStructMap[PairSession](pairSessionsRaw),
-		PairTokenIndex: map[string]string{},
-		PairCodeIndex:  map[string]string{},
-		Bindings:       decodeStructMap[Binding](bindingsRaw),
-		SignalQueues:   queues,
+	decodedDevices := decodeStructMap[Device](devicesRaw)
+	activeDevices := map[string]Device{}
+	now := nowMillis()
+
+	if len(decodedDevices) > 0 {
+		deviceIDs := make([]string, 0, len(decodedDevices))
+		leaseKeys := make([]string, 0, len(decodedDevices))
+		for deviceID := range decodedDevices {
+			deviceIDs = append(deviceIDs, deviceID)
+			leaseKeys = append(leaseKeys, r.keyDeviceLease(deviceID))
+		}
+
+		leaseValues, leaseErr := r.client.MGet(ctx, leaseKeys...).Result()
+		if leaseErr != nil {
+			log.Printf("[openclaw-server] failed to read redis device leases, fallback to lastSeen cutoff: %v", leaseErr)
+		}
+		cutoff := deviceInactiveCutoff(now)
+		for idx, deviceID := range deviceIDs {
+			device := decodedDevices[deviceID]
+			activeByLease := leaseErr == nil && idx < len(leaseValues) && leaseValues[idx] != nil
+			activeByLastSeen := device.LastSeenAt > cutoff
+			if activeByLease || activeByLastSeen {
+				activeDevices[deviceID] = device
+			}
+		}
 	}
 
-	now := nowMillis()
+	decodedPairSessions := decodeStructMap[PairSession](pairSessionsRaw)
+	filteredPairSessions := map[string]PairSession{}
+	for sessionID, session := range decodedPairSessions {
+		if _, exists := activeDevices[session.DeviceID]; !exists {
+			continue
+		}
+		filteredPairSessions[sessionID] = session
+	}
+
+	decodedBindings := decodeStructMap[Binding](bindingsRaw)
+	filteredBindings := map[string]Binding{}
+	for bindingID, binding := range decodedBindings {
+		if _, exists := activeDevices[binding.DeviceID]; !exists {
+			continue
+		}
+		filteredBindings[bindingID] = binding
+	}
+
+	filteredQueues := map[string][]SignalEvent{}
+	for key, queue := range queues {
+		clientType, clientID, ok := splitClientKey(key)
+		if ok && clientType == "desktop" {
+			if _, exists := activeDevices[clientID]; !exists {
+				continue
+			}
+		}
+		filteredQueues[key] = queue
+	}
+
+	snapshot := StoreSnapshot{
+		Version:        1,
+		SavedAt:        now,
+		Devices:        activeDevices,
+		PairSessions:   filteredPairSessions,
+		PairTokenIndex: map[string]string{},
+		PairCodeIndex:  map[string]string{},
+		Bindings:       filteredBindings,
+		SignalQueues:   filteredQueues,
+	}
+
 	for sessionID, session := range snapshot.PairSessions {
 		if session.Status != "pending" || session.ExpiresAt <= now {
 			continue
@@ -1205,26 +1408,62 @@ func (r *redisPersistence) persistWithTimeout(timeout time.Duration) {
 
 	snapshot := r.store.snapshot()
 	pipe := r.client.TxPipeline()
+	now := nowMillis()
+	cutoff := deviceInactiveCutoff(now)
+
+	activeDevices := map[string]Device{}
+	for deviceID, device := range snapshot.Devices {
+		if device.LastSeenAt <= cutoff {
+			continue
+		}
+		activeDevices[deviceID] = device
+	}
+
+	filteredPairSessions := map[string]PairSession{}
+	for sessionID, session := range snapshot.PairSessions {
+		if _, exists := activeDevices[session.DeviceID]; !exists {
+			continue
+		}
+		filteredPairSessions[sessionID] = session
+	}
+
+	filteredBindings := map[string]Binding{}
+	for bindingID, binding := range snapshot.Bindings {
+		if _, exists := activeDevices[binding.DeviceID]; !exists {
+			continue
+		}
+		filteredBindings[bindingID] = binding
+	}
+
+	filteredQueues := map[string][]SignalEvent{}
+	for key, queue := range snapshot.SignalQueues {
+		clientType, clientID, ok := splitClientKey(key)
+		if ok && clientType == "desktop" {
+			if _, exists := activeDevices[clientID]; !exists {
+				continue
+			}
+		}
+		filteredQueues[key] = queue
+	}
 
 	pipe.Del(ctx, r.keyDevices(), r.keyPairSessions(), r.keyBindings())
 
-	deviceHash := marshalStructMap(snapshot.Devices)
+	deviceHash := marshalStructMap(activeDevices)
 	if len(deviceHash) > 0 {
 		pipe.HSet(ctx, r.keyDevices(), deviceHash)
 	}
 
-	pairSessionHash := marshalStructMap(snapshot.PairSessions)
+	pairSessionHash := marshalStructMap(filteredPairSessions)
 	if len(pairSessionHash) > 0 {
 		pipe.HSet(ctx, r.keyPairSessions(), pairSessionHash)
 	}
 
-	bindingHash := marshalStructMap(snapshot.Bindings)
+	bindingHash := marshalStructMap(filteredBindings)
 	if len(bindingHash) > 0 {
 		pipe.HSet(ctx, r.keyBindings(), bindingHash)
 	}
 
-	now := nowMillis()
-	for _, session := range snapshot.PairSessions {
+	for _, session := range filteredPairSessions {
 		if session.Status != "pending" || session.ExpiresAt <= now {
 			continue
 		}
@@ -1240,6 +1479,27 @@ func (r *redisPersistence) persistWithTimeout(timeout time.Duration) {
 		}
 	}
 
+	existingLeaseKeys, leaseErr := r.client.Keys(ctx, r.keyDeviceLeasePrefix()+"*").Result()
+	if leaseErr == nil && len(existingLeaseKeys) > 0 {
+		pipe.Del(ctx, existingLeaseKeys...)
+	}
+	if leaseErr != nil {
+		log.Printf("[openclaw-server] failed to list existing device leases: %v", leaseErr)
+	}
+
+	for deviceID, device := range activeDevices {
+		expiresAt := device.LastSeenAt + deviceInactiveTTL.Milliseconds()
+		ttlMillis := expiresAt - now
+		if ttlMillis <= 0 {
+			continue
+		}
+		ttl := time.Duration(ttlMillis) * time.Millisecond
+		if ttl < time.Second {
+			ttl = time.Second
+		}
+		pipe.Set(ctx, r.keyDeviceLease(deviceID), "1", ttl)
+	}
+
 	existingQueueKeys, err := r.client.Keys(ctx, r.keySignalQueuePrefix()+"*").Result()
 	if err == nil && len(existingQueueKeys) > 0 {
 		pipe.Del(ctx, existingQueueKeys...)
@@ -1248,7 +1508,7 @@ func (r *redisPersistence) persistWithTimeout(timeout time.Duration) {
 		log.Printf("[openclaw-server] failed to list existing signal queues: %v", err)
 	}
 
-	for key, queue := range snapshot.SignalQueues {
+	for key, queue := range filteredQueues {
 		clientType, clientID, ok := splitClientKey(key)
 		if !ok || len(queue) == 0 {
 			continue
@@ -1551,6 +1811,31 @@ func writeSSE(w http.ResponseWriter, event SignalEvent) error {
 	return err
 }
 
+func publicBinding(binding Binding) map[string]any {
+	return map[string]any{
+		"bindingId": binding.BindingID,
+		"userId":    binding.UserID,
+		"deviceId":  binding.DeviceID,
+		"mobileId":  binding.MobileID,
+		"status":    binding.Status,
+		"createdAt": binding.CreatedAt,
+		"updatedAt": binding.UpdatedAt,
+	}
+}
+
+type authPrincipalKind string
+
+const (
+	authPrincipalDevice authPrincipalKind = "device"
+	authPrincipalMobile authPrincipalKind = "mobile"
+)
+
+type authPrincipal struct {
+	Kind    authPrincipalKind
+	Device  Device
+	Binding Binding
+}
+
 type app struct {
 	store       *Store
 	persistence persistence
@@ -1569,8 +1854,49 @@ type wsSignalSendData struct {
 	Payload map[string]any `json:"payload"`
 }
 
+func readBearerToken(r *http.Request) string {
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	if authHeader != "" {
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) == 2 && strings.EqualFold(strings.TrimSpace(parts[0]), "Bearer") {
+			if token := strings.TrimSpace(parts[1]); token != "" {
+				return token
+			}
+		}
+	}
+
+	return strings.TrimSpace(r.URL.Query().Get("token"))
+}
+
+func (a *app) authenticateRequest(r *http.Request) (authPrincipal, error) {
+	token := readBearerToken(r)
+	if token == "" {
+		return authPrincipal{}, newError("UNAUTHORIZED", "bearer token is required")
+	}
+
+	device, ok := a.store.deviceByToken(token)
+	if ok {
+		return authPrincipal{Kind: authPrincipalDevice, Device: device}, nil
+	}
+
+	binding, ok := a.store.activeBindingByMobileToken(token)
+	if ok {
+		return authPrincipal{Kind: authPrincipalMobile, Binding: binding}, nil
+	}
+
+	return authPrincipal{}, newError("UNAUTHORIZED", "invalid bearer token")
+}
+
 func (a *app) onMutation() {
 	a.persistence.SchedulePersist()
+}
+
+func (a *app) cleanupInactiveDevices() {
+	removed := a.store.pruneInactiveDevices()
+	if removed > 0 {
+		log.Printf("[openclaw-server] removed %d inactive devices (ttl=%s)", removed, deviceInactiveTTL.String())
+		a.onMutation()
+	}
 }
 
 func (a *app) emitSignal(targetType string, targetID string, event SignalEvent) bool {
@@ -1593,7 +1919,88 @@ func (a *app) pullSignalInbox(clientType string, clientID string, limit int) []S
 	return a.store.pullSignalInbox(clientType, clientID, limit)
 }
 
-func (a *app) handleSignalWS(w http.ResponseWriter, r *http.Request, clientType string, clientID string) {
+func (a *app) canAccessDeviceStatus(principal authPrincipal, deviceID string) bool {
+	normalizedDeviceID := strings.TrimSpace(deviceID)
+	if normalizedDeviceID == "" {
+		return false
+	}
+	switch principal.Kind {
+	case authPrincipalDevice:
+		return principal.Device.DeviceID == normalizedDeviceID
+	case authPrincipalMobile:
+		return principal.Binding.DeviceID == normalizedDeviceID
+	default:
+		return false
+	}
+}
+
+func (a *app) authorizeSignalClient(principal authPrincipal, clientType string, clientID string) error {
+	normalizedType := strings.TrimSpace(clientType)
+	normalizedID := strings.TrimSpace(clientID)
+	if normalizedType == "" || normalizedID == "" {
+		return newError("VALIDATION_ERROR", "clientType and clientId are required")
+	}
+
+	switch principal.Kind {
+	case authPrincipalDevice:
+		if normalizedType != "desktop" || normalizedID != principal.Device.DeviceID {
+			return newError("FORBIDDEN", "desktop token cannot subscribe as another client")
+		}
+		return nil
+	case authPrincipalMobile:
+		if normalizedType != "mobile" || normalizedID != principal.Binding.MobileID {
+			return newError("FORBIDDEN", "mobile token cannot subscribe as another client")
+		}
+		return nil
+	default:
+		return newError("UNAUTHORIZED", "unauthorized client")
+	}
+}
+
+func (a *app) authorizeSignalSend(principal authPrincipal, req sendSignalRequest) error {
+	fromType := strings.TrimSpace(req.FromType)
+	fromID := strings.TrimSpace(req.FromID)
+	toType := strings.TrimSpace(req.ToType)
+	toID := strings.TrimSpace(req.ToID)
+	if fromType == "" || fromID == "" || toType == "" || toID == "" {
+		return newError("VALIDATION_ERROR", "fromType/fromId/toType/toId are required")
+	}
+
+	switch principal.Kind {
+	case authPrincipalDevice:
+		if fromType != "desktop" || fromID != principal.Device.DeviceID {
+			return newError("FORBIDDEN", "desktop token can only send as itself")
+		}
+		if toType != "mobile" {
+			return newError("FORBIDDEN", "desktop token can only send to mobile")
+		}
+		if !a.store.hasActiveBindingBetween(principal.Device.DeviceID, toID) {
+			return newError("FORBIDDEN", "target mobile is not paired with this desktop")
+		}
+		return nil
+	case authPrincipalMobile:
+		if fromType != "mobile" || fromID != principal.Binding.MobileID {
+			return newError("FORBIDDEN", "mobile token can only send as itself")
+		}
+		if toType != "desktop" {
+			return newError("FORBIDDEN", "mobile token can only send to desktop")
+		}
+		if principal.Binding.DeviceID != toID {
+			return newError("FORBIDDEN", "target desktop is not bound to this mobile")
+		}
+		return nil
+	default:
+		return newError("UNAUTHORIZED", "unauthorized sender")
+	}
+}
+
+func (a *app) handleSignalWS(
+	w http.ResponseWriter,
+	r *http.Request,
+	principal authPrincipal,
+	clientType string,
+	clientID string,
+) {
 	upgrader := websocket.Upgrader{
 		ReadBufferSize:  4096,
 		WriteBufferSize: 4096,
@@ -1709,6 +2116,24 @@ func (a *app) handleSignalWS(w http.ResponseWriter, r *http.Request, clientType 
 						"requestId": frame.RequestID,
 						"code":      "INVALID_JSON",
 						"message":   "invalid signal.send data",
+					})
+					continue
+				}
+
+				authErr := a.authorizeSignalSend(principal, sendSignalRequest{
+					FromType: clientType,
+					FromID:   clientID,
+					ToType:   sendData.ToType,
+					ToID:     sendData.ToID,
+					Type:     sendData.Type,
+					Payload:  sendData.Payload,
+				})
+				if authErr != nil {
+					_ = enqueue(map[string]any{
+						"kind":      "error",
+						"requestId": frame.RequestID,
+						"code":      errorCode(authErr),
+						"message":   authErr.Error(),
 					})
 					continue
 				}
@@ -1831,114 +2256,7 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Legacy compatibility for existing desktop/mobile clients.
-	if method == http.MethodPost && path == "/pair/create" {
-		var req legacyCreatePairSessionRequest
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, err)
-			return
-		}
-
-		deviceID, err := trimRequired(req.DeviceID, "device_id")
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-
-		_, err = a.store.registerDevice(registerDeviceRequest{
-			DeviceID:   deviceID,
-			Platform:   "desktop",
-			AppVersion: "legacy",
-		})
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-
-		session, err := a.store.createPairSession(createPairSessionRequest{
-			DeviceID:   deviceID,
-			TTLSeconds: req.TTLSeconds,
-		})
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-
-		a.onMutation()
-
-		createdAt := time.UnixMilli(session.CreatedAt).UTC().Format(time.RFC3339Nano)
-		expiresAt := time.UnixMilli(session.ExpiresAt).UTC().Format(time.RFC3339Nano)
-		baseURL := requestBaseURL(r)
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok": true,
-			"data": map[string]any{
-				"session_id": session.PairSessionID,
-				"pair_code":  session.PairCode,
-				"device_id":  session.DeviceID,
-				"device_name": func() string {
-					if strings.TrimSpace(req.DeviceName) != "" {
-						return strings.TrimSpace(req.DeviceName)
-					}
-					return "desktop"
-				}(),
-				"status":     session.Status,
-				"created_at": createdAt,
-				"expires_at": expiresAt,
-				"qr_payload": map[string]any{
-					"kind":       "openclaw.pair",
-					"version":    "v1",
-					"base_url":   baseURL,
-					"session_id": session.PairSessionID,
-					"pair_code":  session.PairCode,
-					"pair_token": session.PairToken,
-					"expires_at": expiresAt,
-				},
-				"ws_delivered": 0,
-			},
-		})
-		return
-	}
-
-	if method == http.MethodPost && path == "/pair/claim" {
-		var req legacyClaimPairRequest
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, err)
-			return
-		}
-
-		session, binding, err := a.store.claimBySessionAndCode(req.SessionID, req.PairCode, req.UserID, req.MobileID)
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-
-		event := SignalEvent{
-			ID:   fmt.Sprintf("evt_pair_claim_%d", nowMillis()),
-			Type: "pair.claimed",
-			Ts:   nowMillis(),
-			Payload: map[string]any{
-				"pairSessionId": session.PairSessionID,
-				"bindingId": binding.BindingID,
-				"userId":    binding.UserID,
-				"mobileId":  binding.MobileID,
-				"deviceId":  binding.DeviceID,
-			},
-		}
-		a.emitSignal("desktop", binding.DeviceID, event)
-		a.onMutation()
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok": true,
-			"data": map[string]any{
-				"session_id": session.PairSessionID,
-				"pair_code":  session.PairCode,
-				"device_id":  binding.DeviceID,
-				"user_id":    binding.UserID,
-				"mobile_id":  binding.MobileID,
-				"status":     session.Status,
-			},
-		})
-		return
-	}
+	a.cleanupInactiveDevices()
 
 	if method == http.MethodPost && path == "/v1/devices/register" {
 		var req registerDeviceRequest
@@ -1946,7 +2264,7 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
-		device, err := a.store.registerDevice(req)
+		device, err := a.store.registerDevice(req, readBearerToken(r))
 		if err != nil {
 			writeError(w, err)
 			return
@@ -1957,9 +2275,23 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if method == http.MethodPost && path == "/v1/devices/heartbeat" {
+		principal, authErr := a.authenticateRequest(r)
+		if authErr != nil {
+			writeError(w, authErr)
+			return
+		}
+		if principal.Kind != authPrincipalDevice {
+			writeError(w, newError("FORBIDDEN", "only desktop device token can call heartbeat"))
+			return
+		}
+
 		var req heartbeatRequest
 		if err := readJSONBody(r, &req); err != nil {
 			writeError(w, err)
+			return
+		}
+		if strings.TrimSpace(req.DeviceID) != principal.Device.DeviceID {
+			writeError(w, newError("FORBIDDEN", "token deviceId does not match heartbeat deviceId"))
 			return
 		}
 		device, err := a.store.heartbeatDevice(req)
@@ -1983,6 +2315,15 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, newError("VALIDATION_ERROR", "invalid device id"))
 			return
 		}
+		principal, authErr := a.authenticateRequest(r)
+		if authErr != nil {
+			writeError(w, authErr)
+			return
+		}
+		if !a.canAccessDeviceStatus(principal, decoded) {
+			writeError(w, newError("FORBIDDEN", "not allowed to query this device status"))
+			return
+		}
 		status, err := a.store.getDeviceStatus(decoded)
 		if err != nil {
 			writeError(w, err)
@@ -1993,9 +2334,23 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if method == http.MethodPost && path == "/v1/pair/sessions" {
+		principal, authErr := a.authenticateRequest(r)
+		if authErr != nil {
+			writeError(w, authErr)
+			return
+		}
+		if principal.Kind != authPrincipalDevice {
+			writeError(w, newError("FORBIDDEN", "only desktop device token can create pair session"))
+			return
+		}
+
 		var req createPairSessionRequest
 		if err := readJSONBody(r, &req); err != nil {
 			writeError(w, err)
+			return
+		}
+		if strings.TrimSpace(req.DeviceID) != principal.Device.DeviceID {
+			writeError(w, newError("FORBIDDEN", "token deviceId does not match request"))
 			return
 		}
 		session, err := a.store.createPairSession(req)
@@ -2025,15 +2380,20 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			Ts:   nowMillis(),
 			Payload: map[string]any{
 				"pairSessionId": session.PairSessionID,
-				"bindingId": binding.BindingID,
-				"userId":    binding.UserID,
-				"mobileId":  binding.MobileID,
-				"deviceId":  binding.DeviceID,
+				"bindingId":     binding.BindingID,
+				"userId":        binding.UserID,
+				"mobileId":      binding.MobileID,
+				"deviceId":      binding.DeviceID,
 			},
 		}
 		a.emitSignal("desktop", binding.DeviceID, event)
 		a.onMutation()
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session": session, "binding": binding})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":        true,
+			"session":   session,
+			"binding":   publicBinding(binding),
+			"authToken": binding.MobileToken,
+		})
 		return
 	}
 
@@ -2054,22 +2414,51 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			Ts:   nowMillis(),
 			Payload: map[string]any{
 				"pairSessionId": session.PairSessionID,
-				"bindingId": binding.BindingID,
-				"userId":    binding.UserID,
-				"mobileId":  binding.MobileID,
-				"deviceId":  binding.DeviceID,
+				"bindingId":     binding.BindingID,
+				"userId":        binding.UserID,
+				"mobileId":      binding.MobileID,
+				"deviceId":      binding.DeviceID,
 			},
 		}
 		a.emitSignal("desktop", binding.DeviceID, event)
 		a.onMutation()
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session": session, "binding": binding})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":        true,
+			"session":   session,
+			"binding":   publicBinding(binding),
+			"authToken": binding.MobileToken,
+		})
 		return
 	}
 
 	if method == http.MethodPost && path == "/v1/pair/revoke" {
+		principal, authErr := a.authenticateRequest(r)
+		if authErr != nil {
+			writeError(w, authErr)
+			return
+		}
+
 		var req revokePairRequest
 		if err := readJSONBody(r, &req); err != nil {
 			writeError(w, err)
+			return
+		}
+		req.BindingID = strings.TrimSpace(req.BindingID)
+		if req.BindingID == "" {
+			writeError(w, newError("VALIDATION_ERROR", "bindingId is required"))
+			return
+		}
+		binding, exists := a.store.bindingByID(req.BindingID)
+		if !exists {
+			writeError(w, newError("NOT_FOUND", "binding not found"))
+			return
+		}
+		if principal.Kind == authPrincipalDevice && binding.DeviceID != principal.Device.DeviceID {
+			writeError(w, newError("FORBIDDEN", "desktop token cannot revoke this binding"))
+			return
+		}
+		if principal.Kind == authPrincipalMobile && binding.BindingID != principal.Binding.BindingID {
+			writeError(w, newError("FORBIDDEN", "mobile token cannot revoke this binding"))
 			return
 		}
 		binding, err := a.store.revokePair(req)
@@ -2078,24 +2467,48 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.onMutation()
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "binding": binding})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "binding": publicBinding(binding)})
 		return
 	}
 
 	if method == http.MethodGet && path == "/v1/pair/bindings" {
+		principal, authErr := a.authenticateRequest(r)
+		if authErr != nil {
+			writeError(w, authErr)
+			return
+		}
 		query := r.URL.Query()
-		bindings := a.store.listBindings(
-			strings.TrimSpace(query.Get("userId")),
-			strings.TrimSpace(query.Get("deviceId")),
-			strings.TrimSpace(query.Get("includeRevoked")) == "true",
-		)
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bindings": bindings})
+		includeRevoked := strings.TrimSpace(query.Get("includeRevoked")) == "true"
+		var bindings []Binding
+		if principal.Kind == authPrincipalDevice {
+			bindings = a.store.listBindings("", principal.Device.DeviceID, includeRevoked)
+		} else {
+			bindings = []Binding{principal.Binding}
+			if !includeRevoked && principal.Binding.Status != "active" {
+				bindings = []Binding{}
+			}
+		}
+		publicBindings := make([]map[string]any, 0, len(bindings))
+		for _, binding := range bindings {
+			publicBindings = append(publicBindings, publicBinding(binding))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bindings": publicBindings})
 		return
 	}
 
 	if method == http.MethodPost && path == "/v1/signal/send" {
+		principal, authErr := a.authenticateRequest(r)
+		if authErr != nil {
+			writeError(w, authErr)
+			return
+		}
+
 		var req sendSignalRequest
 		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, err)
+			return
+		}
+		if err := a.authorizeSignalSend(principal, req); err != nil {
 			writeError(w, err)
 			return
 		}
@@ -2113,6 +2526,12 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if method == http.MethodGet && path == "/v1/signal/inbox" {
+		principal, authErr := a.authenticateRequest(r)
+		if authErr != nil {
+			writeError(w, authErr)
+			return
+		}
+
 		query := r.URL.Query()
 		clientType, err := trimRequired(query.Get("clientType"), "clientType")
 		if err != nil {
@@ -2121,6 +2540,10 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		clientID, err := trimRequired(query.Get("clientId"), "clientId")
 		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if err := a.authorizeSignalClient(principal, clientType, clientID); err != nil {
 			writeError(w, err)
 			return
 		}
@@ -2137,6 +2560,12 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if method == http.MethodGet && path == "/v1/signal/ws" {
+		principal, authErr := a.authenticateRequest(r)
+		if authErr != nil {
+			writeError(w, authErr)
+			return
+		}
+
 		query := r.URL.Query()
 		clientType, err := trimRequired(query.Get("clientType"), "clientType")
 		if err != nil {
@@ -2148,11 +2577,21 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
-		a.handleSignalWS(w, r, clientType, clientID)
+		if err := a.authorizeSignalClient(principal, clientType, clientID); err != nil {
+			writeError(w, err)
+			return
+		}
+		a.handleSignalWS(w, r, principal, clientType, clientID)
 		return
 	}
 
 	if method == http.MethodGet && path == "/v1/signal/stream" {
+		principal, authErr := a.authenticateRequest(r)
+		if authErr != nil {
+			writeError(w, authErr)
+			return
+		}
+
 		query := r.URL.Query()
 		clientType, err := trimRequired(query.Get("clientType"), "clientType")
 		if err != nil {
@@ -2161,6 +2600,10 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		clientID, err := trimRequired(query.Get("clientId"), "clientId")
 		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if err := a.authorizeSignalClient(principal, clientType, clientID); err != nil {
 			writeError(w, err)
 			return
 		}
@@ -2309,21 +2752,4 @@ func netJoinHostPort(host string, port string) string {
 		return "[" + host + "]:" + port
 	}
 	return host + ":" + port
-}
-
-func requestBaseURL(r *http.Request) string {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	if forwardedProto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwardedProto != "" {
-		scheme = strings.TrimSpace(strings.Split(forwardedProto, ",")[0])
-	}
-
-	host := strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
-	if host == "" {
-		host = strings.TrimSpace(r.Host)
-	}
-
-	return fmt.Sprintf("%s://%s", scheme, host)
 }
