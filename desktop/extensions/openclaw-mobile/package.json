@@ -1,0 +1,23 @@
+{
+  "name": "@openclaw/openclaw-mobile",
+  "version": "0.1.0",
+  "description": "OpenClaw mobile relay channel plugin",
+  "type": "module",
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "channel": {
+      "id": "openclaw-mobile",
+      "label": "OpenClaw Mobile",
+      "selectionLabel": "OpenClaw Mobile (Signal Relay)",
+      "docsPath": "/channels/openclaw-mobile",
+      "docsLabel": "openclaw-mobile",
+      "blurb": "Bridge OpenClaw agents to your custom OpenClaw mobile signaling server.",
+      "order": 95
+    },
+    "install": {
+      "npmSpec": "@openclaw/openclaw-mobile",
+      "localPath": "extensions/openclaw-mobile",
+      "defaultChoice": "local"
+    }
+  }
+}

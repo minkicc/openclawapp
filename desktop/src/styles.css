@@ -440,6 +440,11 @@ button {
   background: var(--primary-hover);
 }
 
+.btn-primary.is-disabled,
+.btn-secondary.is-disabled {
+  opacity: 0.58;
+}
+
 .btn-secondary {
   background: var(--secondary);
   color: var(--ink);
@@ -471,9 +476,25 @@ button {
   word-break: break-all;
 }
 
+.pair-kv {
+  margin-top: 0;
+}
+
+.pair-kv div {
+  min-height: 92px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.pair-kv strong {
+  font-size: 19px;
+  line-height: 1.2;
+}
+
 .message {
   min-height: 22px;
-  margin-top: 14px;
+  margin-top: 12px;
   font-weight: 600;
 }
 
@@ -498,19 +519,39 @@ button {
 }
 
 .pair-actions {
-  margin-top: 12px;
+  margin-top: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
 }
 
-.pair-toolbar {
+.pair-head {
   display: flex;
-  justify-content: flex-end;
-  margin-top: 4px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.pair-hint {
+  margin: 0;
+  max-width: 720px;
+  line-height: 1.7;
+}
+
+.pair-control-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 420px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: stretch;
 }
 
 .btn-refresh {
-  padding: 7px 12px;
+  padding: 9px 14px;
   border-radius: 999px;
   font-size: 13px;
+  white-space: nowrap;
 }
 
 .pair-toggle.is-on {
@@ -525,7 +566,7 @@ button {
 }
 
 .channel-list-wrap {
-  margin-top: 14px;
+  margin-top: 16px;
 }
 
 .channel-list {
@@ -575,8 +616,9 @@ button {
   color: var(--muted);
   border: 1px dashed var(--line);
   border-radius: 12px;
-  padding: 10px;
-  background: #ffffffa8;
+  padding: 18px 20px;
+  background: linear-gradient(180deg, #ffffffd8, #f7fafdbb);
+  font-size: 15px;
 }
 
 .btn-danger-ghost {
@@ -671,15 +713,16 @@ button {
 
 #pairEventLog {
   margin-top: 14px;
-  padding: 12px;
-  min-height: 120px;
-  max-height: 220px;
-  border-radius: 12px;
+  padding: 14px 16px;
+  min-height: 96px;
+  max-height: 180px;
+  border-radius: 16px;
   border: 1px solid var(--line);
   background: #0f172a;
   color: #d9ebff;
   overflow: auto;
   white-space: pre-wrap;
+  line-height: 1.6;
 }
 
 #pairChannelCheckStatus.pending {
@@ -707,6 +750,16 @@ button {
   .form-grid,
   .kv {
     grid-template-columns: 1fr;
+  }
+
+  .pair-head,
+  .pair-control-grid {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .pair-head {
+    align-items: stretch;
   }
 
   .channel-card-grid,

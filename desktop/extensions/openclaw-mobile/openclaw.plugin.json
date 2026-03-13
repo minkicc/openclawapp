@@ -1,0 +1,9 @@
+{
+  "id": "openclaw-mobile",
+  "channels": ["openclaw-mobile"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

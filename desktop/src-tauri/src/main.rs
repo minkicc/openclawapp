@@ -20,6 +20,7 @@ const OPENCLAW_RUNTIME_WORKSPACE_DIR_NAME: &str = "openclaw-workspace";
 const GATEWAY_RUNTIME_FINGERPRINT_FILE_NAME: &str = "gateway-runtime-fingerprint.txt";
 const APP_GATEWAY_PORT: u16 = 28789;
 const APP_GATEWAY_TOKEN: &str = "openclaw-desktop-local";
+const APP_GATEWAY_READY_TIMEOUT_SECS: u64 = 60;
 const DEFAULT_CUSTOM_API_MODE: &str = "openai-responses";
 const CUSTOM_API_MODE_MIGRATION_CUTOFF: &str = "2026-03-11T00:00:00Z";
 const LEGACY_APP_IDENTIFIER: &str = "com.openclaw.desktop";
@@ -1395,6 +1396,79 @@ fn apply_runtime_default_model_overrides(
     Ok(())
 }
 
+fn apply_openclaw_mobile_channel_overrides(
+    app: &AppHandle,
+    cfg: &StoredConfig,
+    resolved: &ResolvedOpenClawCommand,
+) -> Result<(), String> {
+    let config_file = resolve_openclaw_config_file(app, cfg, resolved)?;
+    if !config_file.exists() {
+        return Ok(());
+    }
+
+    let raw = fs::read_to_string(&config_file)
+        .map_err(|e| format!("读取 OpenClaw 配置失败 ({}): {}", config_file.display(), e))?;
+    let mut root: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("解析 OpenClaw 配置失败: {}", e))?;
+
+    let base_url = cfg
+        .channel_server_base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
+    let device_id = cfg
+        .channel_device_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
+
+    let should_enable = base_url.is_some() && device_id.is_some();
+    {
+        let root_obj = ensure_json_object_mut(&mut root);
+        let plugins_value = root_obj
+            .entry("plugins".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let plugins_obj = ensure_json_object_mut(plugins_value);
+        let plugin_entries_value = plugins_obj
+            .entry("entries".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let plugin_entries_obj = ensure_json_object_mut(plugin_entries_value);
+        let plugin_entry_value = plugin_entries_obj
+            .entry("openclaw-mobile".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let plugin_entry_obj = ensure_json_object_mut(plugin_entry_value);
+        plugin_entry_obj.insert("enabled".to_string(), serde_json::json!(should_enable));
+    }
+    {
+        let root_obj = ensure_json_object_mut(&mut root);
+        let channels_value = root_obj
+            .entry("channels".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let channels_obj = ensure_json_object_mut(channels_value);
+        let channel_value = channels_obj
+            .entry("openclaw-mobile".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let channel_obj = ensure_json_object_mut(channel_value);
+        if let (Some(url), Some(device)) = (base_url.as_ref(), device_id.as_ref()) {
+            channel_obj.insert("enabled".to_string(), serde_json::json!(true));
+            channel_obj.insert("serverBaseUrl".to_string(), serde_json::json!(url));
+            channel_obj.insert("desktopDeviceId".to_string(), serde_json::json!(device));
+        } else {
+            channel_obj.insert("enabled".to_string(), serde_json::json!(false));
+            channel_obj.remove("serverBaseUrl");
+            channel_obj.remove("desktopDeviceId");
+        }
+    }
+
+    let data =
+        serde_json::to_string_pretty(&root).map_err(|e| format!("序列化 OpenClaw 配置失败: {}", e))?;
+    fs::write(&config_file, data)
+        .map_err(|e| format!("写入 OpenClaw 配置失败 ({}): {}", config_file.display(), e))?;
+    Ok(())
+}
+
 fn normalize_model_ref(provider: &str, model: &str) -> String {
     let model_trimmed = model.trim();
     if model_trimmed.contains('/') {
@@ -1513,10 +1587,11 @@ fn is_dashboard_url_reachable(url: &str) -> bool {
         return false;
     }
 
-    let parsed = match url::Url::parse(url) {
+    let mut parsed = match url::Url::parse(url) {
         Ok(v) => v,
         Err(_) => return false,
     };
+    parsed.set_fragment(None);
     let host = match parsed.host_str() {
         Some(v) => v,
         None => return false,
@@ -1534,7 +1609,18 @@ fn is_dashboard_url_reachable(url: &str) -> bool {
 
     for addr in addrs {
         if TcpStream::connect_timeout(&addr, Duration::from_millis(350)).is_ok() {
-            return true;
+            let client = match reqwest::blocking::Client::builder()
+                .timeout(Duration::from_millis(800))
+                .build()
+            {
+                Ok(v) => v,
+                Err(_) => return true,
+            };
+            return client
+                .get(parsed.as_str())
+                .send()
+                .map(|response| response.status().is_success())
+                .unwrap_or(false);
         }
     }
     false
@@ -1592,21 +1678,28 @@ fn ensure_gateway_running(
     resolved: &ResolvedOpenClawCommand,
     force_restart: bool,
 ) -> Result<bool, String> {
-    if !force_restart && is_gateway_healthy(app, cfg, resolved) {
+    let dashboard_url = app_gateway_http_url();
+    if !force_restart
+        && is_gateway_healthy(app, cfg, resolved)
+        && is_dashboard_url_reachable(&dashboard_url)
+    {
         return Ok(false);
     }
 
     start_gateway_background(app, cfg, resolved)?;
 
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let deadline = Instant::now() + Duration::from_secs(APP_GATEWAY_READY_TIMEOUT_SECS);
     while Instant::now() < deadline {
-        if is_gateway_healthy(app, cfg, resolved) {
+        if is_gateway_healthy(app, cfg, resolved) && is_dashboard_url_reachable(&dashboard_url) {
             return Ok(true);
         }
         thread::sleep(Duration::from_millis(300));
     }
 
-    Ok(true)
+    Err(format!(
+        "Gateway 启动超时：等待 {} 秒后 Dashboard 仍未就绪。",
+        APP_GATEWAY_READY_TIMEOUT_SECS
+    ))
 }
 
 fn resolve_openclaw_command(cfg: &StoredConfig, app: &AppHandle) -> ResolvedOpenClawCommand {
@@ -1928,13 +2021,27 @@ fn get_dashboard_url(app: AppHandle) -> Result<ActionResponse, String> {
             copied_to: None,
         });
     }
+    if let Err(e) = apply_openclaw_mobile_channel_overrides(&app, &cfg, &resolved) {
+        return Ok(ActionResponse {
+            ok: false,
+            message: "同步通信渠道配置失败。".to_string(),
+            detail: Some(e),
+            copied_from: None,
+            copied_to: None,
+        });
+    }
     let force_restart = should_force_restart_gateway(&app, &cfg);
     let started = match ensure_gateway_running(&app, &cfg, &resolved, force_restart) {
         Ok(v) => v,
         Err(e) => {
+            let is_timeout = e.contains("超时");
             return Ok(ActionResponse {
                 ok: false,
-                message: "Dashboard 服务未就绪，且自动启动 Gateway 失败。".to_string(),
+                message: if is_timeout {
+                    "Dashboard 启动超时。".to_string()
+                } else {
+                    "Dashboard 服务未就绪，且自动启动 Gateway 失败。".to_string()
+                },
                 detail: Some(e),
                 copied_from: None,
                 copied_to: None,

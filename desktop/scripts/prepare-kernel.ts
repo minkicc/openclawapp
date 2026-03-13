@@ -1,6 +1,14 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -8,6 +16,7 @@ import { spawnSync } from "node:child_process";
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const desktopRoot = resolve(scriptDir, "..");
 const kernelRoot = join(desktopRoot, "resources", "kernel");
+const customExtensionsRoot = join(desktopRoot, "extensions");
 const openclawPkg = join(kernelRoot, "node_modules", "openclaw", "package.json");
 const nodePkg = join(kernelRoot, "node_modules", "node", "package.json");
 const kernelRequiredFiles = [
@@ -127,6 +136,31 @@ function missingKernelFiles() {
   return kernelRequiredFiles.filter((filePath) => !existsSync(filePath));
 }
 
+function syncCustomExtensions() {
+  if (!existsSync(customExtensionsRoot)) {
+    return;
+  }
+  const openclawExtensionsRoot = join(kernelRoot, "node_modules", "openclaw", "extensions");
+  if (!existsSync(openclawExtensionsRoot)) {
+    return;
+  }
+
+  const entries = readdirSync(customExtensionsRoot, { withFileTypes: true }).filter((entry) =>
+    entry.isDirectory()
+  );
+  if (entries.length === 0) {
+    return;
+  }
+
+  for (const entry of entries) {
+    const src = join(customExtensionsRoot, entry.name);
+    const dst = join(openclawExtensionsRoot, entry.name);
+    rmSync(dst, { recursive: true, force: true });
+    cpSync(src, dst, { recursive: true });
+    console.log(`Synced bundled extension: ${entry.name}`);
+  }
+}
+
 mkdirSync(kernelRoot, { recursive: true });
 
 if (forceRefresh) {
@@ -145,6 +179,7 @@ if (existsSync(openclawPkg) && existsSync(nodePkg)) {
     rmSync(join(kernelRoot, "node_modules"), { recursive: true, force: true });
     rmSync(join(kernelRoot, "package-lock.json"), { force: true });
   } else {
+    syncCustomExtensions();
     pruneBundledKernel();
     const openclawVersion = JSON.parse(readFileSync(openclawPkg, "utf8")).version;
     const nodeVersion = JSON.parse(readFileSync(nodePkg, "utf8")).version;
@@ -207,6 +242,7 @@ if (install.status !== 0) {
   process.exit(install.status ?? 1);
 }
 
+syncCustomExtensions();
 pruneBundledKernel();
 
 const openclawVersion = JSON.parse(readFileSync(openclawPkg, "utf8")).version;

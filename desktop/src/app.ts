@@ -675,6 +675,11 @@ const EN_I18N = {
   'btn.pairConnect': 'Connect Channel',
   'btn.pairDisconnect': 'Disconnect Channel',
   'btn.pairCreate': 'Create Pair Session',
+  'btn.pairReloadConfig': 'Reload Config',
+  'btn.pairChannelOpen': 'Open Channel',
+  'btn.pairCreateChannel': 'New Channel',
+  'btn.pairChatSend': 'Send',
+  'btn.close': 'Close',
   'advanced.title': 'Advanced (Optional)',
   'advanced.infoTitle': 'Advanced Info (Optional)',
   'advanced.expand': 'Expand',
@@ -728,16 +733,36 @@ const EN_I18N = {
   'msg.gettingDashboard': 'Getting OpenClaw Web URL...',
   'msg.checkingCommand': 'Checking openclaw command...',
   'msg.noSkillDirToOpen': 'No skills directory available to open.',
-  'pair.title': 'Remote Pair Center (Experimental)',
-  'pair.hint': 'Connect to the server and create a pair session, then let mobile claim it.',
+  'pair.title': 'Communication',
+  'pair.hint': 'Open the channel on this host, then let mobile scan the QR code to create long-lived communication cards.',
   'pair.serverUrl': 'Server Base URL',
   'pair.serverToken': 'Server Token (Optional)',
   'pair.deviceId': 'Device ID',
   'pair.wsStatus': 'Channel Status',
+  'pair.channelCount': 'Channel Count',
   'pair.sessionId': 'Session ID',
   'pair.code': 'Pair Code',
   'pair.expiresAt': 'Expires At',
   'pair.claimedUser': 'Bound User',
+  'pair.qrDialogTitle': 'Channel QR Code',
+  'pair.chatDialogTitle': 'Channel Chat',
+  'pair.chatDraft': 'Message',
+  'pair.chatDraftPlaceholder': 'Type message, Ctrl/Cmd + Enter to send',
+  'pair.toggle.on': 'Channel Open (click to close)',
+  'pair.toggle.off': 'Channel Closed (click to open)',
+  'pair.empty': 'No channels yet. Click "New Channel" to create one.',
+  'pair.card.name': 'Channel Name',
+  'pair.card.id': 'Channel ID',
+  'pair.card.mobile': 'Mobile Device',
+  'pair.card.createdAt': 'Created At',
+  'pair.card.status': 'Connection',
+  'pair.card.statusPending': 'Pending',
+  'pair.card.statusActive': 'Connected',
+  'pair.card.statusOffline': 'Offline',
+  'pair.card.openQr': 'QR Code',
+  'pair.card.openChat': 'Open Chat',
+  'pair.card.delete': 'Delete',
+  'pair.chatPlaceholder': 'No messages yet',
   'pair.qrPayload': 'QR Payload (JSON)',
   'pair.logPrefix': 'Pair Log',
   'pair.status.disconnected': 'Disconnected',
@@ -755,6 +780,16 @@ const EN_I18N = {
   'msg.pairCreateFailed': 'Failed to create pair session: {message}',
   'msg.pairCreated': 'Pair session created. Waiting for mobile claim.',
   'msg.pairClaimed': 'Pair completed: bound user {userId}.',
+  'msg.pairMissingConfig': 'Pairing config is missing. Please set channelServerBaseUrl and channelDeviceId first.',
+  'msg.pairConfigReloaded': 'Pairing config reloaded.',
+  'msg.pairAlreadyPaired': 'This mobile device ({mobileId}) is already paired.',
+  'msg.pairNeedMobileId': 'Current channel is not bound to a mobile device yet.',
+  'msg.pairNeedChatMessage': 'Please enter a message first.',
+  'msg.pairChatSent': 'Message sent.',
+  'msg.pairDeleteConfirm': 'Delete channel {id}?',
+  'msg.pairDeleted': 'Channel deleted.',
+  'msg.pairRevokeFailed': 'Failed to revoke binding on server: {message}',
+  'msg.pairChannelClosedForCreate': 'Channel is currently closed. Please open it first.',
   'kernel.unknown': 'Unknown',
   'kernel.bundled': 'Bundled ({version})',
   'kernel.installed': 'Installed ({version})',
@@ -808,6 +843,11 @@ const ZH_I18N = {
   "btn.pairConnect": "连接通道",
   "btn.pairDisconnect": "断开通道",
   "btn.pairCreate": "创建配对会话",
+  "btn.pairReloadConfig": "刷新配置",
+  "btn.pairChannelOpen": "开放通道",
+  "btn.pairCreateChannel": "新建渠道",
+  "btn.pairChatSend": "发送",
+  "btn.close": "关闭",
   "advanced.title": "高级选项（可选）",
   "advanced.infoTitle": "高级信息（可选）",
   "advanced.expand": "展开",
@@ -861,16 +901,36 @@ const ZH_I18N = {
   "msg.gettingDashboard": "正在获取 OpenClaw Web 地址...",
   "msg.checkingCommand": "正在检查 openclaw 命令...",
   "msg.noSkillDirToOpen": "没有可打开的 skills 目录。",
-  "pair.title": "远程配对中心（实验）",
-  "pair.hint": "连接服务端后可创建配对会话，移动端扫码（或复制载荷）后即可与当前 PC 建立长期远程关系。",
+  "pair.title": "通信",
+  "pair.hint": "将当前 PC 作为 Agent 宿主机开放通道，移动端扫码后即可建立长期通信渠道。",
   "pair.serverUrl": "服务端地址",
   "pair.serverToken": "服务端 Token（可选）",
   "pair.deviceId": "设备 ID",
   "pair.wsStatus": "通道状态",
+  "pair.channelCount": "渠道数量",
   "pair.sessionId": "会话 ID",
   "pair.code": "配对码",
   "pair.expiresAt": "过期时间",
   "pair.claimedUser": "已绑定用户",
+  "pair.qrDialogTitle": "渠道二维码",
+  "pair.chatDialogTitle": "渠道会话",
+  "pair.chatDraft": "发送消息",
+  "pair.chatDraftPlaceholder": "输入消息，Ctrl/Cmd + Enter 发送",
+  "pair.toggle.on": "通道已开放（点击关闭）",
+  "pair.toggle.off": "通道已关闭（点击开放）",
+  "pair.empty": "暂无渠道，点击“新建渠道”创建。",
+  "pair.card.name": "渠道名称",
+  "pair.card.id": "渠道 ID",
+  "pair.card.mobile": "移动端设备",
+  "pair.card.createdAt": "创建时间",
+  "pair.card.status": "连接状态",
+  "pair.card.statusPending": "待认领",
+  "pair.card.statusActive": "已连接",
+  "pair.card.statusOffline": "离线",
+  "pair.card.openQr": "二维码",
+  "pair.card.openChat": "查看会话",
+  "pair.card.delete": "删除渠道",
+  "pair.chatPlaceholder": "暂无消息",
   "pair.qrPayload": "二维码载荷（JSON）",
   "pair.logPrefix": "配对日志",
   "pair.status.disconnected": "未连接",
@@ -888,6 +948,16 @@ const ZH_I18N = {
   "msg.pairCreateFailed": "创建配对会话失败：{message}",
   "msg.pairCreated": "配对会话已创建，等待移动端扫码认领。",
   "msg.pairClaimed": "配对成功：已绑定用户 {userId}。",
+  "msg.pairMissingConfig": "通信渠道配置缺失，请先填写 channelServerBaseUrl 和 channelDeviceId。",
+  "msg.pairConfigReloaded": "已刷新通信渠道配置。",
+  "msg.pairAlreadyPaired": "该移动端（{mobileId}）已配对过。",
+  "msg.pairNeedMobileId": "当前渠道还没有绑定移动端设备。",
+  "msg.pairNeedChatMessage": "请先输入消息。",
+  "msg.pairChatSent": "消息已发送。",
+  "msg.pairDeleteConfirm": "确认删除渠道 {id} 吗？",
+  "msg.pairDeleted": "渠道已删除。",
+  "msg.pairRevokeFailed": "服务端解绑失败：{message}",
+  "msg.pairChannelClosedForCreate": "通道当前未开放，请先点击开放",
   "kernel.unknown": "未知",
   "kernel.bundled": "已内置 ({version})",
   "kernel.installed": "已安装 ({version})",
@@ -1678,14 +1748,19 @@ function openPairChatDialog(channelId) {
   updatePairButtons();
 }
 
-async function openPairQrDialog(channelId) {
-  const channel = findPairChannelById(channelId);
+async function openPairQrDialogForChannel(channel) {
   if (!channel) {
+    setPairMessage(t('msg.pairCreateFailed', { message: 'channel not found' }), 'error');
     return;
   }
   const payload = channel.qrPayload && typeof channel.qrPayload === 'object' ? channel.qrPayload : {};
   await renderPairQrPreview(payload);
   openDialogSafe(pairQrDialog);
+}
+
+async function openPairQrDialog(channelId) {
+  const channel = findPairChannelById(channelId);
+  await openPairQrDialogForChannel(channel);
 }
 
 async function revokePairBinding(bindingId) {
@@ -2256,13 +2331,16 @@ function updatePairButtons() {
   const hasConfig = Boolean(pairConfiguredServerUrl && pairConfiguredDeviceId);
   const activeChatChannel = findPairChannelById(activeChatChannelId);
   const hasDraft = String(pairChatDraftInput?.value || '').trim().length > 0;
+  const createUnavailable = !hasConfig || !pairChannelOpen || connecting;
   pairChannelToggleBtn.classList.add('pair-toggle');
   pairChannelToggleBtn.classList.toggle('is-on', pairChannelOpen);
   pairChannelToggleBtn.classList.toggle('is-off', !pairChannelOpen);
   pairChannelToggleBtn.setAttribute('aria-pressed', pairChannelOpen ? 'true' : 'false');
   pairChannelToggleBtn.textContent = pairChannelOpen ? t('pair.toggle.on') : t('pair.toggle.off');
   pairChannelToggleBtn.disabled = connecting || !hasConfig;
-  pairCreateChannelBtn.disabled = !hasConfig || !pairChannelOpen || connecting;
+  pairCreateChannelBtn.disabled = connecting;
+  pairCreateChannelBtn.classList.toggle('is-disabled', createUnavailable);
+  pairCreateChannelBtn.setAttribute('aria-disabled', createUnavailable ? 'true' : 'false');
   pairChatSendBtn.disabled = !hasConfig || !pairChannelOpen || !connected || !activeChatChannel || !activeChatChannel.mobileId || !hasDraft;
 }
 
@@ -3015,7 +3093,7 @@ async function createPairSession() {
 
   const data = result.data;
   const qrPayload = await sanitizePairQrPayload(data.qr_payload || {}, baseUrl);
-  upsertPairChannel({
+  const createdChannel = upsertPairChannel({
     channelId: String(data.session_id || `ch_${Date.now()}`),
     sessionId: String(data.session_id || ''),
     status: 'pending',
@@ -3028,7 +3106,7 @@ async function createPairSession() {
   renderPairChannelCards();
   setPairMessage(t('msg.pairCreated'), 'success');
   appendPairEvent(`session ${data.session_id || '-'} created`);
-  await openPairQrDialog(String(data.session_id || ''));
+  await openPairQrDialogForChannel(createdChannel);
   updatePairButtons();
 }
 
@@ -3114,8 +3192,12 @@ function initPairCenter() {
     await connectPairChannel();
   });
   pairCreateChannelBtn.addEventListener('click', async () => {
+    if (!pairConfiguredServerUrl || !pairConfiguredDeviceId) {
+      setPairMessage(t('msg.pairMissingConfig'), 'error');
+      return;
+    }
     if (!pairChannelOpen) {
-      setPairMessage(t('pair.status.disconnected'), 'error');
+      setPairMessage(t('msg.pairChannelClosedForCreate'), 'error');
       return;
     }
     await createPairSession();
@@ -3714,6 +3796,3 @@ initProviderFilter();
 initLanguage();
 initPairCenter();
 loadState();
-
-
-

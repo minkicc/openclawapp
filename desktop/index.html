@@ -182,27 +182,28 @@
           </div>
 
           <details class="advanced-block" id="pairCenterView">
-            <summary data-i18n="pair.title">通信渠道</summary>
+            <summary data-i18n="pair.title">通信</summary>
             <div class="advanced-content">
-              <p class="hint" data-i18n="pair.hint">
-                作为 Agent 宿主机，你可以开放通信通道并新建渠道。移动端扫码后会形成独立会话卡片。
-              </p>
-
-              <div class="pair-toolbar">
+              <div class="pair-head">
+                <p class="hint pair-hint" data-i18n="pair.hint">
+                  作为 Agent 宿主机，你可以开放通信通道并新建渠道。移动端扫码后会形成独立会话卡片。
+                </p>
                 <button id="pairReloadConfigBtn" class="btn-secondary btn-refresh" type="button" data-i18n="btn.pairReloadConfig">刷新配置</button>
               </div>
 
-              <div class="actions bottom pair-actions">
-                <button id="pairChannelToggleBtn" class="btn-secondary" type="button" data-i18n="btn.pairChannelOpen">开放通道</button>
-                <button id="pairCreateChannelBtn" class="btn-primary" type="button" data-i18n="btn.pairCreateChannel">新建渠道</button>
+              <div class="pair-control-grid">
+                <div class="actions pair-actions">
+                  <button id="pairChannelToggleBtn" class="btn-secondary" type="button" data-i18n="btn.pairChannelOpen">开放通道</button>
+                  <button id="pairCreateChannelBtn" class="btn-primary" type="button" data-i18n="btn.pairCreateChannel">新建渠道</button>
+                </div>
+
+                <div class="kv pair-kv">
+                  <div><span data-i18n="pair.wsStatus">通道状态</span><strong id="pairWsStatus">-</strong></div>
+                  <div><span data-i18n="pair.channelCount">渠道数量</span><strong id="pairChannelCount">0</strong></div>
+                </div>
               </div>
 
               <p id="pairStatusMessage" class="message"></p>
-
-              <div class="kv">
-                <div><span data-i18n="pair.wsStatus">通道状态</span><strong id="pairWsStatus">-</strong></div>
-                <div><span data-i18n="pair.channelCount">渠道数量</span><strong id="pairChannelCount">0</strong></div>
-              </div>
 
               <div class="channel-list-wrap">
                 <div id="pairChannelList" class="channel-list"></div>
