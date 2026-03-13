@@ -11,7 +11,14 @@ NOTARY_PROFILE="${NOTARY_PROFILE:-}"
 
 echo "Building macOS app bundle..."
 npm run prepare:kernel
-npx tauri build --bundles app
+
+TAURI_BIN="$DESKTOP_DIR/node_modules/.bin/tauri"
+if [[ -x "$TAURI_BIN" ]]; then
+  "$TAURI_BIN" build --bundles app
+else
+  echo "Local tauri CLI not found at $TAURI_BIN, fallback to npm exec..." >&2
+  npm exec -- tauri build --bundles app
+fi
 
 APP_PATH="$DESKTOP_DIR/src-tauri/target/release/bundle/macos/OpenClaw.app"
 if [[ ! -d "$APP_PATH" ]]; then
