@@ -10,6 +10,11 @@ const desktopRoot = resolve(scriptDir, "..");
 const kernelRoot = join(desktopRoot, "resources", "kernel");
 const openclawPkg = join(kernelRoot, "node_modules", "openclaw", "package.json");
 const nodePkg = join(kernelRoot, "node_modules", "node", "package.json");
+const kernelRequiredFiles = [
+  join(kernelRoot, "node_modules", "openclaw", "openclaw.mjs"),
+  join(kernelRoot, "node_modules", "yaml", "dist", "compose", "composer.js"),
+  join(kernelRoot, "node_modules", "yaml", "dist", "doc", "directives.js"),
+];
 
 const forceRefresh = process.env.OPENCLAW_KERNEL_REFRESH === "1";
 const openclawSpec = process.env.OPENCLAW_KERNEL_SPEC || "openclaw@latest";
@@ -118,6 +123,10 @@ function pruneBundledKernel() {
   }
 }
 
+function missingKernelFiles() {
+  return kernelRequiredFiles.filter((filePath) => !existsSync(filePath));
+}
+
 mkdirSync(kernelRoot, { recursive: true });
 
 if (forceRefresh) {
@@ -127,13 +136,23 @@ if (forceRefresh) {
 }
 
 if (existsSync(openclawPkg) && existsSync(nodePkg)) {
-  pruneBundledKernel();
-  const openclawVersion = JSON.parse(readFileSync(openclawPkg, "utf8")).version;
-  const nodeVersion = JSON.parse(readFileSync(nodePkg, "utf8")).version;
-  console.log(
-    `Bundled kernel already prepared: openclaw@${openclawVersion} + node@${nodeVersion}`
-  );
-  process.exit(0);
+  const missing = missingKernelFiles();
+  if (missing.length > 0) {
+    console.warn("Bundled kernel looks incomplete, reinstalling packages...");
+    for (const filePath of missing) {
+      console.warn(`  missing: ${filePath}`);
+    }
+    rmSync(join(kernelRoot, "node_modules"), { recursive: true, force: true });
+    rmSync(join(kernelRoot, "package-lock.json"), { force: true });
+  } else {
+    pruneBundledKernel();
+    const openclawVersion = JSON.parse(readFileSync(openclawPkg, "utf8")).version;
+    const nodeVersion = JSON.parse(readFileSync(nodePkg, "utf8")).version;
+    console.log(
+      `Bundled kernel already prepared: openclaw@${openclawVersion} + node@${nodeVersion}`
+    );
+    process.exit(0);
+  }
 }
 
 function resolveNpmInvocation() {

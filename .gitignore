@@ -7,3 +7,4 @@ desktop/dist/
 desktop/src-tauri/target/
 desktop/resources/kernel/
 desktop/vendor/
+package-lock.json
