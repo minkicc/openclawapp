@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager, WindowBuilder, WindowUrl};
 
 const CONFIG_FILE_NAME: &str = "openclaw.config.json";
 const MANAGED_KERNEL_DIR_NAME: &str = "managed-kernel";
@@ -622,6 +622,38 @@ fn openclaw_runtime_workspace_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app_config_dir(app)?.join(OPENCLAW_RUNTIME_WORKSPACE_DIR_NAME);
     fs::create_dir_all(&dir).map_err(|e| format!("创建 OpenClaw 工作区目录失败: {}", e))?;
     Ok(dir)
+}
+
+fn openclaw_runtime_extensions_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = openclaw_runtime_home_dir(app)?
+        .join(".openclaw")
+        .join("extensions");
+    fs::create_dir_all(&dir).map_err(|e| format!("创建 OpenClaw 扩展目录失败: {}", e))?;
+    Ok(dir)
+}
+
+fn sync_bundled_openclaw_mobile_extension(app: &AppHandle) -> Result<(), String> {
+    let kernel_dir = resolve_bundled_kernel_dir(app)
+        .ok_or_else(|| "未找到内置 OpenClaw kernel 目录。".to_string())?;
+    let source = kernel_dir
+        .join("node_modules")
+        .join("openclaw")
+        .join("extensions")
+        .join("openclaw-mobile");
+    if !source.exists() {
+        return Err(format!(
+            "未找到内置通信插件目录: {}",
+            source.display()
+        ));
+    }
+
+    let target = openclaw_runtime_extensions_dir(app)?.join("openclaw-mobile");
+    if target.exists() {
+        fs::remove_dir_all(&target)
+            .map_err(|e| format!("清理运行时通信插件目录失败 ({}): {}", target.display(), e))?;
+    }
+    copy_dir_recursive(&source, &target)?;
+    Ok(())
 }
 
 fn managed_openclaw_script_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -1438,6 +1470,10 @@ fn apply_openclaw_mobile_channel_overrides(
 
     let should_enable = base_url.is_some() && device_id.is_some();
     if should_enable {
+        sync_bundled_openclaw_mobile_extension(app)?;
+    }
+
+    if should_enable {
         let root_obj = ensure_json_object_mut(&mut root);
         let plugins_value = root_obj
             .entry("plugins".to_string())
@@ -2153,6 +2189,58 @@ fn get_dashboard_url(app: AppHandle) -> Result<ActionResponse, String> {
     Ok(ActionResponse {
         ok: true,
         message: format!("Dashboard 地址获取成功（来源: {}）。", resolved.source),
+        detail: Some(url),
+        copied_from: None,
+        copied_to: None,
+    })
+}
+
+#[tauri::command]
+fn open_dashboard_window(app: AppHandle) -> Result<ActionResponse, String> {
+    let response = get_dashboard_url(app.clone())?;
+    if !response.ok {
+        return Ok(response);
+    }
+
+    let url = response.detail.clone().unwrap_or_default();
+    let parsed = match url::Url::parse(&url) {
+        Ok(v) => v,
+        Err(e) => {
+            return Ok(ActionResponse {
+                ok: false,
+                message: "Dashboard 地址格式无效。".to_string(),
+                detail: Some(e.to_string()),
+                copied_from: None,
+                copied_to: None,
+            });
+        }
+    };
+
+    if let Some(existing) = app.get_window("dashboard") {
+        let _ = existing.eval(&format!("window.location.replace({:?});", url));
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        return Ok(ActionResponse {
+            ok: true,
+            message: "Dashboard 已在桌面端内部打开。".to_string(),
+            detail: Some(url),
+            copied_from: None,
+            copied_to: None,
+        });
+    }
+
+    WindowBuilder::new(&app, "dashboard", WindowUrl::External(parsed))
+        .title("OpenClaw Dashboard")
+        .inner_size(1280.0, 860.0)
+        .min_inner_size(980.0, 720.0)
+        .resizable(true)
+        .visible(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    Ok(ActionResponse {
+        ok: true,
+        message: "Dashboard 已在桌面端内部打开。".to_string(),
         detail: Some(url),
         copied_from: None,
         copied_to: None,
@@ -3248,6 +3336,7 @@ fn main() {
             get_kernel_version_meta,
             install_or_update_kernel,
             get_dashboard_url,
+            open_dashboard_window,
             save_config,
             fetch_models,
             install_default_skills,

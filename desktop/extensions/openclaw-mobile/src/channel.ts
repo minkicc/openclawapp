@@ -1,4 +1,3 @@
-import WebSocket from "ws";
 import type { ChannelPlugin, OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { getOpenClawMobileRuntime } from "./runtime.js";
 
@@ -36,6 +35,18 @@ type ResolvedOpenClawMobileAccount = {
   reconnectMinMs: number;
   reconnectMaxMs: number;
 };
+
+type MobilePeerRecord = {
+  mobileId: string;
+  userId: string;
+  bindingId: string;
+  accountId: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+const mobilePeersByAccount = new Map<string, Map<string, MobilePeerRecord>>();
+const mobileAliasToIdByAccount = new Map<string, Map<string, string>>();
 
 const waitUntilAbort = (signal?: AbortSignal, onAbort?: () => void): Promise<void> =>
   new Promise((resolve) => {
@@ -278,6 +289,211 @@ function rememberEventId(cache: Map<string, number>, eventId: string): boolean {
   return false;
 }
 
+function getPeerBucket(accountId?: string | null): Map<string, MobilePeerRecord> {
+  const normalizedAccountId = asString(accountId) || DEFAULT_ACCOUNT_ID;
+  let bucket = mobilePeersByAccount.get(normalizedAccountId);
+  if (!bucket) {
+    bucket = new Map<string, MobilePeerRecord>();
+    mobilePeersByAccount.set(normalizedAccountId, bucket);
+  }
+  return bucket;
+}
+
+function getAliasBucket(accountId?: string | null): Map<string, string> {
+  const normalizedAccountId = asString(accountId) || DEFAULT_ACCOUNT_ID;
+  let bucket = mobileAliasToIdByAccount.get(normalizedAccountId);
+  if (!bucket) {
+    bucket = new Map<string, string>();
+    mobileAliasToIdByAccount.set(normalizedAccountId, bucket);
+  }
+  return bucket;
+}
+
+function formatPeerDisplayName(peer: Pick<MobilePeerRecord, "mobileId" | "userId">): string {
+  const mobileId = asString(peer.mobileId);
+  const userId = asString(peer.userId);
+  if (userId && userId !== mobileId) {
+    return `${userId} (${mobileId})`;
+  }
+  return userId || mobileId;
+}
+
+function rememberMobilePeer(params: {
+  accountId?: string | null;
+  mobileId?: string | null;
+  userId?: string | null;
+  bindingId?: string | null;
+  createdAt?: number | null;
+  updatedAt?: number | null;
+}): MobilePeerRecord | null {
+  const mobileId = asString(params.mobileId);
+  if (!mobileId) {
+    return null;
+  }
+  const accountId = asString(params.accountId) || DEFAULT_ACCOUNT_ID;
+  const peers = getPeerBucket(accountId);
+  const aliases = getAliasBucket(accountId);
+  const existing = peers.get(mobileId);
+  const next: MobilePeerRecord = {
+    mobileId,
+    userId: asString(params.userId) || existing?.userId || "",
+    bindingId: asString(params.bindingId) || existing?.bindingId || "",
+    accountId,
+    createdAt: Number(params.createdAt || existing?.createdAt || Date.now()),
+    updatedAt: Number(params.updatedAt || existing?.updatedAt || Date.now()),
+  };
+  peers.set(mobileId, next);
+  aliases.set(mobileId, mobileId);
+  aliases.set(`mobile:${mobileId}`, mobileId);
+  aliases.set(`${CHANNEL_ID}:${mobileId}`, mobileId);
+  aliases.set(`${CHANNEL_ID}:${accountId}:${mobileId}`, mobileId);
+  if (next.userId) {
+    aliases.set(next.userId, mobileId);
+    aliases.set(`user:${next.userId}`, mobileId);
+    aliases.set(`dm:${next.userId}`, mobileId);
+  }
+  return next;
+}
+
+function lookupMobileAlias(accountId: string, value: string): string {
+  const aliases = getAliasBucket(accountId);
+  return aliases.get(value) || "";
+}
+
+function findMobileAliasAcrossAccounts(value: string): string {
+  for (const aliases of mobileAliasToIdByAccount.values()) {
+    const resolved = aliases.get(value);
+    if (resolved) {
+      return resolved;
+    }
+  }
+  return "";
+}
+
+function normalizeMobileTarget(raw: string): string | undefined {
+  let text = raw.trim();
+  if (!text) {
+    return undefined;
+  }
+
+  const embeddedMobileId = text.match(/\b(mobile_[A-Za-z0-9_-]+)\b/);
+  if (embeddedMobileId?.[1]) {
+    return embeddedMobileId[1];
+  }
+
+  text = text.replace(/^openclaw-mobile:/i, "").trim();
+  const scoped = text.match(/^[^:]+:(mobile_[A-Za-z0-9_-]+|user_[A-Za-z0-9_-]+)$/i);
+  if (scoped?.[1]) {
+    text = scoped[1];
+  }
+
+  const lowered = text.toLowerCase();
+  if (lowered.startsWith("user:")) {
+    text = text.slice("user:".length).trim();
+  } else if (lowered.startsWith("dm:")) {
+    text = text.slice("dm:".length).trim();
+  } else if (lowered.startsWith("mobile:")) {
+    text = text.slice("mobile:".length).trim();
+  }
+
+  if (!text) {
+    return undefined;
+  }
+  if (text.startsWith("mobile_")) {
+    return text;
+  }
+
+  const directDefault = lookupMobileAlias(DEFAULT_ACCOUNT_ID, text);
+  if (directDefault) {
+    return directDefault;
+  }
+  const anyAccount = findMobileAliasAcrossAccounts(text);
+  if (anyAccount) {
+    return anyAccount;
+  }
+
+  return text;
+}
+
+async function fetchActiveBindings(account: ResolvedOpenClawMobileAccount): Promise<MobilePeerRecord[]> {
+  const endpoint = buildHttpUrl(account.serverBaseUrl, "/v1/pair/bindings");
+  endpoint.searchParams.set("deviceId", account.desktopDeviceId);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), account.requestTimeoutMs);
+  try {
+    const response = await fetch(endpoint, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+      signal: controller.signal,
+    });
+    let json: any = null;
+    try {
+      json = await response.json();
+    } catch {
+      json = null;
+    }
+    if (!response.ok || !json?.ok || !Array.isArray(json.bindings)) {
+      const message = json?.message || json?.error || `HTTP ${response.status}`;
+      throw new Error(`list bindings failed: ${message}`);
+    }
+    const peers: MobilePeerRecord[] = [];
+    for (const binding of json.bindings) {
+      const peer = rememberMobilePeer({
+        accountId: account.accountId,
+        mobileId: binding?.mobileId,
+        userId: binding?.userId,
+        bindingId: binding?.bindingId,
+        createdAt: Number(binding?.createdAt || 0) || Date.now(),
+        updatedAt: Number(binding?.updatedAt || 0) || Date.now(),
+      });
+      if (peer) {
+        peers.push(peer);
+      }
+    }
+    return peers;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function listCachedPeers(params: {
+  accountId?: string | null;
+  query?: string | null;
+  limit?: number | null;
+}) {
+  const peers = Array.from(getPeerBucket(params.accountId).values()).sort(
+    (a, b) => (b.updatedAt || 0) - (a.updatedAt || 0),
+  );
+  const query = asString(params.query).toLowerCase();
+  const filtered = query
+    ? peers.filter((peer) => {
+        const haystack = [
+          peer.mobileId,
+          peer.userId,
+          formatPeerDisplayName(peer),
+        ]
+          .join(" ")
+          .toLowerCase();
+        return haystack.includes(query);
+      })
+    : peers;
+  const rows = filtered.map((peer) => ({
+    kind: "user" as const,
+    id: peer.mobileId,
+    name: formatPeerDisplayName(peer),
+    raw: {
+      mobileId: peer.mobileId,
+      userId: peer.userId || undefined,
+      bindingId: peer.bindingId || undefined,
+      accountId: peer.accountId,
+    },
+  }));
+  const limit = Number(params.limit || 0);
+  return limit > 0 ? rows.slice(0, limit) : rows;
+}
+
 async function sleepWithAbort(ms: number, signal: AbortSignal): Promise<boolean> {
   if (signal.aborted) {
     return false;
@@ -295,7 +511,7 @@ async function sleepWithAbort(ms: number, signal: AbortSignal): Promise<boolean>
   });
 }
 
-function parseWsJson(raw: WebSocket.RawData): unknown {
+async function parseWsJson(raw: unknown): Promise<unknown> {
   try {
     if (typeof raw === "string") {
       return JSON.parse(raw);
@@ -306,8 +522,14 @@ function parseWsJson(raw: WebSocket.RawData): unknown {
     if (raw instanceof ArrayBuffer) {
       return JSON.parse(Buffer.from(raw).toString("utf8"));
     }
+    if (ArrayBuffer.isView(raw)) {
+      return JSON.parse(Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength).toString("utf8"));
+    }
     if (Array.isArray(raw)) {
       return JSON.parse(Buffer.concat(raw.map((part) => Buffer.from(part))).toString("utf8"));
+    }
+    if (typeof Blob !== "undefined" && raw instanceof Blob) {
+      return JSON.parse(await raw.text());
     }
   } catch {
     return null;
@@ -317,6 +539,8 @@ function parseWsJson(raw: WebSocket.RawData): unknown {
 
 async function dispatchInboundToAgent(params: {
   accountId: string;
+  desktopDeviceId: string;
+  account: ResolvedOpenClawMobileAccount;
   mobileId: string;
   senderName: string;
   text: string;
@@ -329,19 +553,33 @@ async function dispatchInboundToAgent(params: {
 }) {
   const rt = getOpenClawMobileRuntime();
   const cfg = await rt.config.loadConfig();
-  const sessionKey = `${CHANNEL_ID}:${params.accountId}:${params.mobileId}`;
-  const sender = params.senderName || params.mobileId;
+  const peer = rememberMobilePeer({
+    accountId: params.accountId,
+    mobileId: params.mobileId,
+    userId: params.senderName.startsWith("user_") ? params.senderName : "",
+  });
+  const sender = params.senderName || formatPeerDisplayName(peer || { mobileId: params.mobileId, userId: "" });
+  const route = rt.channel.routing.resolveAgentRoute({
+    cfg,
+    channel: CHANNEL_ID,
+    accountId: params.accountId,
+    peer: {
+      kind: "direct",
+      id: params.mobileId,
+    },
+  });
+  const normalizedTarget = `${CHANNEL_ID}:${params.mobileId}`;
   const msgCtx = rt.channel.reply.finalizeInboundContext({
     Body: params.text,
     RawBody: params.text,
     CommandBody: params.text,
     BodyForAgent: params.text,
-    From: `${CHANNEL_ID}:${params.mobileId}`,
-    To: `${CHANNEL_ID}:${params.mobileId}`,
-    SessionKey: sessionKey,
+    From: normalizedTarget,
+    To: normalizedTarget,
+    SessionKey: route.sessionKey,
     AccountId: params.accountId,
     OriginatingChannel: CHANNEL_ID,
-    OriginatingTo: `${CHANNEL_ID}:${params.mobileId}`,
+    OriginatingTo: normalizedTarget,
     ChatType: "direct",
     SenderName: sender,
     SenderId: params.mobileId,
@@ -364,6 +602,24 @@ async function dispatchInboundToAgent(params: {
           return;
         }
         await params.sendReply(params.mobileId, text);
+        try {
+          await postSignal(params.account, {
+            fromType: "desktop",
+            fromId: params.desktopDeviceId,
+            toType: "desktop",
+            toId: params.desktopDeviceId,
+            type: "agent.reply",
+            payload: {
+              mobileId: params.mobileId,
+              senderName: sender,
+              text,
+              sentAt: Date.now(),
+              via: CHANNEL_ID,
+            },
+          });
+        } catch (error) {
+          params.log?.warn?.(`openclaw-mobile mirror agent.reply failed: ${String(error)}`);
+        }
       },
     },
   });
@@ -412,24 +668,52 @@ export const openclawMobilePlugin: ChannelPlugin<ResolvedOpenClawMobileAccount> 
     normalizeAllowEntry: (entry: string) => entry.trim(),
   },
   messaging: {
-    normalizeTarget: (target: string) => {
-      const trimmed = target.trim();
-      if (!trimmed) {
-        return undefined;
-      }
-      return trimmed.replace(/^openclaw-mobile:/i, "").trim();
-    },
+    normalizeTarget: (target: string) => normalizeMobileTarget(target),
     targetResolver: {
       looksLikeId: (id: string) => {
         const trimmed = id.trim();
-        return Boolean(trimmed) && (trimmed.startsWith("mobile_") || /^openclaw-mobile:/i.test(trimmed));
+        return Boolean(trimmed) && (
+          trimmed.startsWith("mobile_") ||
+          trimmed.startsWith("user_") ||
+          /^openclaw-mobile:/i.test(trimmed) ||
+          /^(user|dm|mobile):/i.test(trimmed)
+        );
       },
-      hint: "<mobileId>",
+      hint: "<mobileId|userId>",
     },
   },
   directory: {
     self: async () => null,
-    listPeers: async () => [],
+    listPeers: async ({ cfg, accountId, query, limit }: any) => {
+      const account = resolveAccount(cfg ?? {}, accountId);
+      if (account.configured) {
+        try {
+          await fetchActiveBindings(account);
+        } catch {
+          // Fall back to cached peers when the server is temporarily unavailable.
+        }
+      }
+      return listCachedPeers({
+        accountId: account.accountId,
+        query,
+        limit,
+      });
+    },
+    listPeersLive: async ({ cfg, accountId, query, limit }: any) => {
+      const account = resolveAccount(cfg ?? {}, accountId);
+      if (account.configured) {
+        try {
+          await fetchActiveBindings(account);
+        } catch {
+          // Fall back to cached peers when the server is temporarily unavailable.
+        }
+      }
+      return listCachedPeers({
+        accountId: account.accountId,
+        query,
+        limit,
+      });
+    },
     listGroups: async () => [],
   },
   outbound: {
@@ -440,11 +724,15 @@ export const openclawMobilePlugin: ChannelPlugin<ResolvedOpenClawMobileAccount> 
       if (!account.configured) {
         throw new Error("openclaw-mobile channel is not configured");
       }
+      const normalizedTo = normalizeMobileTarget(String(to || ""));
+      if (!normalizedTo) {
+        throw new Error("openclaw-mobile target is required");
+      }
       await postSignal(account, {
         fromType: "desktop",
         fromId: account.desktopDeviceId,
         toType: "mobile",
-        toId: to,
+        toId: normalizedTo,
         type: "chat.message",
         payload: {
           text,
@@ -456,7 +744,7 @@ export const openclawMobilePlugin: ChannelPlugin<ResolvedOpenClawMobileAccount> 
       return {
         channel: CHANNEL_ID,
         messageId: `ocm-${Date.now()}`,
-        chatId: to,
+        chatId: normalizedTo,
       };
     },
   },
@@ -493,6 +781,15 @@ export const openclawMobilePlugin: ChannelPlugin<ResolvedOpenClawMobileAccount> 
           ...patch,
         });
       };
+
+      try {
+        const initialPeers = await fetchActiveBindings(account);
+        for (const peer of initialPeers) {
+          mobileNames.set(peer.mobileId, formatPeerDisplayName(peer));
+        }
+      } catch (error) {
+        log?.warn?.(`openclaw-mobile initial bindings sync failed: ${String(error)}`);
+      }
 
       const sendToMobile = async (mobileId: string, text: string) => {
         const latestCfg = await getOpenClawMobileRuntime().config.loadConfig();
@@ -557,7 +854,7 @@ export const openclawMobilePlugin: ChannelPlugin<ResolvedOpenClawMobileAccount> 
 
           abortSignal?.addEventListener("abort", handleAbort, { once: true });
 
-          ws.on("open", () => {
+          ws.addEventListener("open", () => {
             opened = true;
             reconnectAttempt = 0;
             setStatus({
@@ -570,90 +867,112 @@ export const openclawMobilePlugin: ChannelPlugin<ResolvedOpenClawMobileAccount> 
             log?.info?.(`openclaw-mobile ws connected (${account.accountId})`);
           });
 
-          ws.on("message", (raw) => {
-            const parsed = parseWsJson(raw);
-            if (!isRecord(parsed)) {
-              return;
-            }
-            const event = parsed as SignalEvent;
-            const eventId = asString(event.id);
-            if (rememberEventId(seenEventIds, eventId)) {
-              return;
-            }
-
-            if (asString(event.kind)) {
-              return;
-            }
-
-            const eventType = asString(event.type);
-            const payload = isRecord(event.payload) ? (event.payload as JsonObject) : {};
-            const fromType = asString(event.from?.type);
-            const fromId = asString(event.from?.id);
-            const eventTs = Number(event.ts) || Date.now();
-            setStatus({ lastInboundAt: Date.now() });
-
-            if (eventType === "pair.claimed") {
-              const mobileId = asString(payload.mobileId ?? payload.mobile_id);
-              const userId = asString(payload.userId ?? payload.user_id);
-              if (mobileId) {
-                mobileNames.set(mobileId, userId || mobileId);
-              }
-              return;
-            }
-
-            if (eventType === "channel.ping" && fromType === "mobile" && fromId) {
-              const checkId = asString(payload.checkId ?? payload.check_id);
-              if (!checkId) {
+          ws.addEventListener("message", (messageEvent) => {
+            void (async () => {
+              const parsed = await parseWsJson(messageEvent.data);
+              if (!isRecord(parsed)) {
                 return;
               }
-              void (async () => {
-                try {
-                  await postSignal(account, {
-                    fromType: "desktop",
-                    fromId: account.desktopDeviceId,
-                    toType: "mobile",
-                    toId: fromId,
-                    type: "channel.pong",
-                    payload: {
-                      checkId,
-                      ackTs: Date.now(),
-                      deviceId: account.desktopDeviceId,
-                    },
+
+              const event = parsed as SignalEvent;
+              const eventId = asString(event.id);
+              if (rememberEventId(seenEventIds, eventId)) {
+                return;
+              }
+
+              if (asString(event.kind)) {
+                return;
+              }
+
+              const eventType = asString(event.type);
+              const payload = isRecord(event.payload) ? (event.payload as JsonObject) : {};
+              const fromType = asString(event.from?.type);
+              const fromId = asString(event.from?.id);
+              const eventTs = Number(event.ts) || Date.now();
+              setStatus({ lastInboundAt: Date.now() });
+
+              if (eventType === "pair.claimed") {
+                const mobileId = asString(payload.mobileId ?? payload.mobile_id);
+                const userId = asString(payload.userId ?? payload.user_id);
+                if (mobileId) {
+                  const peer = rememberMobilePeer({
+                    accountId: account.accountId,
+                    mobileId,
+                    userId,
+                    bindingId: asString(payload.bindingId ?? payload.binding_id),
+                    updatedAt: eventTs,
                   });
-                } catch (error) {
-                  log?.warn?.(`openclaw-mobile channel.pong failed: ${String(error)}`);
+                  mobileNames.set(mobileId, formatPeerDisplayName(peer || { mobileId, userId }));
                 }
-              })();
-              return;
-            }
+                return;
+              }
 
-            if (fromType !== "mobile" || !fromId) {
-              return;
-            }
+              if (eventType === "channel.ping" && fromType === "mobile" && fromId) {
+                const checkId = asString(payload.checkId ?? payload.check_id);
+                if (!checkId) {
+                  return;
+                }
+                void (async () => {
+                  try {
+                    await postSignal(account, {
+                      fromType: "desktop",
+                      fromId: account.desktopDeviceId,
+                      toType: "mobile",
+                      toId: fromId,
+                      type: "channel.pong",
+                      payload: {
+                        checkId,
+                        ackTs: Date.now(),
+                        deviceId: account.desktopDeviceId,
+                      },
+                    });
+                  } catch (error) {
+                    log?.warn?.(`openclaw-mobile channel.pong failed: ${String(error)}`);
+                  }
+                })();
+                return;
+              }
 
-            const inboundText = resolveInboundText(eventType, payload);
-            if (!inboundText) {
-              return;
-            }
-            if (!mobileNames.has(fromId)) {
-              mobileNames.set(fromId, fromId);
-            }
+              if (fromType !== "mobile" || !fromId) {
+                return;
+              }
 
-            void dispatchInboundToAgent({
-              accountId: account.accountId,
-              mobileId: fromId,
-              senderName: mobileNames.get(fromId) || fromId,
-              text: inboundText,
-              eventTs,
-              sendReply: sendToMobile,
-              log,
-            }).catch((error) => {
-              log?.warn?.(`openclaw-mobile dispatch failed: ${String(error)}`);
-            });
+              const inboundText = resolveInboundText(eventType, payload);
+              if (!inboundText) {
+                return;
+              }
+              if (!mobileNames.has(fromId)) {
+                const peer = rememberMobilePeer({
+                  accountId: account.accountId,
+                  mobileId: fromId,
+                  userId: asString(payload.userId ?? payload.user_id),
+                  updatedAt: eventTs,
+                });
+                mobileNames.set(fromId, formatPeerDisplayName(peer || { mobileId: fromId, userId: "" }));
+              }
+
+              void dispatchInboundToAgent({
+                accountId: account.accountId,
+                desktopDeviceId: account.desktopDeviceId,
+                account,
+                mobileId: fromId,
+                senderName: mobileNames.get(fromId) || fromId,
+                text: inboundText,
+                eventTs,
+                sendReply: sendToMobile,
+                log,
+              }).catch((error) => {
+                log?.warn?.(`openclaw-mobile dispatch failed: ${String(error)}`);
+              });
+            })();
           });
 
-          ws.on("error", (error) => {
-            const message = typeof error === "object" && error ? String((error as Error).message || error) : String(error);
+          ws.addEventListener("error", (errorEvent) => {
+            const message =
+              typeof (errorEvent as ErrorEvent).message === "string" &&
+              (errorEvent as ErrorEvent).message.trim()
+                ? (errorEvent as ErrorEvent).message.trim()
+                : "websocket error";
             lastDisconnectMessage = message;
             if (!opened) {
               log?.warn?.(`openclaw-mobile ws connect error: ${message}`);
@@ -662,21 +981,19 @@ export const openclawMobilePlugin: ChannelPlugin<ResolvedOpenClawMobileAccount> 
             }
           });
 
-          ws.on("close", (code, reason) => {
+          ws.addEventListener("close", (closeEvent) => {
             abortSignal?.removeEventListener("abort", handleAbort);
             if (!opened) {
-              lastDisconnectMessage = lastDisconnectMessage || `connect failed (close ${code})`;
+              lastDisconnectMessage =
+                lastDisconnectMessage || `connect failed (close ${closeEvent.code})`;
             }
-            const reasonText =
-              (typeof reason === "string" ? reason : Buffer.from(reason || []).toString("utf8")).trim() ||
-              lastDisconnectMessage ||
-              "closed";
+            const reasonText = (closeEvent.reason || "").trim() || lastDisconnectMessage || "closed";
             setStatus({
               connected: false,
               busy: false,
               lastDisconnect: {
                 at: Date.now(),
-                status: Number(code) || undefined,
+                status: Number(closeEvent.code) || undefined,
                 error: reasonText,
               },
             });
