@@ -589,12 +589,30 @@ async function dispatchInboundToAgent(params: {
     Timestamp: params.eventTs,
   });
 
-  await rt.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
-    ctx: msgCtx,
-    cfg,
-    dispatcherOptions: {
+  const { dispatcher, replyOptions, markDispatchIdle, markRunComplete } =
+    rt.channel.reply.createReplyDispatcherWithTyping({
+      humanDelay: rt.channel.reply.resolveHumanDelayConfig(cfg, route.agentId),
       onReplyStart: () => {
         params.log?.info?.(`openclaw-mobile: agent reply started for ${params.mobileId}`);
+        void (async () => {
+          try {
+            await postSignal(params.account, {
+              fromType: "desktop",
+              fromId: params.desktopDeviceId,
+              toType: "mobile",
+              toId: params.mobileId,
+              type: "agent.reply.started",
+              payload: {
+                mobileId: params.mobileId,
+                senderName: sender,
+                sentAt: Date.now(),
+                via: CHANNEL_ID,
+              },
+            });
+          } catch (error) {
+            params.log?.warn?.(`openclaw-mobile agent.reply.started failed: ${String(error)}`);
+          }
+        })();
       },
       deliver: async (payload: { text?: string; body?: string }) => {
         const text = asString(payload?.text ?? payload?.body);
@@ -621,8 +639,22 @@ async function dispatchInboundToAgent(params: {
           params.log?.warn?.(`openclaw-mobile mirror agent.reply failed: ${String(error)}`);
         }
       },
-    },
-  });
+      onError: (error, info) => {
+        params.log?.warn?.(`openclaw-mobile ${info.kind} reply failed: ${String(error)}`);
+      },
+    });
+
+  try {
+    await rt.channel.reply.dispatchReplyFromConfig({
+      ctx: msgCtx,
+      cfg,
+      dispatcher,
+      replyOptions,
+    });
+  } finally {
+    markRunComplete();
+    markDispatchIdle();
+  }
 }
 
 export const openclawMobilePlugin: ChannelPlugin<ResolvedOpenClawMobileAccount> = {

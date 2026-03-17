@@ -24,6 +24,10 @@ function defaultPairChannelName(seed: unknown) {
   return `连接-${pairNameSuffix(seed)}`;
 }
 
+function resolvePairChannelNameSeed(channel: any) {
+  return channel?.sessionId || channel?.mobileId || channel?.channelId;
+}
+
 function formatPairTs(ts: unknown) {
   const n = Number(ts || 0);
   if (Number.isFinite(n) && n > 0) {
@@ -57,7 +61,7 @@ export function PairChannelList() {
     setDrafts((current) => {
       const next: Record<string, string> = {};
       for (const channel of sortedChannels) {
-        const fallbackName = defaultPairChannelName(channel?.mobileId || channel?.sessionId || channel?.channelId);
+        const fallbackName = defaultPairChannelName(resolvePairChannelNameSeed(channel));
         next[channel.channelId] = current[channel.channelId] ?? (String(channel?.name || '').trim() || fallbackName);
       }
       return next;
@@ -77,7 +81,7 @@ export function PairChannelList() {
     <>
       {sortedChannels.map((channel) => {
         const mobileId = String(channel?.mobileId || '').trim() || '-';
-        const fallbackName = defaultPairChannelName(channel?.mobileId || channel?.sessionId || channel?.channelId);
+        const fallbackName = defaultPairChannelName(resolvePairChannelNameSeed(channel));
         const name = drafts[channel.channelId] ?? (String(channel?.name || '').trim() || fallbackName);
         const channelStatus = String(channel?.status || 'pending');
         const statusClass =

@@ -68,6 +68,33 @@ export function createPairUiController(deps: PairUiDeps) {
     return `连接-${pairNameSuffix(seed)}`;
   }
 
+  function resolvePairChannelNameSeed(channel: PairChannel) {
+    return channel?.sessionId || channel?.mobileId || channel?.channelId;
+  }
+
+  function isGeneratedPairChannelName(name: unknown, seeds: unknown[]) {
+    const normalizedName = String(name || '').trim();
+    if (!normalizedName) {
+      return false;
+    }
+    return seeds.some((seed) => normalizedName === defaultPairChannelName(seed));
+  }
+
+  function normalizePairChannelName(channel: PairChannel) {
+    const canonicalSeed = resolvePairChannelNameSeed(channel);
+    const currentName = String(channel?.name || '').trim();
+    if (!currentName) {
+      return defaultPairChannelName(canonicalSeed);
+    }
+
+    const legacySeeds = [channel?.mobileId, channel?.sessionId, channel?.channelId];
+    if (isGeneratedPairChannelName(currentName, legacySeeds)) {
+      return defaultPairChannelName(canonicalSeed);
+    }
+
+    return currentName;
+  }
+
   function findPairChannelById(channelId: unknown) {
     return pairChannels.find((item) => item.channelId === channelId) || null;
   }
@@ -88,7 +115,7 @@ export function createPairUiController(deps: PairUiDeps) {
     const existing = findPairChannelById(channelId);
     if (existing) {
       Object.assign(existing, channel);
-      existing.name = String(existing.name || '').trim() || defaultPairChannelName(existing.mobileId || existing.sessionId || existing.channelId);
+      existing.name = normalizePairChannelName(existing);
       if (!Array.isArray(existing.messages)) {
         existing.messages = [];
       }
@@ -97,7 +124,7 @@ export function createPairUiController(deps: PairUiDeps) {
     const next = {
       channelId,
       sessionId: String(channel?.sessionId || channelId),
-      name: String(channel?.name || '').trim() || defaultPairChannelName(channel?.mobileId || channel?.sessionId || channelId),
+      name: '',
       mobileId: String(channel?.mobileId || '').trim(),
       userId: String(channel?.userId || '').trim(),
       bindingId: String(channel?.bindingId || '').trim(),
@@ -106,6 +133,10 @@ export function createPairUiController(deps: PairUiDeps) {
       qrPayload: channel?.qrPayload || null,
       messages: Array.isArray(channel?.messages) ? channel.messages : []
     };
+    next.name = normalizePairChannelName({
+      ...next,
+      name: String(channel?.name || '').trim()
+    });
     pairChannels.push(next);
     return next;
   }
@@ -161,7 +192,7 @@ export function createPairUiController(deps: PairUiDeps) {
       return;
     }
     setActiveChatChannelId(channel.channelId);
-    const title = String(channel.name || '').trim() || defaultPairChannelName(channel.mobileId || channel.sessionId || channel.channelId);
+    const title = normalizePairChannelName(channel);
     useDesktopShellStore.getState().setPairState({
       activeChatChannelId: channel.channelId,
       chatDialogTitle: `${t('pair.chatDialogTitle')} · ${title}`,
@@ -191,7 +222,7 @@ export function createPairUiController(deps: PairUiDeps) {
     if (!channel) {
       return;
     }
-    channel.name = String(nextName || '').trim() || defaultPairChannelName(channel.mobileId || channel.sessionId || channel.channelId);
+    channel.name = String(nextName || '').trim() || normalizePairChannelName(channel);
     renderPairChannelCards();
     if (getActiveChatChannelId() === channel.channelId && pairChatDialogTitle) {
       pairChatDialogTitle.textContent = `${t('pair.chatDialogTitle')} · ${channel.name}`;

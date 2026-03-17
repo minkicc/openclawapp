@@ -9,7 +9,8 @@
     "desktop",
     "mobile",
     "server",
-    "packages/protocol"
+    "packages/protocol",
+    "mobile-rn"
   ],
   "scripts": {
     "desktop:dev": "npm --prefix desktop run dev",
@@ -40,7 +41,12 @@
     "dist:win:ci": "npm run desktop:dist:win:ci",
     "dist:linux": "npm run desktop:dist:linux",
     "dist:linux:ci": "npm run desktop:dist:linux:ci",
-    "dist:linux:appimage": "npm run desktop:dist:linux:appimage"
+    "dist:linux:appimage": "npm run desktop:dist:linux:appimage",
+    "mobile-rn:start": "npm --prefix mobile-rn run start",
+    "mobile-rn:ios": "npm --prefix mobile-rn run ios",
+    "mobile-rn:android": "npm --prefix mobile-rn run android",
+    "mobile-rn:web": "npm --prefix mobile-rn run web",
+    "mobile-rn:typecheck": "npm --prefix mobile-rn run typecheck"
   },
   "devDependencies": {
     "@esbuild/win32-x64": "^0.21.5",

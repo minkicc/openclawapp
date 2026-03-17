@@ -1,0 +1,16 @@
+export const appColors = {
+  page: '#f3f0e8',
+  surface: '#fffdf8',
+  surfaceMuted: '#f1ebdf',
+  accent: '#1f9d55',
+  accentSoft: '#d9f5e3',
+  ink: '#182028',
+  inkMuted: '#5f6b76',
+  line: '#d9d0bf',
+  danger: '#cc4b37',
+  shadow: 'rgba(24, 32, 40, 0.12)',
+  bubbleSelf: '#d7f7c9',
+  bubblePeer: '#ffffff',
+  heroA: '#f8f4eb',
+  heroB: '#ebe3d2',
+};

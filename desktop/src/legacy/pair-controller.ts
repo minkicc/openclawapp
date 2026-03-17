@@ -682,6 +682,23 @@ export function createPairController(deps) {
       }
     }
 
+    if (fromType === 'desktop' && eventType === 'agent.reply') {
+      const mobileId = String(payload?.mobileId || payload?.mobile_id || '').trim();
+      const channel = ensureChannelForMobile(mobileId);
+      if (channel) {
+        channel.status = pairChannelOpen ? 'active' : 'offline';
+        const text = String(payload?.text || payload?.message || '').trim();
+        appendPairChannelMessage(channel.channelId, {
+          from: 'agent',
+          text: text || JSON.stringify(payload),
+          ts: Number(payload?.sentAt || payload?.sent_at || envelope?.ts || Date.now())
+        });
+        appendPairEvent(`agent reply -> ${channel.mobileId || channel.channelId}: ${text || '[payload]'}`);
+        renderPairChannelCards();
+        return;
+      }
+    }
+
     if (eventType === 'channel.status') {
       const mobileId = String(payload?.mobileId || payload?.mobile_id || fromId || '').trim();
       const channel = ensureChannelForMobile(mobileId);
