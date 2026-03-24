@@ -1,14 +1,14 @@
 {
+  "extends": "expo/tsconfig.base",
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
+    "baseUrl": ".",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "types": ["vite/client"],
-    "allowJs": false,
-    "noEmit": true,
-    "strict": false,
-    "skipLibCheck": true
-  },
-  "include": ["src/**/*.ts"]
+    "paths": {
+      "@openclaw/pair-sdk": ["../packages/pair-sdk/src/index.ts"],
+      "@openclaw/pair-sdk/*": ["../packages/pair-sdk/src/*"],
+      "@openclaw/message-sdk": ["../packages/message-sdk/src/index.ts"],
+      "@openclaw/message-sdk/*": ["../packages/message-sdk/src/*"]
+    },
+    "strict": true
+  }
 }

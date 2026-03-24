@@ -1838,6 +1838,8 @@ type authPrincipal struct {
 
 type app struct {
 	store       *Store
+	v2          *v2Store
+	v2ICEConfig v2ICEConfig
 	persistence persistence
 }
 
@@ -2242,6 +2244,10 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if serveProtocolSite(w, r) {
+		return
+	}
+
 	path := r.URL.Path
 	method := r.Method
 
@@ -2251,12 +2257,18 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			"service":     "openclaw-server",
 			"now":         nowMillis(),
 			"stats":       a.store.stats(),
+			"v2":          a.v2.stats(),
 			"persistence": a.persistence.Status(),
 		})
 		return
 	}
 
 	a.cleanupInactiveDevices()
+	a.cleanupV2Expired()
+
+	if a.serveV2(w, r) {
+		return
+	}
 
 	if method == http.MethodPost && path == "/v1/devices/register" {
 		var req registerDeviceRequest
@@ -2721,8 +2733,9 @@ func main() {
 	}
 
 	store := newStore()
+	v2 := newV2Store()
 	persist := newPersistenceFromEnv(store)
-	app := &app{store: store, persistence: persist}
+	app := &app{store: store, v2: v2, v2ICEConfig: loadV2ICEConfigFromEnv(), persistence: persist}
 
 	server := &http.Server{
 		Addr:    netJoinHostPort(host, port),

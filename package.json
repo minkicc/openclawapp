@@ -9,8 +9,9 @@
     "desktop",
     "mobile",
     "server",
-    "packages/protocol",
-    "mobile-rn"
+    "packages/pair-sdk",
+    "packages/message-sdk",
+    "packages/protocol"
   ],
   "scripts": {
     "desktop:dev": "npm --prefix desktop run dev",
@@ -25,10 +26,15 @@
     "desktop:dist:linux": "npm --prefix desktop run dist:linux",
     "desktop:dist:linux:ci": "npm --prefix desktop run dist:linux:ci",
     "desktop:dist:linux:appimage": "npm --prefix desktop run dist:linux:appimage",
-    "mobile:dev": "npm --prefix mobile run dev",
-    "mobile:build": "npm --prefix mobile run build",
+    "mobile:start": "npm run packages:build && npm --prefix mobile run start",
+    "mobile:ios": "npm run packages:build && npm --prefix mobile run ios",
+    "mobile:android": "npm run packages:build && npm --prefix mobile run android",
+    "mobile:web": "npm --prefix mobile run web",
+    "mobile:typecheck": "npm --prefix mobile run typecheck",
     "server:dev": "npm --prefix server run dev",
     "server:start": "npm --prefix server run start",
+    "packages:build": "npm --prefix packages/pair-sdk run build && npm --prefix packages/message-sdk run build",
+    "test:compat:pair-v2": "npm run packages:build && node --test --test-force-exit shared/tests/pair-v2-compat.test.mjs",
     "typecheck": "npm run -ws typecheck",
     "dev": "npm run desktop:dev",
     "dev:web": "npm run desktop:dev:web",
@@ -41,14 +47,9 @@
     "dist:win:ci": "npm run desktop:dist:win:ci",
     "dist:linux": "npm run desktop:dist:linux",
     "dist:linux:ci": "npm run desktop:dist:linux:ci",
-    "dist:linux:appimage": "npm run desktop:dist:linux:appimage",
-    "mobile-rn:start": "npm --prefix mobile-rn run start",
-    "mobile-rn:ios": "npm --prefix mobile-rn run ios",
-    "mobile-rn:android": "npm --prefix mobile-rn run android",
-    "mobile-rn:web": "npm --prefix mobile-rn run web",
-    "mobile-rn:typecheck": "npm --prefix mobile-rn run typecheck"
+    "dist:linux:appimage": "npm run desktop:dist:linux:appimage"
   },
-  "devDependencies": {
+  "optionalDependencies": {
     "@esbuild/win32-x64": "^0.21.5",
     "@rollup/rollup-win32-x64-msvc": "^4.52.5",
     "@tauri-apps/cli-win32-x64-msvc": "^1.6.2"

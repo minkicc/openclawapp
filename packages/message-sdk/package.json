@@ -1,0 +1,29 @@
+{
+  "name": "@openclaw/message-sdk",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "OpenClaw business message SDK built on top of @openclaw/pair-sdk",
+  "files": [
+    "src",
+    "dist",
+    "README.md"
+  ],
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./openclaw-chat": "./src/openclaw-chat.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@openclaw/pair-sdk": "file:../pair-sdk"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2"
+  }
+}

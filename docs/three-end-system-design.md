@@ -220,7 +220,7 @@ Phase 3（体验与可靠性，2 周）：
 ## 12. 仓库落地映射
 
 - `desktop/`：实现 Bridge Agent、配对 UI、通信通道切换
-- `mobile/`：实现聊天 UI、扫码/输码配对、会话页
+- `mobile/`：官方 React Native 移动端，实现聊天 UI、扫码/输码配对、会话页
 - `server/`：实现 auth/registry/pairing/signaling/relay
 - `packages/protocol/`：沉淀消息 envelope 与事件 schema
 - `packages/sdk-client/`：沉淀 ws/http/webRTC 客户端 SDK

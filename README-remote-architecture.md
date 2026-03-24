@@ -98,7 +98,7 @@ openclawapp/
 ```text
 openclawapp/
   desktop/                 # 桌面端（Tauri）
-  mobile/                  # 移动端应用（Web/RN/Flutter 等）
+  mobile/                  # 官方移动端应用（React Native）
   server/                  # 服务端 API + WS 网关
   packages/
     protocol/              # 三端共享协议、事件、Schema

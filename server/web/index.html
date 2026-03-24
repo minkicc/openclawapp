@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenClaw Pair Protocol</title>
+    <meta
+      name="description"
+      content="OpenClaw pair protocol overview, control-plane layering, interoperability boundary, and SDK entry points."
+    />
+    <link rel="stylesheet" href="/assets/protocol.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero">
+        <div class="eyebrow">OpenClaw Protocol</div>
+        <h1>Server-assisted discovery. Verified peer channels. App-level interoperability.</h1>
+        <p class="lead">
+          This server hosts the control plane for the OpenClaw pairing protocol and publishes the
+          reusable SDK boundaries used by desktop and mobile clients.
+        </p>
+        <div class="hero-actions">
+          <a class="button primary" href="/healthz">View health</a>
+          <a class="button" href="#sdks">Jump to SDKs</a>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-title">What this protocol does</div>
+        <div class="grid three">
+          <article class="card">
+            <h2>Discovery</h2>
+            <p>Desktop announces presence. Mobile queries bound desktop state by trusted device ID.</p>
+          </article>
+          <article class="card">
+            <h2>Trust establishment</h2>
+            <p>
+              QR pairing carries the desktop identity. Mobile submits its public key. Desktop verifies
+              a shared safety code before activating the binding.
+            </p>
+          </article>
+          <article class="card">
+            <h2>Transport bootstrap</h2>
+            <p>
+              The server relays signaling and ICE bootstrap data. Business traffic moves over an
+              authenticated WebRTC data channel.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-title">Layer model</div>
+        <div class="stack">
+          <article class="card stack-card">
+            <div class="tag">L1</div>
+            <div>
+              <h2>Control plane</h2>
+              <p>`/v2/auth/*`, `/v2/presence/*`, `/v2/pair/*`, `/v2/signal/*`, `/v2/ice-servers`</p>
+              <p>HTTP JSON + SSE. Handles login, presence, pairing, relay, and ICE delivery.</p>
+            </div>
+          </article>
+          <article class="card stack-card">
+            <div class="tag">L2</div>
+            <div>
+              <h2>Peer authentication plane</h2>
+              <p>`sys.auth.hello` and `sys.capabilities` run on the WebRTC data channel.</p>
+              <p>Only verified peers can exchange app messages.</p>
+            </div>
+          </article>
+          <article class="card stack-card">
+            <div class="tag">L3</div>
+            <div>
+              <h2>Application plane</h2>
+              <p>Namespaced `app.*` messages carry business payloads after L2 succeeds.</p>
+              <p>OpenClaw chat is one module; other apps can define their own message namespaces.</p>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-title">Interoperability boundary</div>
+        <div class="card">
+          <p>
+            Any application that implements the same <strong>L1 control plane</strong> and
+            <strong>L2 peer-auth rules</strong> can pair and establish a trusted connection with
+            OpenClaw-compatible clients.
+          </p>
+          <p>
+            Useful business interoperability still depends on sharing the same
+            <strong>L3 app message contract</strong>. For example, OpenClaw chat uses
+            <code>app.openclaw.chat.message</code>.
+          </p>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-title">Core structures</div>
+        <div class="grid two">
+          <article class="card">
+            <h2>Identity & binding</h2>
+            <ul>
+              <li>`deviceId` / `mobileId` identify peers</li>
+              <li>`devicePublicKey` / `mobilePublicKey` anchor trust</li>
+              <li>`bindingId` links the trusted pair relationship</li>
+              <li>`trustState` moves through `pending` → `active` → `revoked`</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h2>Runtime relay</h2>
+            <ul>
+              <li>`pairSessionId` represents the QR claim flow</li>
+              <li>`SignalEvent` carries `pair.*` and `webrtc.*` events</li>
+              <li>`sys.auth.hello` verifies the remote peer on connect</li>
+              <li>`sys.capabilities` advertises supported `app.*` message types</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" id="sdks">
+        <div class="section-title">SDKs</div>
+        <div class="grid two">
+          <article class="card">
+            <h2><code>@openclaw/pair-sdk</code></h2>
+            <p>Business-agnostic pairing transport SDK used by both desktop and mobile projects.</p>
+            <pre><code>import {
+  loginPairV2Entity,
+  openPairV2SignalStream,
+  PairV2PeerChannel,
+  createPairV2AppRegistry
+} from "@openclaw/pair-sdk"</code></pre>
+            <p class="muted">Workspace path: <code>packages/pair-sdk</code></p>
+          </article>
+          <article class="card">
+            <h2><code>@openclaw/message-sdk</code></h2>
+            <p>Business message modules layered on top of the pair transport.</p>
+            <pre><code>import {
+  createOpenClawPairChatModule,
+  buildOpenClawPairChatPayload
+} from "@openclaw/message-sdk"</code></pre>
+            <p class="muted">Workspace path: <code>packages/message-sdk</code></p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-title">Project split in this workspace</div>
+        <div class="grid three">
+          <article class="card">
+            <h2>server/</h2>
+            <p>Go control plane, signaling service, ICE config endpoint, and this landing page.</p>
+          </article>
+          <article class="card">
+            <h2>mobile/</h2>
+            <p>Standalone React Native mobile app consuming the pair SDK and the OpenClaw message SDK.</p>
+          </article>
+          <article class="card">
+            <h2>desktop/</h2>
+            <p>Standalone desktop host app consuming the same SDKs to establish peer channels.</p>
+          </article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

@@ -13,6 +13,7 @@ Keywords: OpenClaw installer, OpenClaw GUI, OpenClaw desktop app, OpenClaw for W
 - Simple onboarding for non-technical users
 - Cross-platform desktop packages
 - Smaller footprint than typical Electron wrappers
+- Standalone desktop host for the remote pairing channel
 
 ## Main features
 
@@ -28,7 +29,20 @@ Keywords: OpenClaw installer, OpenClaw GUI, OpenClaw desktop app, OpenClaw for W
 - One-click launch into OpenClaw Web dashboard
 - Pairing state machine skeleton for remote-control workflow (`src/pairing/state-machine.js`)
 - Pairing API and controller skeleton (`src/pairing/api-client.js`, `src/pairing/controller.js`)
+- `v2` desktop peer host built on reusable SDK packages
 - Works on Windows, macOS, and Linux
+
+## SDK boundaries
+
+- `@openclaw/pair-sdk`: discovery / auth / pairing / signaling / peer-auth transport
+- `@openclaw/message-sdk`: OpenClaw business message modules used on the peer channel
+
+## Workspace peers
+
+- `../server`: pairing / signaling control plane and protocol landing page
+- `../mobile`: official React Native mobile client consuming the same SDKs
+- `../packages/pair-sdk`: reusable control-plane + peer-auth transport SDK
+- `../packages/message-sdk`: OpenClaw app-message SDK layered on top of the pair transport
 
 ## Supported platforms
 
@@ -136,7 +150,16 @@ Behavior:
 
 ### Windows code signing in GitHub Actions
 
-To reduce Microsoft Defender SmartScreen warnings, configure these repository secrets:
+To reduce Microsoft Defender SmartScreen warnings, you can configure either SSL.com eSigner secrets or a local `.pfx` certificate in GitHub Actions.
+
+Recommended for cloud signing with SSL.com eSigner:
+
+- `ES_USERNAME`: SSL.com account username
+- `ES_PASSWORD`: SSL.com account password
+- `ES_CREDENTIAL_ID`: eSigner credential ID for the code-signing certificate
+- `ES_TOTP_SECRET`: OAuth TOTP secret for automated signing
+
+Fallback option for local PFX-based signing:
 
 - `WINDOWS_CERTIFICATE_PFX`: Base64-encoded code-signing certificate (`.pfx`)
 - `WINDOWS_CERTIFICATE_PASSWORD`: Password of the `.pfx` file
@@ -144,8 +167,10 @@ To reduce Microsoft Defender SmartScreen warnings, configure these repository se
 
 Behavior:
 
-- If Windows signing secrets are set, CI signs generated `.msi` installers.
-- If secrets are missing, CI still builds but skips Windows signing.
+- Windows installer signing runs only for tag pushes matching `v*`.
+- If the eSigner secrets are set, CI signs the generated `.msi` with `SSLcom/esigner-codesign`.
+- If the eSigner secrets are missing but PFX secrets are set, CI falls back to `signtool.exe`.
+- If neither set is configured, Windows builds still succeed but installer signing is skipped.
 
 Note:
 

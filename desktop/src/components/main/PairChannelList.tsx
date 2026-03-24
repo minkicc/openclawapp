@@ -46,6 +46,16 @@ function statusLabel(currentLang: 'zh-CN' | 'en-US', status: string) {
   return t(currentLang, 'pair.card.statusPending');
 }
 
+function peerStateLabel(currentLang: 'zh-CN' | 'en-US', state: string) {
+  if (state === 'connected') {
+    return t(currentLang, 'pair.card.peerConnected');
+  }
+  if (state === 'connecting' || state === 'channel-open' || state === 'verifying') {
+    return t(currentLang, 'pair.card.peerConnecting');
+  }
+  return t(currentLang, 'pair.card.peerDisconnected');
+}
+
 export function PairChannelList() {
   const currentLang = useDesktopShellStore((state) => state.currentLang);
   const channels = useDesktopShellStore((state) => state.pair.channels);
@@ -137,6 +147,18 @@ export function PairChannelList() {
               </div>
             </div>
 
+            {String(channel?.safetyCode || '').trim() ? (
+              <div className="channel-card-note">
+                <span>{t(currentLang, 'pair.card.safetyCode')}</span>
+                <strong className="channel-mono">{String(channel.safetyCode)}</strong>
+                {channelStatus === 'pending' ? (
+                  <p>{t(currentLang, 'pair.card.pendingHint')}</p>
+                ) : (
+                  <p>{peerStateLabel(currentLang, String(channel?.peerState || 'idle'))}</p>
+                )}
+              </div>
+            ) : null}
+
             <div className="actions channel-card-actions">
               <button className="btn-secondary" type="button" onClick={() => actions.showQr(channel.channelId)}>
                 {t(currentLang, 'pair.card.openQr')}
@@ -144,6 +166,11 @@ export function PairChannelList() {
               <button className="btn-primary" type="button" onClick={() => actions.openChat(channel.channelId)}>
                 {t(currentLang, 'pair.card.openChat')}
               </button>
+              {channelStatus === 'pending' && String(channel?.bindingId || '').trim() ? (
+                <button className="btn-primary" type="button" onClick={() => actions.approveChannel(channel.channelId)}>
+                  {t(currentLang, 'pair.card.approve')}
+                </button>
+              ) : null}
               <button className="btn-secondary btn-danger-ghost" type="button" onClick={() => actions.deleteChannel(channel.channelId)}>
                 {t(currentLang, 'pair.card.delete')}
               </button>

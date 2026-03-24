@@ -1,5 +1,6 @@
 node_modules/
 dist/
+.codex-runtime/
 *.log
 .DS_Store
 .VSCodeCounter/

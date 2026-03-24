@@ -31,7 +31,7 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: desktop/package.json
+          cache-dependency-path: package-lock.json
           registry-url: https://registry.npmjs.org
 
       - name: Setup Rust
@@ -59,7 +59,14 @@ jobs:
             patchelf
 
       - name: Install dependencies
-        run: npm install --include=dev --prefix desktop
+        run: npm install
+
+      - name: Validate workspace protocol clients
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          npm run mobile:typecheck
+          npm run test:compat:pair-v2
+          npm --prefix desktop run typecheck
 
       - name: Import Developer ID certificate (macOS)
         if: matrix.os == 'macos-latest'
@@ -149,8 +156,79 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: npm --prefix desktop run dist:win:ci
 
-      - name: Sign installers (Windows)
+      - name: Locate MSI artifact (Windows)
         if: matrix.os == 'windows-latest'
+        id: locate_msi
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem "desktop/src-tauri/target/release/bundle/msi/*.msi" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if (-not $msi) {
+            throw "No MSI installers found."
+          }
+
+          "path=$($msi.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Validate Windows signing configuration
+        if: matrix.os == 'windows-latest' && startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          ES_USERNAME: ${{ secrets.ES_USERNAME }}
+          ES_PASSWORD: ${{ secrets.ES_PASSWORD }}
+          ES_CREDENTIAL_ID: ${{ secrets.ES_CREDENTIAL_ID }}
+          ES_TOTP_SECRET: ${{ secrets.ES_TOTP_SECRET }}
+          WINDOWS_CERTIFICATE_PFX: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $eSigner = @{
+            ES_USERNAME = $env:ES_USERNAME
+            ES_PASSWORD = $env:ES_PASSWORD
+            ES_CREDENTIAL_ID = $env:ES_CREDENTIAL_ID
+            ES_TOTP_SECRET = $env:ES_TOTP_SECRET
+          }
+          $pfx = @{
+            WINDOWS_CERTIFICATE_PFX = $env:WINDOWS_CERTIFICATE_PFX
+            WINDOWS_CERTIFICATE_PASSWORD = $env:WINDOWS_CERTIFICATE_PASSWORD
+          }
+
+          $presentESigner = $eSigner.GetEnumerator() | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Value) }
+          if ($presentESigner.Count -gt 0 -and $presentESigner.Count -lt $eSigner.Count) {
+            $missing = $eSigner.Keys | Where-Object { [string]::IsNullOrWhiteSpace($eSigner[$_]) }
+            throw "Incomplete eSigner configuration. Missing secrets: $($missing -join ', ')"
+          }
+
+          $presentPfx = $pfx.GetEnumerator() | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Value) }
+          if ($presentPfx.Count -gt 0 -and $presentPfx.Count -lt $pfx.Count) {
+            $missing = $pfx.Keys | Where-Object { [string]::IsNullOrWhiteSpace($pfx[$_]) }
+            throw "Incomplete PFX signing configuration. Missing secrets: $($missing -join ', ')"
+          }
+
+      - name: Sign installers with eSigner (Windows)
+        if: matrix.os == 'windows-latest' && startsWith(github.ref, 'refs/tags/v') && secrets.ES_USERNAME != '' && secrets.ES_PASSWORD != '' && secrets.ES_CREDENTIAL_ID != '' && secrets.ES_TOTP_SECRET != ''
+        uses: SSLcom/esigner-codesign@v1.3.2
+        with:
+          command: sign
+          username: ${{ secrets.ES_USERNAME }}
+          password: ${{ secrets.ES_PASSWORD }}
+          credential_id: ${{ secrets.ES_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.ES_TOTP_SECRET }}
+          program_name: OpenClaw
+          file_path: ${{ steps.locate_msi.outputs.path }}
+          override: true
+          clean_logs: true
+
+      - name: Verify installer signature (Windows/eSigner)
+        if: matrix.os == 'windows-latest' && startsWith(github.ref, 'refs/tags/v') && secrets.ES_USERNAME != '' && secrets.ES_PASSWORD != '' && secrets.ES_CREDENTIAL_ID != '' && secrets.ES_TOTP_SECRET != ''
+        shell: pwsh
+        run: |
+          $signature = Get-AuthenticodeSignature "${{ steps.locate_msi.outputs.path }}"
+          if ($signature.Status -ne "Valid") {
+            throw "MSI signature validation failed: $($signature.Status)"
+          }
+
+      - name: Sign installers (Windows, PFX fallback)
+        if: matrix.os == 'windows-latest' && startsWith(github.ref, 'refs/tags/v') && !(secrets.ES_USERNAME != '' && secrets.ES_PASSWORD != '' && secrets.ES_CREDENTIAL_ID != '' && secrets.ES_TOTP_SECRET != '')
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE_PFX: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
@@ -178,23 +256,21 @@ jobs:
             throw "signtool.exe not found on runner."
           }
 
-          $targets = Get-ChildItem "desktop/src-tauri/target/release/bundle/msi/*.msi" -ErrorAction SilentlyContinue
-          if (-not $targets) {
-            throw "No MSI installers found to sign."
+          $target = "${{ steps.locate_msi.outputs.path }}"
+          if ([string]::IsNullOrWhiteSpace($target) -or -not (Test-Path $target)) {
+            throw "No MSI installer found to sign."
           }
 
-          foreach ($file in $targets) {
-            Write-Host "Signing $($file.FullName)"
-            & $signTool.FullName sign `
-              /fd SHA256 `
-              /td SHA256 `
-              /tr $timestampUrl `
-              /f $pfxPath `
-              /p $env:WINDOWS_CERTIFICATE_PASSWORD `
-              "$($file.FullName)"
+          Write-Host "Signing $target"
+          & $signTool.FullName sign `
+            /fd SHA256 `
+            /td SHA256 `
+            /tr $timestampUrl `
+            /f $pfxPath `
+            /p $env:WINDOWS_CERTIFICATE_PASSWORD `
+            "$target"
 
-            & $signTool.FullName verify /pa /v "$($file.FullName)"
-          }
+          & $signTool.FullName verify /pa /v "$target"
 
           Remove-Item $pfxPath -Force -ErrorAction SilentlyContinue
 

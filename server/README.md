@@ -4,9 +4,25 @@ Minimal pairing and signaling server for desktop/mobile integration.
 
 Current implementation is a Go MVP with optional Redis snapshot persistence.
 
+`v2` is also available as the new identity-key-based pairing flow. See `../docs/remote-pairing-v2.md`.
+
+The server now also exposes a small protocol landing page:
+
+- `GET /` — protocol overview and SDK entry page
+- `GET /protocol` — same landing page, stable explicit route
+
+## Workspace peers
+
+- `../desktop`: desktop host app built on the shared pairing/message SDKs
+- `../mobile`: official React Native mobile client
+- `../packages/pair-sdk`: reusable discovery / pairing / signaling / peer-auth SDK
+- `../packages/message-sdk`: OpenClaw business message SDK on top of the pair transport
+
 ## Endpoints
 
 - `GET /healthz`
+- `GET /`
+- `GET /protocol`
 - `POST /v1/devices/register`
 - `POST /v1/devices/heartbeat`
 - `GET /v1/devices/:deviceId/status`
@@ -18,6 +34,22 @@ Current implementation is a Go MVP with optional Redis snapshot persistence.
 - `POST /v1/signal/send`
 - `GET /v1/signal/inbox`
 - `GET /v1/signal/stream` (SSE)
+
+## v2 endpoints
+
+- `POST /v2/auth/challenge`
+- `POST /v2/auth/login`
+- `POST /v2/presence/announce`
+- `POST /v2/presence/heartbeat`
+- `POST /v2/presence/query`
+- `POST /v2/pair/sessions`
+- `POST /v2/pair/claims`
+- `POST /v2/pair/approvals`
+- `POST /v2/pair/revoke`
+- `GET /v2/bindings`
+- `GET /v2/ice-servers`
+- `POST /v2/signal/send`
+- `GET /v2/signal/stream` (SSE)
 
 Reserved placeholders (`501`):
 
@@ -31,7 +63,7 @@ Use `/v1/signal/stream` + `/v1/signal/send` as the relay channel during this sta
 From repository root:
 
 ```bash
-npm --prefix server run dev
+npm run server:dev
 ```
 
 Or:
@@ -40,6 +72,23 @@ Or:
 cd server
 go run .
 ```
+
+Then open [http://127.0.0.1:8787/](http://127.0.0.1:8787/) to view the protocol introduction page.
+
+## Compatibility test
+
+Run the protocol compatibility test from repository root:
+
+```bash
+npm run test:compat:pair-v2
+```
+
+## SDKs
+
+The reusable client SDKs live in the workspace root:
+
+- `../packages/pair-sdk`: business-agnostic discovery / pairing / signaling / peer-auth SDK
+- `../packages/message-sdk`: OpenClaw business message SDK built on top of `pair-sdk`
 
 ## Integration Test (Redis Online)
 
@@ -56,6 +105,8 @@ npm --prefix server run test:integration:redis
 - `STORE_BACKEND` (default: `memory`, optional: `redis`)
 - `REDIS_URL` (default: `redis://127.0.0.1:6379`, used when `STORE_BACKEND=redis`)
 - `REDIS_KEY_PREFIX` (default: `openclaw:server`)
+- `V2_ICE_SERVERS_JSON` (optional): JSON array returned by `GET /v2/ice-servers`
+- `V2_ICE_TTL_SECONDS` (default: `600`): client cache TTL for `/v2/ice-servers`
 
 ### Persistence choice
 
@@ -71,3 +122,4 @@ npm --prefix server run test:integration:redis
 - When `STORE_BACKEND=redis`, state is restored/saved from Redis snapshot.
 - This MVP is intended for integration scaffolding, not production hardening.
 - API contract draft lives in `openapi/openapi.yaml`.
+- `v2` state is currently in-memory first. Redis-backed cross-instance signal fanout still works through the shared signal queue path.

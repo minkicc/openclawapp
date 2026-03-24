@@ -94,6 +94,7 @@ type PairActions = {
   renameChannel: (channelId: string, nextName: string) => void;
   showQr: (channelId: string) => void | Promise<void>;
   openChat: (channelId: string) => void;
+  approveChannel: (channelId: string) => void | Promise<void>;
   deleteChannel: (channelId: string) => void | Promise<void>;
   reloadConfig: () => void | Promise<void>;
   toggleChannel: () => void | Promise<void>;
@@ -227,6 +228,7 @@ export const useDesktopShellStore = create<DesktopShellState>((set) => ({
     renameChannel: () => {},
     showQr: () => {},
     openChat: () => {},
+    approveChannel: () => {},
     deleteChannel: () => {},
     reloadConfig: () => {},
     toggleChannel: () => {},

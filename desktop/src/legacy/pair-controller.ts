@@ -1,6 +1,29 @@
 // @ts-nocheck
 import { invoke as defaultInvoke } from '@tauri-apps/api/tauri';
 import QRCode from 'qrcode';
+import {
+  announcePairV2Desktop,
+  approvePairV2Binding,
+  computePairV2SafetyCode,
+  createPairV2AppRegistry,
+  createPairV2Session,
+  getPairV2ICEServers,
+  getOrCreatePairV2Identity,
+  heartbeatPairV2Desktop,
+  listPairV2Bindings,
+  loginPairV2Entity,
+  normalizePairV2IceServers,
+  openPairV2SignalStream,
+  PairV2PeerChannel,
+  revokePairV2Binding,
+  sendPairV2Signal
+} from '@openclaw/pair-sdk';
+import {
+  buildOpenClawPairChatPayload,
+  createOpenClawPairChatModule,
+  openClawPairChatMessageType,
+  supportsOpenClawPairChat
+} from '@openclaw/message-sdk';
 import { useDesktopShellStore } from '../store/useDesktopShellStore';
 
 export function createPairController(deps) {
@@ -41,11 +64,15 @@ export function createPairController(deps) {
   let pairReconnectTimer = null;
   let pairReconnectAttempts = 0;
   let pairLanIpv4Promise = null;
-  let pairWsRequestSeq = 0;
+  let pairPresenceTimer = null;
+  let pairIdentity = null;
+  let pairAuthSession = null;
+  let pairAuthBaseUrl = '';
   let pairChannelOpen = false;
   let pairConfiguredServerUrl = '';
   let pairConfiguredDeviceId = '';
-  const pairWsPendingRequests = new Map();
+  const pairPeers = new Map();
+  const pairIceCache = new Map();
   const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1']);
 
   function isPairCenterAvailable() {
@@ -310,7 +337,7 @@ export function createPairController(deps) {
 
   async function sanitizePairQrPayload(rawPayload, configuredBaseUrl) {
     const payload = rawPayload && typeof rawPayload === 'object' ? { ...rawPayload } : {};
-    const payloadBaseUrl = String(payload.base_url || payload.baseUrl || '').trim();
+    const payloadBaseUrl = String(payload.serverBaseUrl || payload.server_base_url || payload.baseUrl || payload.base_url || '').trim();
     const resolvedBaseUrl = await resolvePairQrBaseUrl({
       configuredBaseUrl,
       payloadBaseUrl
@@ -320,10 +347,12 @@ export function createPairController(deps) {
       return payload;
     }
 
-    payload.base_url = resolvedBaseUrl;
+    payload.serverBaseUrl = resolvedBaseUrl;
+    payload.server_base_url = resolvedBaseUrl;
     payload.baseUrl = resolvedBaseUrl;
+    payload.base_url = resolvedBaseUrl;
     if (payloadBaseUrl && normalizePairBaseUrl(payloadBaseUrl) !== resolvedBaseUrl) {
-      appendPairEvent(`qr base_url rewritten: ${payloadBaseUrl} -> ${resolvedBaseUrl}`);
+      appendPairEvent(`qr serverBaseUrl rewritten: ${payloadBaseUrl} -> ${resolvedBaseUrl}`);
     }
 
     return payload;
@@ -346,40 +375,231 @@ export function createPairController(deps) {
   }
 
   function getPairServerToken() {
-    return '';
+    return String(pairAuthSession?.token || '').trim();
   }
 
-  function buildPairHttpUrl(baseUrl, path) {
+  function buildPairStreamUrl(baseUrl, deviceId, token = '') {
     const parsed = new URL(baseUrl);
-    parsed.pathname = path;
-    parsed.search = '';
-    parsed.hash = '';
-    return parsed.toString();
-  }
-
-  function buildPairStreamUrl(baseUrl, deviceId) {
-    const parsed = new URL(baseUrl);
-    parsed.pathname = '/v1/signal/stream';
+    parsed.pathname = '/v2/signal/stream';
     parsed.search = `clientType=desktop&clientId=${encodeURIComponent(deviceId)}`;
-    const token = getPairServerToken();
-    if (token) {
-      parsed.search += `&token=${encodeURIComponent(token)}`;
+    const authToken = String(token || getPairServerToken()).trim();
+    if (authToken) {
+      parsed.search += `&token=${encodeURIComponent(authToken)}`;
     }
     parsed.hash = '';
     return parsed.toString();
   }
 
-  function buildPairWsUrl(baseUrl, deviceId) {
-    const parsed = new URL(baseUrl);
-    parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
-    parsed.pathname = '/v1/signal/ws';
-    parsed.search = `clientType=desktop&clientId=${encodeURIComponent(deviceId)}`;
-    const token = getPairServerToken();
-    if (token) {
-      parsed.search += `&token=${encodeURIComponent(token)}`;
+  function buildPairCapabilities() {
+    return {
+      signaling: ['sse'],
+      pairing: ['qr', 'safety-code'],
+      chat: true
+    };
+  }
+
+  function createPairAppRegistry(channel, trustedPeerId) {
+    return createPairV2AppRegistry([
+      createOpenClawPairChatModule({
+        onChatMessage: (chat) => {
+          appendPairChannelMessage(channel.channelId, {
+            from: 'mobile',
+            text: chat.text,
+            ts: chat.ts
+          });
+          appendPairEvent(`peer chat from ${trustedPeerId}: ${chat.text}`);
+          renderPairChannelCards();
+        }
+      })
+    ]);
+  }
+
+  function pairPlatformName() {
+    return (
+      navigator.userAgentData?.platform ||
+      navigator.platform ||
+      rawConfig?.platform ||
+      rawConfig?.platformName ||
+      'desktop'
+    );
+  }
+
+  function pairAppVersion() {
+    return String(rawConfig?.appVersion || rawConfig?.version || 'desktop-shell').trim() || 'desktop-shell';
+  }
+
+  function buildPairPresencePayload() {
+    return {
+      platform: pairPlatformName(),
+      appVersion: pairAppVersion(),
+      capabilities: buildPairCapabilities()
+    };
+  }
+
+  function defaultPairIceServers() {
+    return [
+      {
+        urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.l.google.com:19302']
+      }
+    ];
+  }
+
+  function channelSupportsOpenClawChat(channel) {
+    return supportsOpenClawPairChat(channel?.peerCapabilities);
+  }
+
+  function configuredPairIceServers() {
+    const raw =
+      rawConfig?.channelIceServers ??
+      rawConfig?.pairIceServers ??
+      rawConfig?.webrtcIceServers ??
+      defaultPairIceServers();
+    return normalizePairV2IceServers(raw, defaultPairIceServers());
+  }
+
+  async function resolvePairIceServers(baseUrl, token, forceRefresh = false) {
+    const normalizedBaseUrl = normalizePairBaseUrl(baseUrl);
+    const fallback = configuredPairIceServers();
+    if (!normalizedBaseUrl || !token) {
+      return fallback;
     }
-    parsed.hash = '';
-    return parsed.toString();
+
+    const cached = pairIceCache.get(normalizedBaseUrl);
+    if (!forceRefresh && cached && Number(cached.expiresAt || 0) > Date.now() + 5000) {
+      return cached.iceServers;
+    }
+
+    try {
+      const result = await getPairV2ICEServers(normalizedBaseUrl, token);
+      const iceServers = normalizePairV2IceServers(result?.iceServers, fallback);
+      pairIceCache.set(normalizedBaseUrl, {
+        iceServers,
+        expiresAt: Date.now() + Math.max(60, Number(result?.ttlSeconds || 0) || 600) * 1000
+      });
+      return iceServers;
+    } catch (error) {
+      appendPairEvent(`resolve ice servers failed, fallback to local config: ${error?.message || String(error)}`);
+      pairIceCache.set(normalizedBaseUrl, {
+        iceServers: fallback,
+        expiresAt: Date.now() + 60_000
+      });
+      return fallback;
+    }
+  }
+
+  function getPairPeerKey(channel) {
+    return String(channel?.bindingId || '').trim();
+  }
+
+  function updateChannelPeerState(channel, state, detail = '') {
+    if (!channel) {
+      return;
+    }
+    channel.peerState = state;
+    channel.peerDetail = detail;
+    renderPairChannelCards();
+    updatePairButtons();
+  }
+
+  function closePairPeerByKey(peerKey, detail = 'peer closed') {
+    const key = String(peerKey || '').trim();
+    if (!key) {
+      return;
+    }
+    const peer = pairPeers.get(key);
+    if (!peer) {
+      return;
+    }
+    pairPeers.delete(key);
+    try {
+      peer.close();
+    } catch {
+      // ignore
+    }
+    const channel = findPairChannelByBindingId(key);
+    if (channel) {
+      updateChannelPeerState(channel, 'disconnected', detail);
+    }
+  }
+
+  function closeAllPairPeers(detail = 'all peers closed') {
+    for (const key of [...pairPeers.keys()]) {
+      closePairPeerByKey(key, detail);
+    }
+  }
+
+  function clearPairAuthState() {
+    pairAuthSession = null;
+    pairAuthBaseUrl = '';
+    pairIceCache.clear();
+  }
+
+  function stopPairPresenceLoop() {
+    if (pairPresenceTimer) {
+      clearInterval(pairPresenceTimer);
+      pairPresenceTimer = null;
+    }
+  }
+
+  async function ensurePairAuthSession(forceRefresh = false) {
+    const baseUrl = getPairServerBaseUrl();
+    const deviceId = getPairDeviceId();
+    if (!forceRefresh && pairAuthSession?.token && pairAuthBaseUrl === baseUrl) {
+      return {
+        baseUrl,
+        deviceId,
+        identity: pairIdentity,
+        session: pairAuthSession
+      };
+    }
+    pairIdentity = await getOrCreatePairV2Identity('desktop', deviceId);
+    const { identity, session } = await loginPairV2Entity(baseUrl, 'desktop', deviceId);
+    pairIdentity = identity;
+    pairAuthSession = session;
+    pairAuthBaseUrl = baseUrl;
+    appendPairEvent(`v2 auth ready: device=${deviceId}`);
+    return {
+      baseUrl,
+      deviceId,
+      identity,
+      session
+    };
+  }
+
+  async function announcePairPresence(forceRefresh = false) {
+    const { baseUrl, deviceId, session, identity } = await ensurePairAuthSession(forceRefresh);
+    await announcePairV2Desktop(baseUrl, session.token, buildPairPresencePayload());
+    return {
+      baseUrl,
+      deviceId,
+      identity,
+      session
+    };
+  }
+
+  function startPairPresenceLoop() {
+    stopPairPresenceLoop();
+    pairPresenceTimer = setInterval(async () => {
+      if (!pairDesiredConnected || !pairChannelOpen) {
+        return;
+      }
+      try {
+        const { baseUrl, session } = await ensurePairAuthSession();
+        await heartbeatPairV2Desktop(baseUrl, session.token, buildPairPresencePayload());
+      } catch (error) {
+        stopPairPresenceLoop();
+        clearPairAuthState();
+        appendPairEvent(`presence heartbeat failed: ${error?.message || String(error)}`);
+        renderPairWsStatus('disconnected');
+        updateAllChannelsStatus('offline');
+        renderPairChannelCards();
+        updatePairButtons();
+        cleanupPairWebSocket();
+        if (pairDesiredConnected) {
+          schedulePairReconnect();
+        }
+      }
+    }, 30_000);
   }
 
   function isPairChannelOpen() {
@@ -429,6 +649,8 @@ export function createPairController(deps) {
         !connected ||
         !activeChatChannel ||
         !activeChatChannel.mobileId ||
+        activeChatChannel.peerState !== 'connected' ||
+        !channelSupportsOpenClawChat(activeChatChannel) ||
         !hasDraft
     });
 
@@ -449,6 +671,8 @@ export function createPairController(deps) {
       !connected ||
       !activeChatChannel ||
       !activeChatChannel.mobileId ||
+      activeChatChannel.peerState !== 'connected' ||
+      !channelSupportsOpenClawChat(activeChatChannel) ||
       !hasDraft;
   }
 
@@ -457,16 +681,6 @@ export function createPairController(deps) {
       clearTimeout(pairReconnectTimer);
       pairReconnectTimer = null;
     }
-  }
-
-  function clearPairWsPendingRequests(reason = 'ws closed') {
-    for (const [, pending] of pairWsPendingRequests) {
-      if (pending.timer) {
-        clearTimeout(pending.timer);
-      }
-      pending.reject(new Error(reason));
-    }
-    pairWsPendingRequests.clear();
   }
 
   function cleanupPairWebSocket() {
@@ -485,7 +699,6 @@ export function createPairController(deps) {
     }
     pairWs = null;
     pairChannelMode = 'none';
-    clearPairWsPendingRequests('ws channel closed');
   }
 
   function schedulePairReconnect() {
@@ -536,30 +749,122 @@ export function createPairController(deps) {
     return pairChannels.find((item) => item?.status === 'pending') || null;
   }
 
+  function findPairChannelByBindingId(bindingId) {
+    const target = String(bindingId || '').trim();
+    if (!target) {
+      return null;
+    }
+    return pairChannels.find((item) => String(item?.bindingId || '').trim() === target) || null;
+  }
+
+  async function syncBindingsFromServer() {
+    const { baseUrl, session } = await ensurePairAuthSession();
+    const result = await listPairV2Bindings(baseUrl, session.token, false);
+    const activeBindings = Array.isArray(result?.bindings)
+      ? result.bindings.filter((item) => String(item?.trustState || '').trim() === 'active')
+      : [];
+
+    for (const binding of activeBindings) {
+      const existing =
+        findPairChannelByBindingId(binding.bindingId) ||
+        findPairChannelByMobileId(binding.mobileId) ||
+        findPairChannelById(binding.pairSessionId) ||
+        null;
+      const channel = existing || upsertPairChannel({
+        channelId: binding.bindingId || binding.pairSessionId || `ch_${binding.mobileId}`,
+        createdAt: Number(binding.createdAt || Date.now()),
+        messages: []
+      });
+      if (!channel) {
+        continue;
+      }
+      channel.sessionId = String(binding.pairSessionId || channel.sessionId || channel.channelId);
+      channel.bindingId = String(binding.bindingId || channel.bindingId || '');
+      channel.mobileId = String(binding.mobileId || channel.mobileId || '');
+      channel.status = pairChannelOpen ? 'active' : 'offline';
+      channel.devicePublicKey = String(binding.devicePublicKey || channel.devicePublicKey || '');
+      channel.mobilePublicKey = String(binding.mobilePublicKey || channel.mobilePublicKey || '');
+      channel.trustState = String(binding.trustState || channel.trustState || 'active');
+      channel.approvedAt = Number(binding.approvedAt || channel.approvedAt || 0);
+      channel.peerState = channel.peerState || 'idle';
+      channel.qrPayload = channel.qrPayload || null;
+    }
+
+    renderPairChannelCards();
+  }
+
+  async function ensurePairPeer(channel) {
+    const peerKey = getPairPeerKey(channel);
+    if (!peerKey) {
+      throw new Error('bindingId missing for peer channel');
+    }
+    const existing = pairPeers.get(peerKey);
+    if (existing) {
+      return existing;
+    }
+    const ready = await ensurePairAuthSession();
+    const trustedPeerId = String(channel?.mobileId || '').trim();
+    const trustedPeerPublicKey = String(channel?.mobilePublicKey || '').trim();
+    if (!trustedPeerId || !trustedPeerPublicKey) {
+      throw new Error('mobile trust metadata is missing');
+    }
+    const appRegistry = createPairAppRegistry(channel, trustedPeerId);
+    const peer = new PairV2PeerChannel({
+      role: 'desktop',
+      selfId: ready.deviceId,
+      selfPublicKey: ready.identity?.publicKey || '',
+      selfPrivateKey: ready.identity?.privateKey || '',
+      trustedPeerId,
+      trustedPeerPublicKey,
+      bindingId: peerKey,
+      iceServers: await resolvePairIceServers(ready.baseUrl, ready.session.token),
+      capabilities: appRegistry.buildCapabilities({
+        protocolVersion: 'openclaw-pair-v2',
+        appId: 'openclaw',
+        appVersion: pairAppVersion()
+      }),
+      onSignal: async (type, payload) => {
+        await sendPairSignal({
+          toType: 'mobile',
+          toId: trustedPeerId,
+          type,
+          payload
+        });
+      },
+      onStateChange: (state, detail) => {
+        updateChannelPeerState(channel, state, detail || '');
+        appendPairEvent(`peer ${state}: binding=${peerKey} mobile=${trustedPeerId}${detail ? ` (${detail})` : ''}`);
+      },
+      onCapabilities: (capabilities) => {
+        channel.peerCapabilities = capabilities;
+        renderPairChannelCards();
+        updatePairButtons();
+        appendPairEvent(
+          `peer capabilities: mobile=${trustedPeerId} app=${capabilities.appId || '-'} version=${capabilities.appVersion || '-'} messages=${(capabilities.supportedMessages || []).join(',') || '-'}`
+        );
+      },
+      onAppMessage: async (message) => {
+        const handled = await appRegistry.dispatch(message, undefined);
+        if (!handled) {
+          appendPairEvent(`peer app message from ${trustedPeerId}: ${message.type}`);
+        }
+      },
+      onLog: (line) => {
+        appendPairEvent(`peer ${trustedPeerId}: ${line}`);
+      }
+    });
+    pairPeers.set(peerKey, peer);
+    updateChannelPeerState(channel, channel.peerState || 'idle', channel.peerDetail || '');
+    return peer;
+  }
+
   async function revokePairBinding(bindingId) {
     const id = String(bindingId || '').trim();
     if (!id) {
       return;
     }
-    const baseUrl = getPairServerBaseUrl();
-    const endpoint = buildPairHttpUrl(baseUrl, '/v1/pair/revoke');
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ bindingId: id })
-    });
-    let result = null;
-    try {
-      result = await response.json();
-    } catch {
-      result = null;
-    }
-    if (!response.ok || !result?.ok) {
-      const message = result?.message || result?.error || `HTTP ${response.status}`;
-      throw new Error(String(message));
-    }
+    const { baseUrl, session } = await ensurePairAuthSession();
+    await revokePairV2Binding(baseUrl, session.token, id);
   }
 
   async function removePairChannel(channelId) {
@@ -577,6 +882,7 @@ export function createPairController(deps) {
     }
 
     if (channel.bindingId) {
+      closePairPeerByKey(channel.bindingId, 'binding removed');
       try {
         await revokePairBinding(channel.bindingId);
       } catch (error) {
@@ -606,87 +912,106 @@ export function createPairController(deps) {
 
     if (eventType === 'pair.claimed') {
       const mobileId = String(payload?.mobileId || payload?.mobile_id || '').trim();
-      const userId = String(payload?.userId || payload?.user_id || '').trim();
       const sessionId = String(payload?.pairSessionId || payload?.pair_session_id || '').trim();
       const bindingId = String(payload?.bindingId || payload?.binding_id || '').trim();
-      const channelBySession =
-        (sessionId && (findPairChannelById(sessionId) || findPairChannelById(`ch_${sessionId}`))) || null;
-      const channelByMobile = (mobileId && findPairChannelByMobileId(mobileId)) || null;
-
-      if (channelBySession && channelByMobile && channelBySession.channelId !== channelByMobile.channelId) {
-        if (bindingId) {
-          try {
-            await revokePairBinding(bindingId);
-          } catch (error) {
-            appendPairEvent(t('msg.pairRevokeFailed', { message: error?.message || String(error) }));
-          }
-        }
-        removePairChannelLocal(channelBySession.channelId);
-        closeDialogSafe(pairQrDialog);
-        renderPairChannelCards();
-        updatePairButtons();
-        setPairMessage(t('msg.pairAlreadyPaired', { mobileId: mobileId || '-' }), 'error');
-        appendPairEvent(
-          `duplicate claim blocked: session=${sessionId || '-'} mobile=${mobileId || '-'} kept=${channelByMobile.channelId}`
-        );
-        return;
-      }
-
-      let channel = channelBySession || channelByMobile || findFirstPendingChannel() || null;
+      const devicePublicKey = String(payload?.devicePublicKey || payload?.device_public_key || '').trim();
+      const mobilePublicKey = String(payload?.mobilePublicKey || payload?.mobile_public_key || '').trim();
+      const sessionNonce = String(payload?.sessionNonce || payload?.session_nonce || '').trim();
+      let channel =
+        findPairChannelByBindingId(bindingId) ||
+        (sessionId && (findPairChannelById(sessionId) || findPairChannelById(`ch_${sessionId}`))) ||
+        (mobileId && findPairChannelByMobileId(mobileId)) ||
+        findFirstPendingChannel() ||
+        null;
       if (!channel) {
         channel = upsertPairChannel({
           channelId: sessionId || (mobileId ? `ch_${mobileId}` : `ch_${Date.now()}`),
           sessionId,
           mobileId,
-          userId,
           bindingId,
-          status: 'active',
+          status: 'pending',
           createdAt: Date.now()
         });
       }
       if (channel) {
-        channel.status = 'active';
+        channel.status = 'pending';
         if (mobileId) {
           channel.mobileId = mobileId;
         }
-        if (userId) {
-          channel.userId = userId;
-        }
         if (bindingId) {
           channel.bindingId = bindingId;
+        }
+        if (devicePublicKey) {
+          channel.devicePublicKey = devicePublicKey;
+        }
+        if (mobilePublicKey) {
+          channel.mobilePublicKey = mobilePublicKey;
+        }
+        if (sessionNonce) {
+          channel.sessionNonce = sessionNonce;
+        }
+        channel.trustState = String(payload?.trustState || payload?.trust_state || 'pending');
+        channel.peerState = 'idle';
+        try {
+          if (devicePublicKey && mobilePublicKey && sessionId && sessionNonce) {
+            channel.safetyCode = await computePairV2SafetyCode({
+              devicePublicKey,
+              mobilePublicKey,
+              pairSessionId: sessionId,
+              sessionNonce
+            });
+          }
+        } catch (error) {
+          appendPairEvent(`compute safety code failed: ${error?.message || String(error)}`);
         }
         renderPairChannelCards();
         updatePairButtons();
       }
       closeDialogSafe(pairQrDialog);
       setPairMessage(t('msg.pairClaimed'), 'success');
-      appendPairEvent(`channel claimed: session=${sessionId || '-'} mobile=${mobileId || '-'} user=${userId || '-'}`);
+      appendPairEvent(
+        `pair claimed: session=${sessionId || '-'} mobile=${mobileId || '-'} safety=${channel?.safetyCode || '-'}`
+      );
       return;
     }
 
-    if (fromType === 'mobile') {
-      const channel = ensureChannelForMobile(fromId || payload?.mobileId || payload?.mobile_id || '');
+    if (eventType === 'pair.revoked') {
+      const bindingId = String(payload?.bindingId || payload?.binding_id || '').trim();
+      const mobileId = String(payload?.mobileId || payload?.mobile_id || fromId || '').trim();
+      const channel = findPairChannelByBindingId(bindingId) || findPairChannelByMobileId(mobileId) || null;
       if (channel) {
-        channel.status = pairChannelOpen ? 'active' : 'offline';
-        if (eventType === 'chat.message') {
-          const text = String(payload?.text || payload?.message || '').trim();
-          appendPairChannelMessage(channel.channelId, {
-            from: 'mobile',
-            text: text || JSON.stringify(payload),
-            ts: Number(envelope?.ts || Date.now())
-          });
-          appendPairEvent(`chat from ${channel.mobileId || channel.channelId}: ${text || '[payload]'}`);
-          renderPairChannelCards();
-          return;
-        }
+        closePairPeerByKey(bindingId, 'binding revoked');
+        channel.status = 'offline';
+        channel.trustState = 'revoked';
+        renderPairChannelCards();
+        updatePairButtons();
       }
+      appendPairEvent(`pair revoked: binding=${bindingId || '-'} mobile=${mobileId || '-'}`);
+      return;
+    }
+
+    if (eventType === 'webrtc.offer' || eventType === 'webrtc.answer' || eventType === 'webrtc.ice') {
+      const bindingId = String(payload?.bindingId || payload?.binding_id || '').trim();
+      const mobileId = String(payload?.mobileId || payload?.mobile_id || fromId || '').trim();
+      const channel = findPairChannelByBindingId(bindingId) || findPairChannelByMobileId(mobileId) || null;
+      if (!channel) {
+        appendPairEvent(`peer signal ignored without channel: type=${eventType} binding=${bindingId || '-'}`);
+        return;
+      }
+      try {
+        const peer = await ensurePairPeer(channel);
+        await peer.handleSignal(eventType, payload);
+      } catch (error) {
+        appendPairEvent(`peer signal failed: type=${eventType} binding=${bindingId || '-'} ${error?.message || String(error)}`);
+      }
+      return;
     }
 
     if (fromType === 'desktop' && eventType === 'agent.reply') {
       const mobileId = String(payload?.mobileId || payload?.mobile_id || '').trim();
       const channel = ensureChannelForMobile(mobileId);
       if (channel) {
-        channel.status = pairChannelOpen ? 'active' : 'offline';
+        channel.status = channel.trustState === 'pending' ? 'pending' : pairChannelOpen ? 'active' : 'offline';
         const text = String(payload?.text || payload?.message || '').trim();
         appendPairChannelMessage(channel.channelId, {
           from: 'agent',
@@ -722,92 +1047,24 @@ export function createPairController(deps) {
     // no-op: channel connection params are now sourced from config file
   }
 
-  function sendPairSignalViaWs({ toType, toId, type, payload = {} }) {
-    if (pairChannelMode !== 'ws' || !pairWs || pairWs.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new Error('ws channel is not open'));
-    }
-
-    pairWsRequestSeq += 1;
-    const requestId = `wsreq_${Date.now()}_${pairWsRequestSeq}`;
-
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pairWsPendingRequests.delete(requestId);
-        reject(new Error(`send ${type} timeout`));
-      }, 6000);
-
-      pairWsPendingRequests.set(requestId, { resolve, reject, timer });
-      try {
-        pairWs.send(
-          JSON.stringify({
-            action: 'signal.send',
-            requestId,
-            data: {
-              toType,
-              toId,
-              type,
-              payload
-            }
-          })
-        );
-      } catch (error) {
-        clearTimeout(timer);
-        pairWsPendingRequests.delete(requestId);
-        reject(error);
-      }
-    });
-  }
-
   async function sendPairSignal({ toType, toId, type, payload = {} }) {
     if (!pairChannelOpen) {
       throw new Error('channel is closed');
     }
-    if (isPairChannelOpen() && pairChannelMode === 'ws') {
-      return sendPairSignalViaWs({ toType, toId, type, payload });
-    }
-
-    const baseUrl = getPairServerBaseUrl();
-    const fromId = getPairDeviceId();
-    const endpoint = buildPairHttpUrl(baseUrl, '/v1/signal/send');
-    const serverToken = getPairServerToken();
-    const headers = {
-      'Content-Type': 'application/json'
-    };
-    if (serverToken) {
-      headers.Authorization = `Bearer ${serverToken}`;
-    }
-
-    let response;
+    const { baseUrl, deviceId, session } = await ensurePairAuthSession();
     try {
-      response = await fetch(endpoint, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          fromType: 'desktop',
-          fromId,
-          toType,
-          toId,
-          type,
-          payload
-        })
+      return await sendPairV2Signal(baseUrl, session.token, {
+        fromType: 'desktop',
+        fromId: deviceId,
+        toType,
+        toId,
+        type,
+        payload
       });
     } catch (error) {
-      throw new Error(`send ${type} network failed: ${error?.message || String(error)}`);
+      clearPairAuthState();
+      throw new Error(`send ${type} failed: ${error?.message || String(error)}`);
     }
-
-    let result;
-    try {
-      result = await response.json();
-    } catch {
-      result = null;
-    }
-
-    if (!response.ok || !result?.ok) {
-      const message = result?.message || result?.error || `HTTP ${response.status}`;
-      throw new Error(`send ${type} failed: ${message}`);
-    }
-
-    return result;
   }
 
   async function sendPairChatMessage() {
@@ -822,21 +1079,20 @@ export function createPairController(deps) {
       setPairMessage(t('msg.pairNeedChatMessage'), 'error');
       return;
     }
+    if (channel.peerState !== 'connected') {
+      setPairMessage(t('msg.pairPeerNotReady'), 'error');
+      return;
+    }
+    if (!channelSupportsOpenClawChat(channel)) {
+      setPairMessage(t('msg.pairPeerChatUnsupported'), 'error');
+      return;
+    }
 
     try {
-      const response = await sendPairSignal({
-        toType: 'mobile',
-        toId: channel.mobileId,
-        type: 'chat.message',
-        payload: {
-          text,
-          sentAt: Date.now(),
-          from: 'desktop'
-        }
-      });
-      const delivered = response?.deliveredRealtime === true ? 'realtime' : 'queued';
+      const peer = await ensurePairPeer(channel);
+      await peer.sendAppMessage(openClawPairChatMessageType, buildOpenClawPairChatPayload(text));
       appendPairChannelMessage(channel.channelId, { from: 'desktop', text, ts: Date.now() });
-      appendPairEvent(`chat.message sent -> mobile=${channel.mobileId} (${delivered})`);
+      appendPairEvent(`peer chat sent -> mobile=${channel.mobileId}`);
       setPairMessage(t('msg.pairChatSent'), 'success');
       pairChatDraftInput.value = '';
       useDesktopShellStore.getState().setPairState({
@@ -845,8 +1101,8 @@ export function createPairController(deps) {
       updatePairButtons();
       renderPairChatMessages();
     } catch (error) {
-      setPairMessage(`发送 chat.message 失败：${error?.message || String(error)}`, 'error');
-      appendPairEvent(`chat.message failed: ${error?.message || String(error)}`);
+      setPairMessage(`发送 ${openClawPairChatMessageType} 失败：${error?.message || String(error)}`, 'error');
+      appendPairEvent(`${openClawPairChatMessageType} failed: ${error?.message || String(error)}`);
     }
   }
 
@@ -864,152 +1120,82 @@ export function createPairController(deps) {
 
     let baseUrl;
     let deviceId;
+    let session;
     try {
-      baseUrl = getPairServerBaseUrl();
-      deviceId = getPairDeviceId();
+      const ready = await announcePairPresence(fromReconnect);
+      baseUrl = ready.baseUrl;
+      deviceId = ready.deviceId;
+      session = ready.session;
     } catch (error) {
-      setPairMessage(error.message || String(error), 'error');
+      const message = String(error?.message || error || '');
+      setPairMessage(message.includes('Ed25519') || message.includes('Web Crypto') ? t('msg.pairCryptoUnsupported') : message, 'error');
       renderPairWsStatus('disconnected');
       updatePairButtons();
       return;
     }
 
     pairDesiredConnected = true;
+    stopPairPresenceLoop();
     cleanupPairWebSocket();
     renderPairWsStatus('connecting');
     setPairMessage(t('msg.pairConnecting'));
-    appendPairEvent(`connecting ws -> ${buildPairWsUrl(baseUrl, deviceId)}`);
+    appendPairEvent(`connecting v2 stream -> ${buildPairStreamUrl(baseUrl, deviceId, session?.token || '')}`);
     updatePairButtons();
 
-    const wsUrl = buildPairWsUrl(baseUrl, deviceId);
-    const ws = new WebSocket(wsUrl);
-    let fallbackTimer = null;
-    let settled = false;
+    const stream = openPairV2SignalStream(baseUrl, session.token, 'desktop', deviceId);
+    pairWs = stream;
+    pairChannelMode = 'sse';
 
-    pairWs = ws;
-    pairChannelMode = 'ws';
-
-    const fallbackToSse = () => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      if (fallbackTimer) {
-        clearTimeout(fallbackTimer);
-        fallbackTimer = null;
-      }
-      try {
-        ws.close();
-      } catch {
-        // ignore
-      }
-
-      appendPairEvent('ws unavailable, fallback to sse');
-      const streamUrl = buildPairStreamUrl(baseUrl, deviceId);
-      appendPairEvent(`connecting signal stream -> ${streamUrl}`);
-      const stream = new EventSource(streamUrl);
-      pairWs = stream;
-      pairChannelMode = 'sse';
-      renderPairWsStatus('connecting');
-      stream.onopen = () => {
-        pairReconnectAttempts = 0;
-        renderPairWsStatus('connected');
-        setPairMessage(t('msg.pairConnected'), 'success');
-        appendPairEvent('signal stream connected');
-        updateAllChannelsStatus('active');
-        renderPairChannelCards();
-        updatePairButtons();
-      };
-      stream.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data);
-          void bindPairEnvelope(payload);
-        } catch {
-          appendPairEvent(`signal stream raw: ${event.data}`);
-        }
-      };
-      stream.onerror = () => {
-        renderPairWsStatus('disconnected');
-        setPairMessage(t('msg.pairDisconnected'), 'error');
-        updateAllChannelsStatus('offline');
-        renderPairChannelCards();
-        updatePairButtons();
-        if (pairDesiredConnected) {
-          appendPairEvent('signal stream reconnecting...');
-          schedulePairReconnect();
-        }
-      };
-    };
-
-    fallbackTimer = setTimeout(fallbackToSse, 2500);
-
-    ws.addEventListener('open', () => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      if (fallbackTimer) {
-        clearTimeout(fallbackTimer);
-        fallbackTimer = null;
-      }
+    stream.onopen = async () => {
       pairReconnectAttempts = 0;
       renderPairWsStatus('connected');
       setPairMessage(t('msg.pairConnected'), 'success');
-      appendPairEvent('ws connected');
+      appendPairEvent('v2 signal stream connected');
+      try {
+        await syncBindingsFromServer();
+      } catch (error) {
+        appendPairEvent(`sync bindings failed: ${error?.message || String(error)}`);
+      }
       updateAllChannelsStatus('active');
       renderPairChannelCards();
       updatePairButtons();
-    });
+      startPairPresenceLoop();
+    };
 
-    ws.addEventListener('message', (event) => {
+    stream.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
-        if (message?.action === 'signal.send.ack') {
-          const requestId = String(message?.requestId || '').trim();
-          const pending = requestId ? pairWsPendingRequests.get(requestId) : null;
-          if (pending) {
-            clearTimeout(pending.timer);
-            pairWsPendingRequests.delete(requestId);
-            if (message?.ok === false) {
-              pending.reject(new Error(message?.error || 'signal send rejected'));
-            } else {
-              pending.resolve(message?.data || {});
-            }
-          }
+        if (String(message?.type || '').trim() === 'stream.opened') {
           return;
         }
         void bindPairEnvelope(message);
       } catch {
-        appendPairEvent(`ws raw: ${event.data}`);
+        appendPairEvent(`signal raw: ${event.data}`);
       }
-    });
+    };
 
-    ws.addEventListener('close', () => {
-      if (!settled) {
-        fallbackToSse();
+    stream.onerror = () => {
+      if (pairWs !== stream) {
         return;
       }
+      stopPairPresenceLoop();
+      cleanupPairWebSocket();
+      clearPairAuthState();
       renderPairWsStatus('disconnected');
-      clearPairWsPendingRequests('ws closed');
+      setPairMessage(t('msg.pairDisconnected'), 'error');
       updateAllChannelsStatus('offline');
       renderPairChannelCards();
       updatePairButtons();
+      appendPairEvent('v2 signal stream disconnected');
       if (pairDesiredConnected) {
-        appendPairEvent('ws closed unexpectedly');
         schedulePairReconnect();
       }
-    });
-
-    ws.addEventListener('error', () => {
-      if (!settled) {
-        fallbackToSse();
-      }
-    });
+    };
   }
 
   function updateAllChannelsStatus(status) {
     pairChannels.forEach((channel) => {
-      if (channel && channel.status !== 'pending') {
+      if (channel && channel.status !== 'pending' && channel.trustState !== 'revoked') {
         channel.status = status;
       }
     });
@@ -1023,7 +1209,10 @@ export function createPairController(deps) {
     pairDesiredConnected = false;
     pairReconnectAttempts = 0;
     resetPairReconnectTimer();
+    stopPairPresenceLoop();
+    closeAllPairPeers('desktop channel closed');
     cleanupPairWebSocket();
+    clearPairAuthState();
     renderPairWsStatus('disconnected');
     setPairMessage(t('msg.pairDisconnected'));
     appendPairEvent('ws disconnected by user');
@@ -1038,10 +1227,8 @@ export function createPairController(deps) {
     }
 
     let baseUrl;
-    let deviceId;
     try {
       baseUrl = getPairServerBaseUrl();
-      deviceId = getPairDeviceId();
     } catch (error) {
       setPairMessage(error.message || String(error), 'error');
       return;
@@ -1052,64 +1239,58 @@ export function createPairController(deps) {
       await connectPairChannel();
     }
 
-    const endpoint = buildPairHttpUrl(baseUrl, '/pair/create');
-    const serverToken = getPairServerToken();
-    const headers = {
-      'Content-Type': 'application/json'
-    };
-    if (serverToken) {
-      headers.Authorization = `Bearer ${serverToken}`;
-    }
     setPairMessage(t('msg.pairCreateRunning'));
-    appendPairEvent(`create pair session -> ${endpoint}`);
+    appendPairEvent('create v2 pair session');
     clearPairQrPreview();
 
-    let response;
     try {
-      response = await fetch(endpoint, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          device_id: deviceId,
-          device_name: pairDeviceName()
-        })
+      const { session } = await ensurePairAuthSession();
+      const result = await createPairV2Session(baseUrl, session.token, 180);
+      const qrPayload = await sanitizePairQrPayload(result?.qrPayload || {}, baseUrl);
+      const createdChannel = upsertPairChannel({
+        channelId: String(result?.session?.pairSessionId || `ch_${Date.now()}`),
+        sessionId: String(result?.session?.pairSessionId || ''),
+        status: 'pending',
+        mobileId: '',
+        bindingId: '',
+        trustState: 'pending',
+        createdAt: Number(result?.session?.createdAt || Date.now()),
+        qrPayload,
+        messages: []
       });
+      renderPairChannelCards();
+      setPairMessage(t('msg.pairCreated'), 'success');
+      appendPairEvent(`pair session created: ${result?.session?.pairSessionId || '-'}`);
+      await openPairQrDialogForChannel(createdChannel);
+      updatePairButtons();
     } catch (error) {
       setPairMessage(t('msg.pairCreateFailed', { message: error.message || String(error) }), 'error');
+      appendPairEvent(`create pair failed: ${error?.message || String(error)}`);
+    }
+  }
+
+  async function approvePairChannel(channelId) {
+    const channel = findPairChannelById(channelId);
+    if (!channel || !channel.bindingId) {
+      setPairMessage(t('msg.pairCreateFailed', { message: 'bindingId missing' }), 'error');
       return;
     }
 
-    let result;
     try {
-      result = await response.json();
-    } catch {
-      result = null;
+      const { baseUrl, session } = await ensurePairAuthSession();
+      const result = await approvePairV2Binding(baseUrl, session.token, channel.bindingId);
+      channel.status = pairChannelOpen ? 'active' : 'offline';
+      channel.trustState = String(result?.binding?.trustState || 'active');
+      channel.approvedAt = Number(result?.binding?.approvedAt || Date.now());
+      channel.peerState = channel.peerState || 'idle';
+      renderPairChannelCards();
+      updatePairButtons();
+      setPairMessage(t('msg.pairApproved'), 'success');
+      appendPairEvent(`pair approved: binding=${channel.bindingId} mobile=${channel.mobileId || '-'}`);
+    } catch (error) {
+      setPairMessage(t('msg.pairCreateFailed', { message: error?.message || String(error) }), 'error');
+      appendPairEvent(`approve failed: ${error?.message || String(error)}`);
     }
-
-    if (!response.ok || !result?.ok || !result?.data) {
-      const message = result?.error || result?.message || `HTTP ${response.status}`;
-      setPairMessage(t('msg.pairCreateFailed', { message }), 'error');
-      appendPairEvent(`create failed: ${message}`);
-      return;
-    }
-
-    const data = result.data;
-    const qrPayload = await sanitizePairQrPayload(data.qr_payload || {}, baseUrl);
-    const createdChannel = upsertPairChannel({
-      channelId: String(data.session_id || `ch_${Date.now()}`),
-      sessionId: String(data.session_id || ''),
-      status: 'pending',
-      mobileId: '',
-      userId: '',
-      createdAt: Date.now(),
-      qrPayload,
-      messages: []
-    });
-    renderPairChannelCards();
-    setPairMessage(t('msg.pairCreated'), 'success');
-    appendPairEvent(`session ${data.session_id || '-'} created`);
-    await openPairQrDialogForChannel(createdChannel);
-    updatePairButtons();
   }
 
   function applyPairConfigFromRawConfig() {
@@ -1250,6 +1431,9 @@ export function createPairController(deps) {
 
   function shutdown() {
     pairDesiredConnected = false;
+    stopPairPresenceLoop();
+    closeAllPairPeers('desktop shutdown');
+    clearPairAuthState();
     resetPairReconnectTimer();
     cleanupPairWebSocket();
   }
@@ -1284,6 +1468,9 @@ export function createPairController(deps) {
         qrDialogOpen: false
       });
       closeDialogSafe(pairQrDialog);
+    },
+    approveChannel: async (channelId) => {
+      await approvePairChannel(channelId);
     },
     closeChat: () => {
       useDesktopShellStore.getState().setPairState({

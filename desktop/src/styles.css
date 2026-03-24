@@ -828,6 +828,33 @@ button:active {
   line-height: 1.45;
 }
 
+.channel-card-note {
+  border: 1px dashed #d0dfeb;
+  border-radius: 16px;
+  padding: 12px 14px;
+  background: rgba(244, 249, 253, 0.98);
+}
+
+.channel-card-note span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.channel-card-note strong {
+  display: block;
+  font-size: 24px;
+  letter-spacing: 0.08em;
+}
+
+.channel-card-note p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  line-height: 1.5;
+  font-size: 13px;
+}
+
 .channel-mono {
   font-family: var(--mono);
   font-size: 13px;

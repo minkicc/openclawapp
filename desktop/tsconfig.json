@@ -1,11 +1,16 @@
 {
   "compilerOptions": {
+    "baseUrl": ".",
     "target": "ES2022",
     "module": "ESNext",
     "jsx": "react-jsx",
     "moduleResolution": "Bundler",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["vite/client", "node"],
+    "paths": {
+      "@openclaw/pair-sdk": ["../packages/pair-sdk/src/index.ts"],
+      "@openclaw/message-sdk": ["../packages/message-sdk/src/index.ts"]
+    },
     "allowJs": false,
     "checkJs": false,
     "noEmit": true,

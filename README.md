@@ -34,6 +34,14 @@ Keywords: OpenClaw installer, OpenClaw GUI, OpenClaw desktop app, OpenClaw for W
 - One-click launch into OpenClaw Web dashboard
 - Works on Windows, macOS, and Linux
 
+## Workspace layout
+
+- `server/`: standalone pairing / signaling service, plus the protocol introduction web page
+- `packages/pair-sdk`: reusable discovery / pairing / signaling / peer-auth SDK
+- `packages/message-sdk`: OpenClaw business message SDK layered on top of `pair-sdk`
+- `mobile/`: standalone React Native mobile client consuming `pair-sdk` + `message-sdk`
+- `desktop/`: standalone desktop app consuming the same SDKs for peer communication
+
 ## Supported platforms
 
 - Windows: `MSI` / `NSIS`
@@ -111,7 +119,12 @@ The Desktop "Communication Channels" module reads these fields from `openclaw.co
 ```json
 {
   "channelServerBaseUrl": "http://192.168.1.20:38089",
-  "channelDeviceId": "pc_agent_001"
+  "channelDeviceId": "pc_agent_001",
+  "channelIceServers": [
+    {
+      "urls": ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"]
+    }
+  ]
 }
 ```
 
@@ -119,6 +132,7 @@ Notes:
 
 - `channelServerBaseUrl` must be a reachable `http/https` URL for both desktop and mobile devices.
 - `channelDeviceId` is the fixed identity of the desktop Agent host.
+- `channelIceServers` is optional and acts as the local fallback WebRTC ICE list when `/v2/ice-servers` is unavailable or when you are testing without TURN on the server.
 - These fields are intentionally not editable in the desktop channel UI.
 
 ## CI/CD
