@@ -109,6 +109,37 @@ npm run dist:linux:ci
 npm run dist:linux:appimage
 ```
 
+## macOS DMG 界面定制
+
+现在 `npm run dist:mac` 会生成一个带安装背景图的拖拽式 `DMG` 窗口，包含：
+
+- 自动生成的背景图
+- 固定好的 `OpenClaw` / `Applications` 图标位置
+- 统一的 Finder 窗口尺寸
+
+如果你想微调界面布局，可以在打包前传入环境变量：
+
+```bash
+DMG_WINDOW_WIDTH=760 \
+DMG_WINDOW_HEIGHT=500 \
+DMG_APP_ICON_X=210 \
+DMG_APPS_ICON_X=550 \
+npm run dist:mac
+```
+
+支持的参数：
+
+- `DMG_PRODUCT_NAME`
+- `DMG_VOLUME_NAME`
+- `DMG_WINDOW_WIDTH`
+- `DMG_WINDOW_HEIGHT`
+- `DMG_ICON_SIZE`
+- `DMG_TEXT_SIZE`
+- `DMG_APP_ICON_X`
+- `DMG_APP_ICON_Y`
+- `DMG_APPS_ICON_X`
+- `DMG_APPS_ICON_Y`
+
 ## 配置文件路径
 
 - macOS：`~/Library/Application Support/dev.openclawapp.desktop/openclaw.config.json`

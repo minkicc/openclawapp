@@ -76,6 +76,11 @@ type PairPanelState = {
   wsStatus: string;
   statusMessage: string;
   statusType: string;
+  configuredServerUrl: string;
+  configuredDeviceId: string;
+  draftServerUrl: string;
+  draftDeviceId: string;
+  configSaving: boolean;
   channelOpen: boolean;
   channelToggleDisabled: boolean;
   createChannelDisabled: boolean;
@@ -91,6 +96,9 @@ type PairPanelState = {
 };
 
 type PairActions = {
+  setConfigServerUrl: (value: string) => void;
+  setConfigDeviceId: (value: string) => void;
+  saveConfig: () => void | Promise<void>;
   renameChannel: (channelId: string, nextName: string) => void;
   showQr: (channelId: string) => void | Promise<void>;
   openChat: (channelId: string) => void;
@@ -211,6 +219,11 @@ export const useDesktopShellStore = create<DesktopShellState>((set) => ({
     wsStatus: '-',
     statusMessage: '',
     statusType: '',
+    configuredServerUrl: '',
+    configuredDeviceId: '',
+    draftServerUrl: '',
+    draftDeviceId: '',
+    configSaving: false,
     channelOpen: false,
     channelToggleDisabled: false,
     createChannelDisabled: false,
@@ -225,6 +238,9 @@ export const useDesktopShellStore = create<DesktopShellState>((set) => ({
     chatDraft: ''
   },
   pairActions: {
+    setConfigServerUrl: () => {},
+    setConfigDeviceId: () => {},
+    saveConfig: () => {},
     renameChannel: () => {},
     showQr: () => {},
     openChat: () => {},

@@ -1471,6 +1471,28 @@ PODS:
     - React-RCTFBReactNativeSpec
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
+  - react-native-get-random-values (2.0.0):
+    - hermes-engine
+    - RCTRequired
+    - RCTTypeSafety
+    - React-Core
+    - React-Core-prebuilt
+    - React-debug
+    - React-Fabric
+    - React-featureflags
+    - React-graphics
+    - React-ImageManager
+    - React-jsi
+    - React-NativeModulesApple
+    - React-RCTFabric
+    - React-renderercss
+    - React-rendererdebug
+    - React-utils
+    - ReactCodegen
+    - ReactCommon/turbomodule/bridging
+    - ReactCommon/turbomodule/core
+    - ReactNativeDependencies
+    - Yoga
   - react-native-safe-area-context (5.6.2):
     - hermes-engine
     - RCTRequired
@@ -2056,6 +2078,7 @@ DEPENDENCIES:
   - React-logger (from `../../node_modules/react-native/ReactCommon/logger`)
   - React-Mapbuffer (from `../../node_modules/react-native/ReactCommon`)
   - React-microtasksnativemodule (from `../../node_modules/react-native/ReactCommon/react/nativemodule/microtasks`)
+  - react-native-get-random-values (from `../../node_modules/react-native-get-random-values`)
   - react-native-safe-area-context (from `../../node_modules/react-native-safe-area-context`)
   - react-native-webrtc (from `../../node_modules/react-native-webrtc`)
   - React-NativeModulesApple (from `../../node_modules/react-native/ReactCommon/react/nativemodule/core/platform/ios`)
@@ -2202,6 +2225,8 @@ EXTERNAL SOURCES:
     :path: "../../node_modules/react-native/ReactCommon"
   React-microtasksnativemodule:
     :path: "../../node_modules/react-native/ReactCommon/react/nativemodule/microtasks"
+  react-native-get-random-values:
+    :path: "../../node_modules/react-native-get-random-values"
   react-native-safe-area-context:
     :path: "../../node_modules/react-native-safe-area-context"
   react-native-webrtc:
@@ -2298,7 +2323,7 @@ SPEC CHECKSUMS:
   ExpoModulesJSI: 7345645083e98be9c33c10027601aff2e445ba72
   FBLazyVector: 32e9ed0301d0fcbc1b2b341dd7fcbf291f51eb83
   hermes-engine: c24ad7cc6c0e3fe587b710df9db3a7fbdc70d532
-  JitsiWebRTC: 47550773e96fe56b8620b51ddc5df4ca32fc0dee
+  JitsiWebRTC: ad761a539a9bf3eefdc63c66eae0ce1800f92f55
   RCTDeprecation: a522c536d2c7be8f518dd834883cf6dce1d4f545
   RCTRequired: 44337def23abb244c025e9e7ab58f9cd3d63ec7d
   RCTSwiftUI: b2f0c2f2761631b8cd605767536cbb1cbf8d020f
@@ -2335,6 +2360,7 @@ SPEC CHECKSUMS:
   React-logger: 69811317123fe08dc34ed5837dc1d269c468cc8d
   React-Mapbuffer: 8f8cbeb5bedb521cce0897a71274e3a72b5236a1
   React-microtasksnativemodule: bef4a47c7efd42421de52201e6d76a73cf6c816e
+  react-native-get-random-values: a603782b2b222a34533c66371614790282dba3f1
   react-native-safe-area-context: 37e680fc4cace3c0030ee46e8987d24f5d3bdab2
   react-native-webrtc: e8f0ce746353adc2744a2b933645e1aeb41eaa74
   React-NativeModulesApple: f9fa097fc24cec967b77bfc05f72d2ea7db05b87
@@ -2374,7 +2400,7 @@ SPEC CHECKSUMS:
   RNCAsyncStorage: 3a4f5e2777dae1688b781a487923a08569e27fe4
   RNScreens: 14243fa0d9842ffa7f8bb2d00b6c3cfd3ca817e8
   Yoga: dd994d8c85dca5cc9b10f5df8c01f9ef1d0da191
-  ZXingObjC: 5bfed641c6ea4da832b860a9f6292e22cb3f0af9
+  ZXingObjC: 68521bb81e4b1ed7039f6729cfc45e482d25aeb1
 
 PODFILE CHECKSUM: 568e5e479016b09563a8a993fa534883881d473f
 

@@ -1,6 +1,9 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { useLayoutEffect, useState } from 'react';
+import { useHeaderHeight } from '@react-navigation/elements';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
+  Alert,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -9,9 +12,8 @@ import {
   Text,
   TextInput,
   View,
-  Alert,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { RootStackParamList } from '../navigation/AppNavigator';
 import { useSessions } from '../state/SessionsContext';
 import { appColors } from '../theme/colors';
@@ -19,16 +21,39 @@ import { appColors } from '../theme/colors';
 type Props = NativeStackScreenProps<RootStackParamList, 'Conversation'>;
 
 export function ConversationScreen({ route, navigation }: Props) {
-  const { getSessionById, sendMessage } = useSessions();
+  const { getSessionById, refreshSessions, sendMessage } = useSessions();
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const scrollViewRef = useRef<ScrollView | null>(null);
+  const headerHeight = useHeaderHeight();
+  const insets = useSafeAreaInsets();
   const session = getSessionById(route.params.sessionId);
+
+  function scrollToBottom(animated = true) {
+    requestAnimationFrame(() => {
+      scrollViewRef.current?.scrollToEnd({ animated });
+    });
+  }
 
   useLayoutEffect(() => {
     navigation.setOptions({
       title: session?.name || '会话',
     });
   }, [navigation, session?.name]);
+
+  useEffect(() => {
+    const eventName = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const subscription = Keyboard.addListener(eventName, () => {
+      scrollToBottom(true);
+    });
+    return () => {
+      subscription.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    void refreshSessions();
+  }, [route.params.sessionId]);
 
   if (!session) {
     return (
@@ -42,13 +67,25 @@ export function ConversationScreen({ route, navigation }: Props) {
   }
 
   const activeSession = session;
-  const composerEnabled = Boolean(activeSession.transportReady);
+  const composerEnabled = Boolean(activeSession.transportReady) || activeSession.peerState === 'connected';
   const helperText =
     activeSession.trustState === 'pending'
       ? `等待桌面端确认安全码${activeSession.safetyCode ? ` ${activeSession.safetyCode}` : ''}`
       : activeSession.transportReady
         ? '通道已就绪，可以开始发送业务消息。'
-        : '当前已完成配对发现，但 React Native 原生 peer 通道尚未接入。';
+        : activeSession.peerState === 'failed'
+          ? activeSession.peerDetail
+            ? `P2P 通道建立失败：${activeSession.peerDetail}`
+            : 'P2P 通道建立失败，请稍后重试。'
+          : activeSession.status === 'offline'
+            ? '桌面端当前离线，正在等待重新联通。'
+        : activeSession.peerState === 'connecting' || activeSession.peerState === 'channel-open' || activeSession.peerState === 'verifying'
+          ? '正在建立 P2P 通道...'
+          : activeSession.peerState === 'connected'
+            ? '通道已就绪，可以开始发送业务消息。'
+            : activeSession.peerDetail
+              ? `P2P 通道未就绪：${activeSession.peerDetail}`
+              : '已完成配对发现，正在准备安全通道。';
 
   async function handleSend() {
     const text = draft.trim();
@@ -61,8 +98,9 @@ export function ConversationScreen({ route, navigation }: Props) {
       setSending(true);
       setDraft('');
       await sendMessage(activeSession.id, text);
+      setDraft('');
     } catch (error) {
-      setDraft(text);
+      setDraft((current) => (current.trim() ? current : text));
       Alert.alert('发送失败', error instanceof Error ? error.message : '消息发送失败。');
     } finally {
       setSending(false);
@@ -74,7 +112,7 @@ export function ConversationScreen({ route, navigation }: Props) {
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? headerHeight : 0}
       >
         <View style={styles.headerStrip}>
           <Text style={styles.headerLabel}>{activeSession.peerLabel}</Text>
@@ -87,7 +125,16 @@ export function ConversationScreen({ route, navigation }: Props) {
           ) : null}
         </View>
 
-        <ScrollView style={styles.flex} contentContainerStyle={styles.messageList}>
+        <ScrollView
+          ref={scrollViewRef}
+          style={styles.flex}
+          contentContainerStyle={[styles.messageList, { paddingBottom: Math.max(insets.bottom, 20) }]}
+          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+          keyboardShouldPersistTaps="handled"
+          onContentSizeChange={() => {
+            scrollToBottom(true);
+          }}
+        >
           {activeSession.messages.map((message) => {
             const isSelf = message.from === 'self';
             return (
@@ -101,7 +148,7 @@ export function ConversationScreen({ route, navigation }: Props) {
           })}
         </ScrollView>
 
-        <View style={styles.composerShell}>
+        <View style={[styles.composerShell, { paddingBottom: Math.max(insets.bottom, 12) }]}>
           <TextInput
             placeholder="输入消息"
             placeholderTextColor={appColors.inkMuted}

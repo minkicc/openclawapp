@@ -17,6 +17,77 @@ function formatPairTs(ts: unknown) {
   return new Date().toLocaleString();
 }
 
+function PairConfigPanel() {
+  const currentLang = useDesktopShellStore((state) => state.currentLang);
+  const pair = useDesktopShellStore((state) => state.pair);
+  const actions = useDesktopShellStore((state) => state.pairActions);
+  const configured = Boolean(pair.configuredServerUrl && pair.configuredDeviceId);
+
+  return (
+    <section className={`pair-config-card ${configured ? 'is-ready' : ''}`.trim()}>
+      <div className="pair-config-copy">
+        <h3>{translate(currentLang, 'pair.settingsTitle')}</h3>
+        <p className="hint pair-config-hint">{translate(currentLang, 'pair.settingsHint')}</p>
+      </div>
+
+      <div className="form-grid pair-config-grid">
+        <label className="full-row">
+          <span>{translate(currentLang, 'pair.serverUrl')}</span>
+          <input
+            id="pairConfigServerUrlInput"
+            type="text"
+            value={pair.draftServerUrl}
+            placeholder={translate(currentLang, 'ph.pairServerUrl')}
+            onChange={(event) => {
+              actions.setConfigServerUrl(event.currentTarget.value);
+            }}
+          />
+        </label>
+
+        <label>
+          <span>{translate(currentLang, 'pair.deviceId')}</span>
+          <input
+            id="pairConfigDeviceIdInput"
+            type="text"
+            value={pair.draftDeviceId}
+            placeholder={translate(currentLang, 'ph.pairDeviceIdAuto')}
+            onChange={(event) => {
+              actions.setConfigDeviceId(event.currentTarget.value);
+            }}
+          />
+          <p className="field-hint">{translate(currentLang, 'pair.deviceIdHint')}</p>
+        </label>
+
+        <div className="pair-config-meta">
+          <span>{translate(currentLang, 'pair.currentConfig')}</span>
+          <strong>
+            {configured
+              ? translate(currentLang, 'pair.currentConfigValue', {
+                  url: pair.configuredServerUrl,
+                  deviceId: pair.configuredDeviceId
+                })
+              : translate(currentLang, 'pair.currentConfigEmpty')}
+          </strong>
+        </div>
+      </div>
+
+      <div className="actions pair-config-actions">
+        <button
+          id="pairSaveConfigBtn"
+          className="btn-primary"
+          type="button"
+          disabled={pair.configSaving}
+          onClick={() => {
+            void actions.saveConfig();
+          }}
+        >
+          {pair.configSaving ? translate(currentLang, 'btn.saving') : translate(currentLang, 'btn.pairSaveConfig')}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function SummaryGrid() {
   const summary = useDesktopShellStore((state) => state.summary);
 
@@ -98,6 +169,8 @@ function CommunicationPanel() {
             刷新配置
           </button>
         </div>
+
+        <PairConfigPanel />
 
         <div className="pair-control-grid">
           <div className="actions pair-actions">

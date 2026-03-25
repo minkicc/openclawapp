@@ -140,9 +140,13 @@ function describeSession(trustState: string, safetyCode: string, presence?: Pair
     return '绑定已撤销';
   }
   if (presence?.status === 'online') {
-    return '宿主机在线，等待接入原生 peer 通道';
+    return '宿主机在线，正在准备 P2P 通道';
   }
   return '已配对，宿主机当前离线';
+}
+
+function isPeerNegotiating(state: string) {
+  return state === 'connecting' || state === 'channel-open' || state === 'verifying';
 }
 
 function normalizeSession(existing: SessionItem | null, next: SessionItem): SessionItem {
@@ -234,7 +238,15 @@ export async function loadStoredSessions() {
   }
   try {
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as SessionItem[]) : [];
+    return Array.isArray(parsed)
+      ? (parsed as SessionItem[]).map((item) => ({
+          ...item,
+          transportReady: false,
+          peerState: '',
+          peerDetail: '',
+          peerCapabilities: undefined,
+        }))
+      : [];
   } catch {
     return [];
   }
@@ -270,7 +282,13 @@ function buildSessionFromBinding(options: {
 }) {
   const { existing, baseUrl, serverToken, binding, safetyCode = '', mobilePublicKey = '', presence } = options;
   const trustState = String(binding.trustState || '').trim() || 'pending';
-  const preview = describeSession(trustState, safetyCode || String(existing?.safetyCode || ''), presence);
+  const peerState = String(existing?.peerState || '').trim();
+  const transportReady = Boolean(existing?.transportReady) || peerState === 'connected';
+  const preview = transportReady
+    ? 'P2P 通道已建立，可以开始聊天。'
+    : isPeerNegotiating(peerState)
+      ? '正在建立 P2P 通道...'
+      : describeSession(trustState, safetyCode || String(existing?.safetyCode || ''), presence);
   return normalizeSession(existing, {
     id: existing?.id || randomId('sess'),
     name:
@@ -295,7 +313,7 @@ function buildSessionFromBinding(options: {
     safetyCode: safetyCode || existing?.safetyCode || '',
     mobilePublicKey: mobilePublicKey || existing?.mobilePublicKey || '',
     devicePublicKey: binding.devicePublicKey || existing?.devicePublicKey || '',
-    transportReady: false,
+    transportReady,
     lastSeenAt: Number(presence?.lastSeenAt || existing?.lastSeenAt || 0),
   });
 }

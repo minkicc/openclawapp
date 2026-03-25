@@ -186,7 +186,33 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
           ? 'P2P 通道已建立，可以开始聊天。'
           : isPeerNegotiating(state)
             ? '正在建立 P2P 通道...'
-            : undefined,
+            : state === 'failed'
+              ? detail
+                ? `P2P 通道建立失败：${detail}`
+                : 'P2P 通道建立失败'
+              : state === 'disconnected'
+                ? detail
+                  ? `P2P 通道已断开：${detail}`
+                  : 'P2P 通道已断开，等待重连'
+                : undefined,
+    });
+  }
+
+  function markPeerFailure(session: SessionItem, error: unknown, fallback = 'P2P 通道建立失败') {
+    const detail =
+      error instanceof Error
+        ? error.message
+        : String(error || '').trim() || fallback;
+    const bindingId = String(session.bindingId || '').trim();
+    if (bindingId) {
+      updatePeerState(bindingId, 'failed', detail);
+      return;
+    }
+    patchSessionById(session.id, {
+      peerState: 'failed',
+      peerDetail: detail,
+      transportReady: false,
+      preview: `P2P 通道建立失败：${detail}`,
     });
   }
 
@@ -342,7 +368,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
 
   async function ensureSessionPeerConnected(session: SessionItem, timeoutMs = 8000) {
     const latest = getSessionByIdSnapshot(session.id) || session;
-    if (latest.trustState !== 'active' || latest.status !== 'connected') {
+    if (latest.trustState !== 'active') {
       return false;
     }
 
@@ -368,14 +394,14 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       if (targetBaseUrl && session.serverBaseUrl !== targetBaseUrl) {
         return false;
       }
-      return session.trustState === 'active' && session.status === 'connected';
+      return session.trustState === 'active';
     });
 
     for (const session of candidates) {
       try {
         await ensureSessionPeerConnected(session, 3000);
-      } catch {
-        // ignore per-session peer connection failures
+      } catch (error) {
+        markPeerFailure(session, error);
       }
     }
   }
@@ -453,8 +479,8 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
             candidate: (payload.candidate as RTCIceCandidateInit | null | undefined) || undefined,
           })
         )
-        .catch(() => {
-          // ignore peer signal errors here
+        .catch((error) => {
+          markPeerFailure(session, error, `处理 ${type} 失败`);
         });
     }
   }

@@ -1980,12 +1980,17 @@ name = "openclaw-desktop"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "cocoa",
+ "objc",
  "reqwest",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "url",
+ "webkit2gtk",
+ "webview2-com",
+ "windows 0.39.0",
 ]
 
 [[package]]

@@ -1,8 +1,5 @@
 Pod::Spec.new do |s|
   zxing_url = ENV['OPENCLAW_IOS_ZXING_URL']
-  if zxing_url.nil? || zxing_url.empty?
-    zxing_url = 'https://codeload.github.com/zxingify/zxingify-objc/tar.gz/refs/tags/3.6.8'
-  end
 
   s.name = 'ZXingObjC'
   s.version = '3.6.8'
@@ -13,7 +10,11 @@ Pod::Spec.new do |s|
     :type => 'Apache License 2.0',
     :file => 'COPYING'
   }
-  s.source = { :http => zxing_url }
+  if zxing_url.nil? || zxing_url.empty?
+    s.source = { :git => 'https://github.com/zxingify/zxingify-objc.git', :tag => s.version.to_s }
+  else
+    s.source = { :http => zxing_url, :type => 'tar.gz' }
+  end
   s.requires_arc = true
   s.xcconfig = {
     'OTHER_LDFLAGS' => '-ObjC'

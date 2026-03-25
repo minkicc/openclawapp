@@ -113,6 +113,37 @@ npm run dist:linux:ci
 npm run dist:linux:appimage
 ```
 
+## macOS DMG appearance
+
+`npm run dist:mac` now produces a styled drag-to-install `DMG` window with:
+
+- a generated background image
+- fixed `OpenClaw` / `Applications` icon positions
+- a consistent Finder window size
+
+You can fine-tune the layout with environment variables before building:
+
+```bash
+DMG_WINDOW_WIDTH=760 \
+DMG_WINDOW_HEIGHT=500 \
+DMG_APP_ICON_X=210 \
+DMG_APPS_ICON_X=550 \
+npm run dist:mac
+```
+
+Supported overrides:
+
+- `DMG_PRODUCT_NAME`
+- `DMG_VOLUME_NAME`
+- `DMG_WINDOW_WIDTH`
+- `DMG_WINDOW_HEIGHT`
+- `DMG_ICON_SIZE`
+- `DMG_TEXT_SIZE`
+- `DMG_APP_ICON_X`
+- `DMG_APP_ICON_Y`
+- `DMG_APPS_ICON_X`
+- `DMG_APPS_ICON_Y`
+
 ## Configuration file locations
 
 - macOS: `~/Library/Application Support/dev.openclawapp.desktop/openclaw.config.json`

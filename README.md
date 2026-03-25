@@ -133,7 +133,7 @@ Notes:
 - `channelServerBaseUrl` must be a reachable `http/https` URL for both desktop and mobile devices.
 - `channelDeviceId` is the fixed identity of the desktop Agent host.
 - `channelIceServers` is optional and acts as the local fallback WebRTC ICE list when `/v2/ice-servers` is unavailable or when you are testing without TURN on the server.
-- These fields are intentionally not editable in the desktop channel UI.
+- These fields can now be edited from the desktop app's `Communication` panel, and `channelDeviceId` is auto-generated on first save if left blank.
 
 ## CI/CD
 

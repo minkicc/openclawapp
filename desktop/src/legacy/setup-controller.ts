@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { invoke as defaultInvoke } from '@tauri-apps/api/tauri';
 import { useDesktopShellStore } from '../store/useDesktopShellStore';
+import { ensurePairBackgroundWindow } from './pair-background-window';
 import { syncDoctorOutputState, syncSetupFormFromElements, syncSetupMessageState } from './setup-form-sync';
 
 export function createSetupController(deps) {
@@ -108,7 +109,7 @@ export function createSetupController(deps) {
     if (!isPairCenterAvailable()) {
       return;
     }
-    setPairMessage(hasPairConfig() ? '' : t('msg.pairMissingConfig'), hasPairConfig() ? '' : 'error');
+    setPairMessage(hasPairConfig() ? '' : t('msg.pairMissingConfig'), '');
     updatePairButtons();
   }
 
@@ -234,6 +235,11 @@ export function createSetupController(deps) {
   }
 
   async function openOpenClawWeb() {
+    try {
+      await ensurePairBackgroundWindow();
+    } catch {
+      // ignore background host boot failures here; main navigation can still proceed
+    }
     const result = await invoke('open_dashboard_window');
     if (!result.ok) {
       const detail = (result.detail || '').trim();

@@ -1,6 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use chrono::{DateTime, Utc};
+#[cfg(target_os = "macos")]
+use cocoa::{
+    base::{id, nil},
+    foundation::NSString,
+};
+#[cfg(target_os = "macos")]
+use objc::{class, msg_send, sel, sel_impl};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -11,8 +18,18 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager, WindowBuilder, WindowUrl};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Manager, Window, WindowEvent};
+#[cfg(any(
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
+use webkit2gtk::traits::WebViewExt;
+#[cfg(windows)]
+use windows::core::PCWSTR;
 
 const CONFIG_FILE_NAME: &str = "openclaw.config.json";
 const MANAGED_KERNEL_DIR_NAME: &str = "managed-kernel";
@@ -20,6 +37,8 @@ const BUNDLED_KERNEL_DIR_NAME: &str = "kernel";
 const OPENCLAW_RUNTIME_HOME_DIR_NAME: &str = "openclaw-home";
 const OPENCLAW_RUNTIME_WORKSPACE_DIR_NAME: &str = "openclaw-workspace";
 const GATEWAY_RUNTIME_FINGERPRINT_FILE_NAME: &str = "gateway-runtime-fingerprint.txt";
+const DASHBOARD_PREP_FINGERPRINT_FILE_NAME: &str = "dashboard-prep-fingerprint.txt";
+const DASHBOARD_PREP_VERSION: &str = "2026-03-25-pair-gateway-origin-v1";
 const APP_GATEWAY_PORT: u16 = 28789;
 const APP_GATEWAY_TOKEN: &str = "openclaw-desktop-local";
 const APP_GATEWAY_READY_TIMEOUT_SECS: u64 = 60;
@@ -246,6 +265,51 @@ fn normalize_custom_api_mode_for_base_url(base_url: Option<&str>, custom_api_mod
 
 fn normalized_base_url(value: &str) -> String {
     value.trim().trim_end_matches('/').to_string()
+}
+
+fn normalize_channel_server_base_url(raw: Option<&str>) -> Result<Option<String>, String> {
+    let Some(text) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+
+    let candidate = if text.contains("://") {
+        text.to_string()
+    } else {
+        format!("http://{}", text)
+    };
+
+    let mut parsed =
+        url::Url::parse(&candidate).map_err(|_| format!("通信服务地址格式无效：{}", text))?;
+    let scheme = parsed.scheme().to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return Err(format!("通信服务地址格式无效：{}", text));
+    }
+
+    parsed.set_fragment(None);
+    parsed.set_query(None);
+    let normalized_path = parsed.path().trim_end_matches('/').to_string();
+    if normalized_path.is_empty() {
+        parsed.set_path("/");
+    } else {
+        parsed.set_path(&normalized_path);
+    }
+
+    Ok(Some(parsed.to_string().trim_end_matches('/').to_string()))
+}
+
+fn generate_channel_device_id() -> String {
+    let stamp = Utc::now().format("%Y%m%d%H%M%S");
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    format!("pc_{}_{}{:08x}", env::consts::OS, stamp, nanos)
+}
+
+fn normalize_channel_device_id(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
 }
 
 fn model_endpoint_candidates(base_url: &str) -> Vec<String> {
@@ -938,13 +1002,14 @@ fn app_gateway_http_url() -> String {
     format!("http://127.0.0.1:{}", APP_GATEWAY_PORT)
 }
 
-fn app_gateway_ws_url() -> String {
-    format!("ws://127.0.0.1:{}", APP_GATEWAY_PORT)
-}
-
 fn gateway_runtime_fingerprint_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app_config_dir(app)?;
     Ok(dir.join(GATEWAY_RUNTIME_FINGERPRINT_FILE_NAME))
+}
+
+fn dashboard_prep_fingerprint_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app_config_dir(app)?;
+    Ok(dir.join(DASHBOARD_PREP_FINGERPRINT_FILE_NAME))
 }
 
 fn gateway_runtime_fingerprint(cfg: &StoredConfig) -> String {
@@ -972,6 +1037,25 @@ fn should_force_restart_gateway(app: &AppHandle, cfg: &StoredConfig) -> bool {
 fn persist_gateway_runtime_fingerprint(app: &AppHandle, cfg: &StoredConfig) {
     if let Ok(path) = gateway_runtime_fingerprint_path(app) {
         let _ = fs::write(path, gateway_runtime_fingerprint(cfg));
+    }
+}
+
+fn should_refresh_dashboard_prep(app: &AppHandle, cfg: &StoredConfig) -> bool {
+    let path = match dashboard_prep_fingerprint_path(app) {
+        Ok(v) => v,
+        Err(_) => return true,
+    };
+    let expected = format!("{}|{}", DASHBOARD_PREP_VERSION, gateway_runtime_fingerprint(cfg));
+    let current = fs::read_to_string(path).unwrap_or_default();
+    current.trim() != expected.trim()
+}
+
+fn persist_dashboard_prep_fingerprint(app: &AppHandle, cfg: &StoredConfig) {
+    if let Ok(path) = dashboard_prep_fingerprint_path(app) {
+        let _ = fs::write(
+            path,
+            format!("{}|{}", DASHBOARD_PREP_VERSION, gateway_runtime_fingerprint(cfg)),
+        );
     }
 }
 
@@ -1129,6 +1213,53 @@ fn ensure_json_object_mut(
     value.as_object_mut().expect("value must be object")
 }
 
+fn desktop_shell_allowed_origins() -> Vec<&'static str> {
+    vec![
+        "tauri://localhost",
+        "http://tauri.localhost",
+        "https://tauri.localhost",
+        "http://localhost:1420",
+        "http://127.0.0.1:1420",
+    ]
+}
+
+fn sync_gateway_control_ui_allowed_origins(root: &mut serde_json::Value) {
+    let root_obj = ensure_json_object_mut(root);
+    let gateway_value = root_obj
+        .entry("gateway".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    let gateway_obj = ensure_json_object_mut(gateway_value);
+    let control_ui_value = gateway_obj
+        .entry("controlUi".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    let control_ui_obj = ensure_json_object_mut(control_ui_value);
+
+    let mut origins = BTreeSet::new();
+    if let Some(existing) = control_ui_obj.get("allowedOrigins").and_then(|value| value.as_array()) {
+        for value in existing {
+            if let Some(origin) = value.as_str() {
+                let normalized = origin.trim();
+                if !normalized.is_empty() {
+                    origins.insert(normalized.to_string());
+                }
+            }
+        }
+    }
+    for origin in desktop_shell_allowed_origins() {
+        origins.insert(origin.to_string());
+    }
+
+    control_ui_obj.insert(
+        "allowedOrigins".to_string(),
+        serde_json::Value::Array(
+            origins
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect(),
+        ),
+    );
+}
+
 fn upsert_custom_model(
     provider: &mut serde_json::Map<String, serde_json::Value>,
     model: &str,
@@ -1255,6 +1386,29 @@ fn maybe_migrate_legacy_custom_api_mode(cfg: &mut StoredConfig) -> bool {
     true
 }
 
+fn maybe_backfill_channel_device_id(cfg: &mut StoredConfig) -> bool {
+    let has_server_url = cfg
+        .channel_server_base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some();
+    let missing_device_id = cfg
+        .channel_device_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none();
+
+    if !has_server_url || !missing_device_id {
+        return false;
+    }
+
+    cfg.channel_device_id = Some(generate_channel_device_id());
+    cfg.updated_at = Utc::now().to_rfc3339();
+    true
+}
+
 fn sync_custom_api_mode_from_runtime_if_newer(
     app: &AppHandle,
     cfg: &mut StoredConfig,
@@ -1272,6 +1426,10 @@ fn read_config_with_runtime_custom_api_mode_sync(app: &AppHandle) -> Result<Opti
     };
 
     if maybe_migrate_legacy_custom_api_mode(&mut cfg) {
+        write_config(app, &cfg)?;
+    }
+
+    if maybe_backfill_channel_device_id(&mut cfg) {
         write_config(app, &cfg)?;
     }
 
@@ -1444,16 +1602,18 @@ fn apply_openclaw_mobile_channel_overrides(
     app: &AppHandle,
     cfg: &StoredConfig,
     resolved: &ResolvedOpenClawCommand,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let config_file = resolve_openclaw_config_file(app, cfg, resolved)?;
     if !config_file.exists() {
-        return Ok(());
+        return Ok(false);
     }
 
     let raw = fs::read_to_string(&config_file)
         .map_err(|e| format!("读取 OpenClaw 配置失败 ({}): {}", config_file.display(), e))?;
     let mut root: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| format!("解析 OpenClaw 配置失败: {}", e))?;
+    let original_root = root.clone();
+    sync_gateway_control_ui_allowed_origins(&mut root);
 
     let base_url = cfg
         .channel_server_base_url
@@ -1558,11 +1718,14 @@ fn apply_openclaw_mobile_channel_overrides(
         }
     }
 
-    let data =
-        serde_json::to_string_pretty(&root).map_err(|e| format!("序列化 OpenClaw 配置失败: {}", e))?;
-    fs::write(&config_file, data)
-        .map_err(|e| format!("写入 OpenClaw 配置失败 ({}): {}", config_file.display(), e))?;
-    Ok(())
+    let changed = root != original_root;
+    if changed {
+        let data = serde_json::to_string_pretty(&root)
+            .map_err(|e| format!("序列化 OpenClaw 配置失败: {}", e))?;
+        fs::write(&config_file, data)
+            .map_err(|e| format!("写入 OpenClaw 配置失败 ({}): {}", config_file.display(), e))?;
+    }
+    Ok(changed)
 }
 
 fn normalize_model_ref(provider: &str, model: &str) -> String {
@@ -1722,27 +1885,6 @@ fn is_dashboard_url_reachable(url: &str) -> bool {
     false
 }
 
-fn is_gateway_healthy(
-    app: &AppHandle,
-    cfg: &StoredConfig,
-    resolved: &ResolvedOpenClawCommand,
-) -> bool {
-    let ws_url = app_gateway_ws_url();
-    let mut cmd = build_openclaw_command(resolved);
-    cmd.arg("gateway")
-        .arg("health")
-        .arg("--url")
-        .arg(&ws_url)
-        .arg("--token")
-        .arg(APP_GATEWAY_TOKEN);
-    apply_openclaw_runtime_env(&mut cmd, cfg, app);
-
-    match cmd.output() {
-        Ok(output) => output.status.success(),
-        Err(_) => false,
-    }
-}
-
 fn start_gateway_background(
     app: &AppHandle,
     cfg: &StoredConfig,
@@ -1775,10 +1917,7 @@ fn ensure_gateway_running(
     force_restart: bool,
 ) -> Result<bool, String> {
     let dashboard_url = app_gateway_http_url();
-    if !force_restart
-        && is_gateway_healthy(app, cfg, resolved)
-        && is_dashboard_url_reachable(&dashboard_url)
-    {
+    if !force_restart && is_dashboard_url_reachable(&dashboard_url) {
         return Ok(false);
     }
 
@@ -1786,10 +1925,10 @@ fn ensure_gateway_running(
 
     let deadline = Instant::now() + Duration::from_secs(APP_GATEWAY_READY_TIMEOUT_SECS);
     while Instant::now() < deadline {
-        if is_gateway_healthy(app, cfg, resolved) && is_dashboard_url_reachable(&dashboard_url) {
+        if is_dashboard_url_reachable(&dashboard_url) {
             return Ok(true);
         }
-        thread::sleep(Duration::from_millis(300));
+        thread::sleep(Duration::from_millis(200));
     }
 
     Err(format!(
@@ -2123,34 +2262,43 @@ fn get_dashboard_url(app: AppHandle) -> Result<ActionResponse, String> {
     }
 
     let resolved = resolve_openclaw_command(&cfg, &app);
-    if let Err(e) = sync_custom_provider_if_needed(&app, &cfg, &resolved) {
-        return Ok(ActionResponse {
-            ok: false,
-            message: "同步 OpenClaw Custom Provider 配置失败。".to_string(),
-            detail: Some(e),
-            copied_from: None,
-            copied_to: None,
-        });
+    let mut dashboard_prep_changed = false;
+    if should_refresh_dashboard_prep(&app, &cfg) {
+        if let Err(e) = sync_custom_provider_if_needed(&app, &cfg, &resolved) {
+            return Ok(ActionResponse {
+                ok: false,
+                message: "同步 OpenClaw Custom Provider 配置失败。".to_string(),
+                detail: Some(e),
+                copied_from: None,
+                copied_to: None,
+            });
+        }
+        if let Err(e) = apply_runtime_default_model_overrides(&app, &cfg, &resolved) {
+            return Ok(ActionResponse {
+                ok: false,
+                message: "同步 OpenClaw 默认模型配置失败。".to_string(),
+                detail: Some(e),
+                copied_from: None,
+                copied_to: None,
+            });
+        }
+        match apply_openclaw_mobile_channel_overrides(&app, &cfg, &resolved) {
+            Ok(changed) => {
+                dashboard_prep_changed = changed;
+            }
+            Err(e) => {
+                return Ok(ActionResponse {
+                    ok: false,
+                    message: "同步通信渠道配置失败。".to_string(),
+                    detail: Some(e),
+                    copied_from: None,
+                    copied_to: None,
+                });
+            }
+        }
+        persist_dashboard_prep_fingerprint(&app, &cfg);
     }
-    if let Err(e) = apply_runtime_default_model_overrides(&app, &cfg, &resolved) {
-        return Ok(ActionResponse {
-            ok: false,
-            message: "同步 OpenClaw 默认模型配置失败。".to_string(),
-            detail: Some(e),
-            copied_from: None,
-            copied_to: None,
-        });
-    }
-    if let Err(e) = apply_openclaw_mobile_channel_overrides(&app, &cfg, &resolved) {
-        return Ok(ActionResponse {
-            ok: false,
-            message: "同步通信渠道配置失败。".to_string(),
-            detail: Some(e),
-            copied_from: None,
-            copied_to: None,
-        });
-    }
-    let force_restart = should_force_restart_gateway(&app, &cfg);
+    let force_restart = dashboard_prep_changed || should_force_restart_gateway(&app, &cfg);
     let started = match ensure_gateway_running(&app, &cfg, &resolved, force_restart) {
         Ok(v) => v,
         Err(e) => {
@@ -2203,48 +2351,152 @@ fn open_dashboard_window(app: AppHandle) -> Result<ActionResponse, String> {
     }
 
     let url = response.detail.clone().unwrap_or_default();
-    let parsed = match url::Url::parse(&url) {
-        Ok(v) => v,
-        Err(e) => {
+    if let Err(e) = url::Url::parse(&url) {
+        return Ok(ActionResponse {
+            ok: false,
+            message: "Dashboard 地址格式无效。".to_string(),
+            detail: Some(e.to_string()),
+            copied_from: None,
+            copied_to: None,
+        });
+    }
+
+    if let Some(dashboard_window) = app.get_window("dashboard") {
+        let _ = dashboard_window.close();
+    }
+
+    let Some(main_window) = app.get_window("main") else {
+        return Ok(ActionResponse {
+            ok: false,
+            message: "主窗口不存在，无法打开 Dashboard。".to_string(),
+            detail: None,
+            copied_from: None,
+            copied_to: None,
+        });
+    };
+
+    navigate_window_to_url(&main_window, &url)?;
+    let _ = main_window.show();
+    let _ = main_window.unminimize();
+    let _ = main_window.set_focus();
+
+    Ok(ActionResponse {
+        ok: true,
+        message: "Dashboard 已在当前窗口打开。".to_string(),
+        detail: Some(url),
+        copied_from: None,
+        copied_to: None,
+    })
+}
+
+#[tauri::command]
+fn open_dashboard_session(session_key: String, app: AppHandle) -> Result<ActionResponse, String> {
+    let normalized_session_key = session_key.trim().to_string();
+    if normalized_session_key.is_empty() {
+        return Ok(ActionResponse {
+            ok: false,
+            message: "会话键不能为空。".to_string(),
+            detail: None,
+            copied_from: None,
+            copied_to: None,
+        });
+    }
+
+    let response = get_dashboard_url(app.clone())?;
+    if !response.ok {
+        return Ok(response);
+    }
+
+    let raw_url = response.detail.clone().unwrap_or_default();
+    let mut url = match url::Url::parse(&raw_url) {
+        Ok(parsed) => parsed,
+        Err(error) => {
             return Ok(ActionResponse {
                 ok: false,
                 message: "Dashboard 地址格式无效。".to_string(),
-                detail: Some(e.to_string()),
+                detail: Some(error.to_string()),
                 copied_from: None,
                 copied_to: None,
             });
         }
     };
 
-    if let Some(existing) = app.get_window("dashboard") {
-        let _ = existing.eval(&format!("window.location.replace({:?});", url));
-        let _ = existing.show();
-        let _ = existing.set_focus();
+    url.set_path("/chat");
+    {
+        let mut query = url.query_pairs_mut();
+        query.clear();
+        query.append_pair("session", &normalized_session_key);
+    }
+
+    if let Some(dashboard_window) = app.get_window("dashboard") {
+        let _ = dashboard_window.close();
+    }
+
+    let Some(main_window) = app.get_window("main") else {
         return Ok(ActionResponse {
-            ok: true,
-            message: "Dashboard 已在桌面端内部打开。".to_string(),
-            detail: Some(url),
+            ok: false,
+            message: "主窗口不存在，无法打开 Dashboard 会话。".to_string(),
+            detail: None,
             copied_from: None,
             copied_to: None,
         });
-    }
+    };
 
-    WindowBuilder::new(&app, "dashboard", WindowUrl::External(parsed))
-        .title("OpenClaw Dashboard")
-        .inner_size(1280.0, 860.0)
-        .min_inner_size(980.0, 720.0)
-        .resizable(true)
-        .visible(true)
-        .build()
-        .map_err(|e| e.to_string())?;
+    navigate_window_to_url(&main_window, url.as_str())?;
+    let _ = main_window.show();
+    let _ = main_window.unminimize();
+    let _ = main_window.set_focus();
 
     Ok(ActionResponse {
         ok: true,
-        message: "Dashboard 已在桌面端内部打开。".to_string(),
-        detail: Some(url),
+        message: "Dashboard 会话已在当前窗口打开。".to_string(),
+        detail: Some(url.to_string()),
         copied_from: None,
         copied_to: None,
     })
+}
+
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
+fn navigate_window_to_url(window: &Window<tauri::Wry>, url: &str) -> Result<(), String> {
+    let target_url = url.to_string();
+    window
+        .with_webview(move |webview| unsafe {
+            let ns_url_string = NSString::alloc(nil).init_str(&target_url);
+            let ns_url: id = msg_send![class!(NSURL), URLWithString: ns_url_string];
+            let request: id = msg_send![class!(NSMutableURLRequest), requestWithURL: ns_url];
+            let _: () = msg_send![webview.inner(), loadRequest: request];
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
+fn navigate_window_to_url(window: &Window<tauri::Wry>, url: &str) -> Result<(), String> {
+    let target_url = url.to_string();
+    window
+        .with_webview(move |webview| {
+            webview.inner().load_uri(&target_url);
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn navigate_window_to_url(window: &Window<tauri::Wry>, url: &str) -> Result<(), String> {
+    let target_url = url.to_string();
+    window
+        .with_webview(move |webview| unsafe {
+            let wide: Vec<u16> = target_url.encode_utf16().chain(std::iter::once(0)).collect();
+            if let Ok(core) = webview.controller().CoreWebView2() {
+                let _ = core.Navigate(PCWSTR::from_raw(wide.as_ptr()));
+            }
+        })
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2346,18 +2598,26 @@ fn save_config(payload: SavePayload, app: AppHandle) -> Result<ActionResponse, S
         });
     }
 
-    let channel_server_base_url = payload
-        .channel_server_base_url
-        .as_ref()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .or_else(|| existing.as_ref().and_then(|cfg| cfg.channel_server_base_url.clone()));
-    let channel_device_id = payload
-        .channel_device_id
-        .as_ref()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .or_else(|| existing.as_ref().and_then(|cfg| cfg.channel_device_id.clone()));
+    let channel_server_base_url = match normalize_channel_server_base_url(
+        payload.channel_server_base_url.as_deref(),
+    ) {
+        Ok(Some(value)) => Some(value),
+        Ok(None) => existing
+            .as_ref()
+            .and_then(|cfg| normalize_channel_server_base_url(cfg.channel_server_base_url.as_deref()).ok().flatten()),
+        Err(message) => {
+            return Ok(ActionResponse {
+                ok: false,
+                message,
+                detail: None,
+                copied_from: None,
+                copied_to: None,
+            })
+        }
+    };
+    let channel_device_id = normalize_channel_device_id(payload.channel_device_id.as_deref())
+        .or_else(|| existing.as_ref().and_then(|cfg| normalize_channel_device_id(cfg.channel_device_id.as_deref())))
+        .or_else(|| channel_server_base_url.as_ref().map(|_| generate_channel_device_id()));
 
     let cfg = StoredConfig {
         provider,
@@ -3328,6 +3588,19 @@ fn main() {
             }
             Ok(())
         })
+        .on_window_event(|event| {
+            if event.window().label() != "main" {
+                return;
+            }
+            match event.event() {
+                WindowEvent::Destroyed | WindowEvent::CloseRequested { .. } => {
+                    if let Some(background_window) = event.window().app_handle().get_window("pair-background") {
+                        let _ = background_window.close();
+                    }
+                }
+                _ => {}
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_state,
             read_raw_config,
@@ -3337,6 +3610,7 @@ fn main() {
             install_or_update_kernel,
             get_dashboard_url,
             open_dashboard_window,
+            open_dashboard_session,
             save_config,
             fetch_models,
             install_default_skills,

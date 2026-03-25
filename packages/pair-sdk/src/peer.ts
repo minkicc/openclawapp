@@ -123,9 +123,51 @@ function isAppEnvelope(value: PairV2PeerEnvelope): value is PairV2PeerAppEnvelop
   return isAppMessageType(value.type);
 }
 
-function normalizeDescription(value: RTCSessionDescriptionInit | undefined, fallbackType: 'offer' | 'answer') {
-  const type = String(value?.type || fallbackType).trim() as 'offer' | 'answer';
-  const sdp = String(value?.sdp || '').trim();
+function normalizeSdpText(raw: unknown) {
+  let text = String(raw ?? '');
+  if (!text.trim()) {
+    return '';
+  }
+
+  if (!/[\r\n]/.test(text) && /\\r\\n|\\n|\\r/.test(text)) {
+    text = text
+      .replaceAll('\\r\\n', '\r\n')
+      .replaceAll('\\n', '\n')
+      .replaceAll('\\r', '\r');
+  }
+
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  const normalized = trimmed.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '\r\n');
+  return normalized.endsWith('\r\n') ? normalized : `${normalized}\r\n`;
+}
+
+function normalizeDescription(value: RTCSessionDescriptionInit | string | undefined, fallbackType: 'offer' | 'answer') {
+  let candidate = value;
+  if (typeof candidate === 'string') {
+    const trimmed = candidate.trim();
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+      try {
+        candidate = JSON.parse(trimmed) as RTCSessionDescriptionInit;
+      } catch {
+        candidate = {
+          type: fallbackType,
+          sdp: trimmed,
+        } satisfies RTCSessionDescriptionInit;
+      }
+    } else {
+      candidate = {
+        type: fallbackType,
+        sdp: trimmed,
+      } satisfies RTCSessionDescriptionInit;
+    }
+  }
+
+  const type = String(candidate?.type || fallbackType).trim() as 'offer' | 'answer';
+  const sdp = normalizeSdpText(candidate?.sdp);
   if (!sdp) {
     throw new Error(`missing ${fallbackType} sdp`);
   }

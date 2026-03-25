@@ -104,6 +104,29 @@ npm run dist:linux:appimage
 - Linux：`~/.config/dev.openclawapp.desktop/openclaw.config.json`
 - Windows：`%APPDATA%/dev.openclawapp.desktop/openclaw.config.json`
 
+### 通信配置（桌面端 Agent 宿主机）
+
+桌面端的“通信”模块会从 `openclaw.config.json` 读取以下字段：
+
+```json
+{
+  "channelServerBaseUrl": "http://192.168.1.20:38089",
+  "channelDeviceId": "pc_agent_001",
+  "channelIceServers": [
+    {
+      "urls": ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"]
+    }
+  ]
+}
+```
+
+说明：
+
+- `channelServerBaseUrl` 必须是桌面端与移动端都能访问到的 `http/https` 地址。
+- `channelDeviceId` 是桌面端宿主机的固定身份标识；如果在桌面应用里留空，首次保存时会自动生成。
+- `channelIceServers` 为可选项，在服务端 `/v2/ice-servers` 不可用或未配置 TURN 时，可作为本地 WebRTC ICE 回退列表。
+- 这些字段现在可以直接在桌面应用的“通信”面板里编辑，无需手动改 JSON。
+
 ## CI/CD
 
 GitHub Actions 会在 Push / PR 自动构建安装包。  

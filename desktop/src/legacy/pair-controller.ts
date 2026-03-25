@@ -24,6 +24,14 @@ import {
   openClawPairChatMessageType,
   supportsOpenClawPairChat
 } from '@openclaw/message-sdk';
+import { createOpenClawGatewayClient } from './openclaw-gateway-client';
+import { ensurePairBackgroundWindow } from './pair-background-window';
+import {
+  buildOpenClawMobileSessionKey,
+  extractOpenClawMessageText,
+  normalizeOpenClawSessionKey,
+  resolveOpenClawGatewayConnection
+} from './openclaw-session';
 import { useDesktopShellStore } from '../store/useDesktopShellStore';
 
 export function createPairController(deps) {
@@ -71,8 +79,10 @@ export function createPairController(deps) {
   let pairChannelOpen = false;
   let pairConfiguredServerUrl = '';
   let pairConfiguredDeviceId = '';
+  let openClawGatewayClient = null;
   const pairPeers = new Map();
   const pairIceCache = new Map();
+  const openClawPendingRuns = new Map();
   const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1']);
 
   function isPairCenterAvailable() {
@@ -94,6 +104,16 @@ export function createPairController(deps) {
 
   function hasPairConfig() {
     return Boolean(pairConfiguredServerUrl && pairConfiguredDeviceId);
+  }
+
+  function syncPairConfigDraftState({ preserveDraft = false } = {}) {
+    const currentPairState = useDesktopShellStore.getState().pair;
+    useDesktopShellStore.getState().setPairState({
+      configuredServerUrl: pairConfiguredServerUrl,
+      configuredDeviceId: pairConfiguredDeviceId,
+      draftServerUrl: preserveDraft ? currentPairState.draftServerUrl : pairConfiguredServerUrl,
+      draftDeviceId: preserveDraft ? currentPairState.draftDeviceId : pairConfiguredDeviceId
+    });
   }
 
   function setPairMessage(message, type = '') {
@@ -398,10 +418,205 @@ export function createPairController(deps) {
     };
   }
 
+  function createOpenClawRunId() {
+    return (
+      globalThis.crypto?.randomUUID?.() ||
+      `pairrun_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`
+    );
+  }
+
+  async function resolveOpenClawGatewayInfo() {
+    const result = await invoke('get_dashboard_url');
+    if (!result?.ok) {
+      throw new Error(String(result?.message || 'OpenClaw gateway is unavailable'));
+    }
+    const detail = String(result?.detail || '').trim();
+    if (!detail) {
+      throw new Error('OpenClaw gateway url is empty');
+    }
+    return resolveOpenClawGatewayConnection(detail);
+  }
+
+  function getOpenClawGatewayClient() {
+    if (openClawGatewayClient) {
+      return openClawGatewayClient;
+    }
+    openClawGatewayClient = createOpenClawGatewayClient({
+      resolveConnection: resolveOpenClawGatewayInfo,
+      onEvent: (event) => {
+        void handleOpenClawGatewayEvent(event);
+      },
+      onLog: (line) => {
+        appendPairEvent(line);
+      },
+      onStateChange: (state, detail) => {
+        if (state === 'connected') {
+          appendPairEvent('openclaw gateway connected');
+          return;
+        }
+        if (state === 'connecting') {
+          appendPairEvent('openclaw gateway connecting');
+          return;
+        }
+        if (detail) {
+          appendPairEvent(`openclaw gateway idle: ${detail}`);
+        }
+      }
+    });
+    return openClawGatewayClient;
+  }
+
+  async function ensureOpenClawGatewayReady() {
+    const client = getOpenClawGatewayClient();
+    await client.ensureConnected();
+    return client;
+  }
+
+  function channelOpenClawSessionKey(channel) {
+    return buildOpenClawMobileSessionKey(channel?.mobileId || '');
+  }
+
+  async function forwardPairMessageToOpenClaw(channel, text) {
+    const normalizedText = String(text || '').trim();
+    const sessionKey = channelOpenClawSessionKey(channel);
+    if (!normalizedText || !sessionKey) {
+      return;
+    }
+
+    const client = await ensureOpenClawGatewayReady();
+    const runId = createOpenClawRunId();
+    openClawPendingRuns.set(runId, {
+      runId,
+      channelId: channel.channelId,
+      mobileId: channel.mobileId,
+      sessionKey,
+      createdAt: Date.now()
+    });
+
+    try {
+      await client.request('chat.send', {
+        sessionKey,
+        message: normalizedText,
+        deliver: false,
+        idempotencyKey: runId
+      });
+      channel.openClawSessionKey = sessionKey;
+      appendPairEvent(`openclaw chat.send -> mobile=${channel.mobileId} session=${sessionKey}`);
+    } catch (error) {
+      openClawPendingRuns.delete(runId);
+      throw error;
+    }
+  }
+
+  async function mirrorOpenClawReplyToMobile(pending, text) {
+    const normalizedText = String(text || '').trim();
+    if (!normalizedText) {
+      openClawPendingRuns.delete(pending.runId);
+      return;
+    }
+
+    const channel =
+      findPairChannelById(pending.channelId) ||
+      findPairChannelByMobileId(pending.mobileId) ||
+      null;
+    if (!channel) {
+      openClawPendingRuns.delete(pending.runId);
+      appendPairEvent(`openclaw reply skipped without channel: mobile=${pending.mobileId || '-'}`);
+      return;
+    }
+
+    try {
+      if (!channelSupportsOpenClawChat(channel)) {
+        throw new Error(t('msg.pairPeerChatUnsupported'));
+      }
+      const peer = await ensurePairPeer(channel);
+      await peer.sendAppMessage(openClawPairChatMessageType, buildOpenClawPairChatPayload(normalizedText));
+      appendPairChannelMessage(channel.channelId, {
+        from: 'agent',
+        text: normalizedText,
+        ts: Date.now()
+      });
+      appendPairEvent(`openclaw reply sent -> mobile=${channel.mobileId || channel.channelId}`);
+      renderPairChannelCards();
+    } catch (error) {
+      appendPairEvent(`openclaw reply mirror failed: ${error?.message || String(error)}`);
+      setPairMessage(t('msg.pairBridgeReplyFailed', { message: error?.message || String(error) }), 'error');
+    } finally {
+      openClawPendingRuns.delete(pending.runId);
+    }
+  }
+
+  async function handleOpenClawGatewayEvent(event) {
+    if (String(event?.event || '').trim() !== 'chat') {
+      return;
+    }
+
+    const payload = event?.payload && typeof event.payload === 'object' ? event.payload : {};
+    const runId = String(payload?.runId || '').trim();
+    if (!runId) {
+      return;
+    }
+
+    const pending = openClawPendingRuns.get(runId);
+    if (!pending) {
+      return;
+    }
+
+    const payloadSessionKey = normalizeOpenClawSessionKey(payload?.sessionKey || '');
+    if (payloadSessionKey && payloadSessionKey !== normalizeOpenClawSessionKey(pending.sessionKey)) {
+      return;
+    }
+
+    const state = String(payload?.state || '').trim();
+    if (state === 'error') {
+      const errorMessage = String(payload?.errorMessage || 'chat error').trim();
+      openClawPendingRuns.delete(runId);
+      setPairMessage(t('msg.pairBridgeSendFailed', { message: errorMessage }), 'error');
+      appendPairEvent(`openclaw chat error: run=${runId} ${errorMessage}`);
+      return;
+    }
+
+    if (state !== 'final') {
+      return;
+    }
+
+    const replyText = extractOpenClawMessageText(payload?.message);
+    await mirrorOpenClawReplyToMobile(pending, replyText);
+  }
+
+  async function openPairChannelSession(channelId) {
+    const channel = findPairChannelById(channelId);
+    if (!channel || !channel.mobileId) {
+      setPairMessage(t('msg.pairNeedMobileId'), 'error');
+      return;
+    }
+
+    const sessionKey = channelOpenClawSessionKey(channel);
+    if (!sessionKey) {
+      setPairMessage(t('msg.pairNeedMobileId'), 'error');
+      return;
+    }
+
+    try {
+      await ensurePairBackgroundWindow();
+      setPairMessage(t('msg.pairOpeningSession'));
+      const result = await invoke('open_dashboard_session', { sessionKey });
+      if (!result?.ok) {
+        throw new Error(String(result?.message || 'open dashboard session failed'));
+      }
+      channel.openClawSessionKey = sessionKey;
+      setPairMessage(t('msg.pairSessionOpened'), 'success');
+      appendPairEvent(`openclaw session opened: mobile=${channel.mobileId} session=${sessionKey}`);
+    } catch (error) {
+      setPairMessage(t('msg.pairOpenSessionFailed', { message: error?.message || String(error) }), 'error');
+      appendPairEvent(`openclaw session open failed: ${error?.message || String(error)}`);
+    }
+  }
+
   function createPairAppRegistry(channel, trustedPeerId) {
     return createPairV2AppRegistry([
       createOpenClawPairChatModule({
-        onChatMessage: (chat) => {
+        onChatMessage: async (chat) => {
           appendPairChannelMessage(channel.channelId, {
             from: 'mobile',
             text: chat.text,
@@ -409,6 +624,12 @@ export function createPairController(deps) {
           });
           appendPairEvent(`peer chat from ${trustedPeerId}: ${chat.text}`);
           renderPairChannelCards();
+          try {
+            await forwardPairMessageToOpenClaw(channel, chat.text);
+          } catch (error) {
+            setPairMessage(t('msg.pairBridgeSendFailed', { message: error?.message || String(error) }), 'error');
+            appendPairEvent(`openclaw chat.send failed: ${error?.message || String(error)}`);
+          }
         }
       })
     ]);
@@ -634,14 +855,16 @@ export function createPairController(deps) {
     }
     const connected = isPairChannelOpen();
     const connecting = isPairChannelConnecting();
+    const configSaving = Boolean(useDesktopShellStore.getState().pair.configSaving);
     const activeChatChannel = findPairChannelById(getActiveChatChannelId());
     const storeDraft = useDesktopShellStore.getState().pair.chatDraft;
     const hasDraft = String(storeDraft || pairChatDraftInput?.value || '').trim().length > 0;
     const createUnavailable = !hasPairConfig() || !pairChannelOpen || connecting;
+    const toggleDisabled = connecting || configSaving || (!hasPairConfig() && !pairChannelOpen);
     useDesktopShellStore.getState().setPairState({
       channelOpen: pairChannelOpen,
-      channelToggleDisabled: connecting,
-      createChannelDisabled: connecting,
+      channelToggleDisabled: toggleDisabled,
+      createChannelDisabled: createUnavailable || configSaving,
       createChannelAriaDisabled: createUnavailable,
       chatSendDisabled:
         !hasPairConfig() ||
@@ -659,9 +882,9 @@ export function createPairController(deps) {
     pairChannelToggleBtn.classList.toggle('is-off', !pairChannelOpen);
     pairChannelToggleBtn.setAttribute('aria-pressed', pairChannelOpen ? 'true' : 'false');
     pairChannelToggleBtn.textContent = pairChannelOpen ? t('pair.toggle.on') : t('pair.toggle.off');
-    pairChannelToggleBtn.disabled = connecting;
+    pairChannelToggleBtn.disabled = toggleDisabled;
 
-    pairCreateChannelBtn.disabled = connecting;
+    pairCreateChannelBtn.disabled = createUnavailable || configSaving;
     pairCreateChannelBtn.classList.toggle('is-disabled', createUnavailable);
     pairCreateChannelBtn.setAttribute('aria-disabled', createUnavailable ? 'true' : 'false');
 
@@ -1213,6 +1436,7 @@ export function createPairController(deps) {
     closeAllPairPeers('desktop channel closed');
     cleanupPairWebSocket();
     clearPairAuthState();
+    openClawGatewayClient?.close('pair channel closed');
     renderPairWsStatus('disconnected');
     setPairMessage(t('msg.pairDisconnected'));
     appendPairEvent('ws disconnected by user');
@@ -1300,6 +1524,74 @@ export function createPairController(deps) {
     const deviceId = String(rawConfig?.channelDeviceId || rawConfig?.pairDeviceId || '').trim();
     pairConfiguredServerUrl = baseUrl;
     pairConfiguredDeviceId = deviceId;
+    syncPairConfigDraftState();
+    if (pairConfiguredServerUrl && pairConfiguredDeviceId && !pairChannelOpen) {
+      pairChannelOpen = true;
+      appendPairEvent('auto opening pair channel after config sync');
+      updatePairButtons();
+      void connectPairChannel();
+    }
+  }
+
+  async function savePairConfig() {
+    const pairState = useDesktopShellStore.getState().pair;
+    const nextBaseUrl = normalizePairBaseUrl(pairState.draftServerUrl || '');
+    const nextDeviceId = String(pairState.draftDeviceId || '').trim();
+
+    if (!nextBaseUrl) {
+      setPairMessage(t('msg.pairNeedServerUrl'), 'error');
+      return false;
+    }
+
+    useDesktopShellStore.getState().setPairState({
+      configSaving: true,
+      draftServerUrl: nextBaseUrl
+    });
+    updatePairButtons();
+
+    try {
+      const latest = rawConfig || (await invoke('read_raw_config'));
+      if (!latest) {
+        setPairMessage(t('msg.saveFailed'), 'error');
+        return false;
+      }
+
+      const payload = {
+        provider: latest.provider || 'openai',
+        model: latest.model || '',
+        baseUrl: latest.baseUrl || '',
+        apiKey: latest.apiKey || '',
+        customApiMode: latest.customApiMode || '',
+        customHeadersJson: latest.customHeaders ? JSON.stringify(latest.customHeaders) : '',
+        openclawCommand: latest.openclawCommand || 'openclaw',
+        skillsDirs: latest.skillsDirs || [],
+        channelServerBaseUrl: nextBaseUrl,
+        channelDeviceId: nextDeviceId
+      };
+
+      const result = await invoke('save_config', { payload });
+      if (!result?.ok) {
+        setPairMessage(result?.message || t('msg.saveFailed'), 'error');
+        return false;
+      }
+
+      rawConfig = (await invoke('read_raw_config')) || latest;
+      applyPairConfigFromRawConfig();
+      await refreshPairChannelConfig({ reconnectIfOpen: pairChannelOpen });
+      setPairMessage(t('msg.pairConfigSaved'), 'success');
+      appendPairEvent(
+        `channel config saved: server=${pairConfiguredServerUrl || '-'} device=${pairConfiguredDeviceId || '-'}`
+      );
+      return true;
+    } catch (error) {
+      setPairMessage(error?.message || String(error), 'error');
+      return false;
+    } finally {
+      useDesktopShellStore.getState().setPairState({
+        configSaving: false
+      });
+      updatePairButtons();
+    }
   }
 
   async function refreshPairChannelConfig({ reconnectIfOpen = true } = {}) {
@@ -1314,7 +1606,7 @@ export function createPairController(deps) {
         if (pairChannelOpen) {
           disconnectPairChannel();
         }
-        setPairMessage(t('msg.pairMissingConfig'), 'error');
+        setPairMessage(t('msg.pairMissingConfig'));
         updatePairButtons();
         return;
       }
@@ -1353,7 +1645,7 @@ export function createPairController(deps) {
     renderPairChannelCards();
     updatePairButtons();
     if (!hasPairConfig()) {
-      setPairMessage(t('msg.pairMissingConfig'), 'error');
+      setPairMessage(t('msg.pairMissingConfig'));
     } else {
       setPairMessage('');
     }
@@ -1436,9 +1728,21 @@ export function createPairController(deps) {
     clearPairAuthState();
     resetPairReconnectTimer();
     cleanupPairWebSocket();
+    openClawGatewayClient?.close('desktop shutdown');
   }
 
   useDesktopShellStore.getState().setPairActions({
+    setConfigServerUrl: (value) => {
+      useDesktopShellStore.getState().setPairState({
+        draftServerUrl: String(value || '')
+      });
+    },
+    setConfigDeviceId: (value) => {
+      useDesktopShellStore.getState().setPairState({
+        draftDeviceId: String(value || '')
+      });
+    },
+    saveConfig: () => savePairConfig(),
     reloadConfig: () => refreshPairChannelConfig(),
     toggleChannel: async () => {
       if (pairChannelOpen) {
@@ -1446,7 +1750,7 @@ export function createPairController(deps) {
         return;
       }
       if (!hasPairConfig()) {
-        setPairMessage(t('msg.pairMissingConfig'), 'error');
+        setPairMessage(t('msg.pairMissingConfig'));
         return;
       }
       pairChannelOpen = true;
@@ -1454,7 +1758,7 @@ export function createPairController(deps) {
     },
     createChannel: async () => {
       if (!hasPairConfig()) {
-        setPairMessage(t('msg.pairMissingConfig'), 'error');
+        setPairMessage(t('msg.pairMissingConfig'));
         return;
       }
       if (!pairChannelOpen) {
@@ -1471,6 +1775,9 @@ export function createPairController(deps) {
     },
     approveChannel: async (channelId) => {
       await approvePairChannel(channelId);
+    },
+    openChat: (channelId) => {
+      void openPairChannelSession(channelId);
     },
     closeChat: () => {
       useDesktopShellStore.getState().setPairState({
@@ -1516,6 +1823,7 @@ export function createPairController(deps) {
     connectPairChannel,
     disconnectPairChannel,
     createPairSession,
+    openPairChannelSession,
     applyPairConfigFromRawConfig,
     refreshPairChannelConfig,
     initPairCenter,
