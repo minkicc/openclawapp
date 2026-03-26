@@ -55,7 +55,8 @@
       "resources": [
         "../resources/skills",
         "../resources/bin",
-        "../resources/kernel"
+        "../resources/kernel-meta.json",
+        "../resources/kernel.tar"
       ]
     }
   }

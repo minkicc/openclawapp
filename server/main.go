@@ -2632,6 +2632,22 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		sub := a.store.addSubscriber(clientType, clientID)
+		defer a.store.removeSubscriber(clientType, clientID, sub)
+
+		var externalSub <-chan SignalEvent
+		var closeExternalSub func()
+		if a.persistence.UseExternalSignalQueue() {
+			subChannel, closeFn, subscribeErr := a.persistence.SubscribeSignals(clientType, clientID)
+			if subscribeErr != nil {
+				log.Printf("[openclaw-server] failed to subscribe redis signal pubsub: %v", subscribeErr)
+			} else {
+				externalSub = subChannel
+				closeExternalSub = closeFn
+				defer closeExternalSub()
+			}
+		}
+
 		openedID, _ := makeID("evt")
 		opened := SignalEvent{
 			ID:   openedID,
@@ -2657,22 +2673,6 @@ func (a *app) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 			if !a.persistence.UseExternalSignalQueue() {
 				a.onMutation()
-			}
-		}
-
-		sub := a.store.addSubscriber(clientType, clientID)
-		defer a.store.removeSubscriber(clientType, clientID, sub)
-
-		var externalSub <-chan SignalEvent
-		var closeExternalSub func()
-		if a.persistence.UseExternalSignalQueue() {
-			subChannel, closeFn, subscribeErr := a.persistence.SubscribeSignals(clientType, clientID)
-			if subscribeErr != nil {
-				log.Printf("[openclaw-server] failed to subscribe redis signal pubsub: %v", subscribeErr)
-			} else {
-				externalSub = subChannel
-				closeExternalSub = closeFn
-				defer closeExternalSub()
 			}
 		}
 

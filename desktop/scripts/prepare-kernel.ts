@@ -8,6 +8,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +17,8 @@ import { spawnSync } from "node:child_process";
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const desktopRoot = resolve(scriptDir, "..");
 const kernelRoot = join(desktopRoot, "resources", "kernel");
+const kernelArchivePath = join(desktopRoot, "resources", "kernel.tar");
+const kernelMetaPath = join(desktopRoot, "resources", "kernel-meta.json");
 const customExtensionsRoot = join(desktopRoot, "extensions");
 const openclawPkg = join(kernelRoot, "node_modules", "openclaw", "package.json");
 const nodePkg = join(kernelRoot, "node_modules", "node", "package.json");
@@ -161,6 +164,36 @@ function syncCustomExtensions() {
   }
 }
 
+function createKernelArchive() {
+  rmSync(kernelArchivePath, { force: true });
+  const packed = spawnSync("tar", ["-cf", kernelArchivePath, "-C", kernelRoot, "."], {
+    stdio: "inherit",
+  });
+  if (packed.status !== 0) {
+    console.error("Failed to create bundled kernel archive.");
+    process.exit(packed.status ?? 1);
+  }
+  console.log(
+    `Packed bundled kernel archive: ${kernelArchivePath} (${formatBytes(
+      existsSync(kernelArchivePath) ? statSync(kernelArchivePath).size : 0
+    )})`
+  );
+}
+
+function writeKernelMeta(openclawVersion, nodeVersion) {
+  writeFileSync(
+    kernelMetaPath,
+    `${JSON.stringify(
+      {
+        openclawVersion: String(openclawVersion || "").trim(),
+        nodeVersion: String(nodeVersion || "").trim(),
+      },
+      null,
+      2
+    )}\n`
+  );
+}
+
 mkdirSync(kernelRoot, { recursive: true });
 
 if (forceRefresh) {
@@ -183,6 +216,8 @@ if (existsSync(openclawPkg) && existsSync(nodePkg)) {
     pruneBundledKernel();
     const openclawVersion = JSON.parse(readFileSync(openclawPkg, "utf8")).version;
     const nodeVersion = JSON.parse(readFileSync(nodePkg, "utf8")).version;
+    writeKernelMeta(openclawVersion, nodeVersion);
+    createKernelArchive();
     console.log(
       `Bundled kernel already prepared: openclaw@${openclawVersion} + node@${nodeVersion}`
     );
@@ -244,7 +279,8 @@ if (install.status !== 0) {
 
 syncCustomExtensions();
 pruneBundledKernel();
-
 const openclawVersion = JSON.parse(readFileSync(openclawPkg, "utf8")).version;
 const nodeVersion = JSON.parse(readFileSync(nodePkg, "utf8")).version;
+writeKernelMeta(openclawVersion, nodeVersion);
+createKernelArchive();
 console.log(`Bundled kernel ready: openclaw@${openclawVersion} + node@${nodeVersion}`);

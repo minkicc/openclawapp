@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { invoke as defaultInvoke } from '@tauri-apps/api/tauri';
 import { useDesktopShellStore } from '../store/useDesktopShellStore';
-import { ensurePairBackgroundWindow } from './pair-background-window';
+import { isMacDesktopShell, navigateCurrentWindowToOpenClaw } from './openclaw-session';
 import { syncDoctorOutputState, syncSetupFormFromElements, syncSetupMessageState } from './setup-form-sync';
 
 export function createSetupController(deps) {
@@ -33,6 +33,7 @@ export function createSetupController(deps) {
     hasPairConfig,
     isPairCenterAvailable,
     setPairMessage,
+    preparePairHandoff = async () => false,
     updatePairButtons,
     detectProviderPresetId,
     applyProviderPreset,
@@ -235,12 +236,7 @@ export function createSetupController(deps) {
   }
 
   async function openOpenClawWeb() {
-    try {
-      await ensurePairBackgroundWindow();
-    } catch {
-      // ignore background host boot failures here; main navigation can still proceed
-    }
-    const result = await invoke('open_dashboard_window');
+    const result = await invoke(isMacDesktopShell() ? 'get_dashboard_url' : 'open_dashboard_window');
     if (!result.ok) {
       const detail = (result.detail || '').trim();
       const message = `${result.message}${detail ? `\n\n${detail}` : ''}`.trim();
@@ -254,6 +250,11 @@ export function createSetupController(deps) {
       setSetupMessage(t('msg.invalidDashboardUrl'), 'error');
       setDoctorOutput(url || t('msg.noDashboardUrl'));
       return false;
+    }
+
+    if (isMacDesktopShell()) {
+      navigateCurrentWindowToOpenClaw(url);
+      return true;
     }
 
     setSetupMessage(t('msg.enteringWeb'), 'success');

@@ -145,8 +145,8 @@ export function createOpenClawGatewayClient(options: Options): OpenClawGatewayCl
     clearConnectTimer();
 
     try {
-      const clientId = 'openclaw-control-ui';
-      const clientMode = 'webchat';
+      const clientId = 'gateway-client';
+      const clientMode = 'backend';
       const role = 'operator';
       const scopes = ['operator.admin', 'operator.approvals', 'operator.pairing'];
       const platform = navigator.platform || 'web';

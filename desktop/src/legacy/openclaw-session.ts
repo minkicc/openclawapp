@@ -61,3 +61,38 @@ export function resolveOpenClawGatewayConnection(rawUrl: string) {
     token,
   };
 }
+
+export function isMacDesktopShell() {
+  return /mac/i.test(String(globalThis.navigator?.platform || ''));
+}
+
+export function buildOpenClawDashboardUrl(rawUrl: string) {
+  const normalized = String(rawUrl || '').trim();
+  if (!normalized) {
+    throw new Error('dashboard url is empty');
+  }
+  return new URL(normalized).toString();
+}
+
+export function buildOpenClawSessionUrl(rawUrl: string, sessionKey: string) {
+  const normalizedSessionKey = String(sessionKey || '').trim();
+  if (!normalizedSessionKey) {
+    throw new Error('session key is empty');
+  }
+  const url = new URL(buildOpenClawDashboardUrl(rawUrl));
+  url.hash = '';
+  url.pathname = '/chat';
+  url.search = '';
+  url.searchParams.set('session', normalizedSessionKey);
+  return url.toString();
+}
+
+export function navigateCurrentWindowToOpenClaw(rawUrl: string) {
+  const target = buildOpenClawDashboardUrl(rawUrl);
+  window.location.assign(target);
+}
+
+export function navigateCurrentWindowToOpenClawSession(rawUrl: string, sessionKey: string) {
+  const target = buildOpenClawSessionUrl(rawUrl, sessionKey);
+  window.location.assign(target);
+}

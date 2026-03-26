@@ -10,8 +10,8 @@ import {
   normalizeCustomApiModeByBaseUrl
 } from './legacy/provider-presets';
 import { createPairUiController } from './legacy/pair-ui';
+import { createPairBackendController } from './legacy/pair-backend-controller';
 import { createProviderController } from './legacy/provider-controller';
-import { createPairController } from './legacy/pair-controller';
 import { createShellController } from './legacy/shell-controller';
 import { createSetupController } from './legacy/setup-controller';
 import { collectLegacyDomRefs } from './legacy/dom-refs';
@@ -118,6 +118,7 @@ export function bootstrapLegacyApp() {
     cleanupPairWebSocket: () => {},
     connectPairChannel: async () => {},
     disconnectPairChannel: () => {},
+    preparePairHandoff: async () => false,
     createPairSession: async () => {},
     applyPairConfigFromRawConfig: () => {},
     refreshPairChannelConfig: async () => {},
@@ -331,6 +332,7 @@ export function bootstrapLegacyApp() {
     hasPairConfig: () => pairRuntime.hasPairConfig(),
     isPairCenterAvailable,
     setPairMessage: (...args) => pairRuntime.setPairMessage(...args),
+    preparePairHandoff: (...args) => pairRuntime.preparePairHandoff(...args),
     updatePairButtons: () => pairRuntime.updatePairButtons(),
     detectProviderPresetId,
     applyProviderPreset,
@@ -379,7 +381,7 @@ export function bootstrapLegacyApp() {
     saveSummaryCustomApiMode
   });
 
-  const pairController = createPairController({
+  const pairController = createPairBackendController({
     pairChannelToggleBtn,
     pairCreateChannelBtn,
     pairReloadConfigBtn,

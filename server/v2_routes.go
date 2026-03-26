@@ -363,6 +363,20 @@ func (a *app) serveV2(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		}
 
+		sub := a.v2.addSubscriber(clientType, clientID)
+		defer a.v2.removeSubscriber(clientType, clientID, sub)
+
+		var externalSub <-chan SignalEvent
+		var closeExternalSub func()
+		if a.persistence.UseExternalSignalQueue() {
+			subChannel, closeFn, subscribeErr := a.persistence.SubscribeSignals(clientType, clientID)
+			if subscribeErr == nil {
+				externalSub = subChannel
+				closeExternalSub = closeFn
+				defer closeExternalSub()
+			}
+		}
+
 		openedID, _ := makeID("v2stream")
 		opened := SignalEvent{
 			ID:   openedID,
@@ -386,20 +400,6 @@ func (a *app) serveV2(w http.ResponseWriter, r *http.Request) bool {
 				}
 			}
 			flusher.Flush()
-		}
-
-		sub := a.v2.addSubscriber(clientType, clientID)
-		defer a.v2.removeSubscriber(clientType, clientID, sub)
-
-		var externalSub <-chan SignalEvent
-		var closeExternalSub func()
-		if a.persistence.UseExternalSignalQueue() {
-			subChannel, closeFn, subscribeErr := a.persistence.SubscribeSignals(clientType, clientID)
-			if subscribeErr == nil {
-				externalSub = subChannel
-				closeExternalSub = closeFn
-				defer closeExternalSub()
-			}
 		}
 
 		ticker := time.NewTicker(20 * time.Second)

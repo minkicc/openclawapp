@@ -175,6 +175,24 @@ GitHub Actions 会在 Push / PR 自动构建安装包。
 - 再提供公证类 secrets 后，会自动提交 notarization 并 staple 到 `.dmg`。
 - 未提供 secrets 时，会回退到 ad-hoc 签名（适合内部测试，不适合公开分发）。
 
+### 本机 macOS 打包
+
+现在执行 `npm run dist:mac` 时，会优先自动探测本机的 `Developer ID Application` 证书。
+
+本机可用环境变量：
+
+- `APPLE_SIGN_IDENTITY`（可选）：手动指定签名身份
+- `ENABLE_CODESIGN`（可选）：`1` 或 `0`，默认 `1`
+- `ENABLE_NOTARIZE`（可选）：`auto`、`1` 或 `0`，默认 `auto`
+- `NOTARY_PROFILE`（可选）：已配置好的 `notarytool` keychain profile
+- `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID`（可选）：不使用 `NOTARY_PROFILE` 时，直接传给 `notarytool` 的公证凭据
+
+行为说明：
+
+- 如果本机存在 `Developer ID Application` 证书，脚本会对 `.app` 和 `.dmg` 使用 hardened runtime + timestamp 做正式签名。
+- 如果同时存在公证凭据，脚本会自动对 `.app` 和 `.dmg` 提交 notarization 并 staple。
+- 如果本机没有 `Developer ID` 证书，则会回退到 ad-hoc 签名；除非显式要求，否则会跳过 notarization。
+
 ### GitHub Actions 的 Windows 安装包签名
 
 为了减少 Microsoft Defender SmartScreen 的“未知应用”拦截，可以在 GitHub Actions 中配置 SSL.com eSigner 云签名，或者继续使用本地 `.pfx` 证书。

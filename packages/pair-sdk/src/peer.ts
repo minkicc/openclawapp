@@ -226,6 +226,8 @@ export class PairV2PeerChannel {
 
   private state: PairV2PeerState = 'idle';
 
+  private signalChain: Promise<void> = Promise.resolve();
+
   private pendingRemoteCandidates: RTCIceCandidateInit[] = [];
 
   private helloSent = false;
@@ -291,9 +293,9 @@ export class PairV2PeerChannel {
     if (this.isReady()) {
       return;
     }
-    const peer = this.ensurePeer('initiator');
-    if (!this.dataChannel) {
-      this.attachDataChannel(peer.createDataChannel('openclaw-v2'));
+    const peer = this.ensurePeer('initiator', this.shouldRecreateForConnect());
+    if (!this.dataChannel || this.isDataChannelClosed(this.dataChannel)) {
+      this.attachDataChannel(peer.createDataChannel('openclaw-v2'), peer);
     }
     this.setState('connecting', 'creating offer');
     const offer = await peer.createOffer();
@@ -305,15 +307,61 @@ export class PairV2PeerChannel {
   }
 
   async handleSignal(type: PairV2PeerSignalType, payload: PairV2PeerSignalPayload) {
-    if (String(payload?.bindingId || '').trim() !== this.options.bindingId) {
-      return;
-    }
+    return this.enqueueSignal(async () => {
+      if (String(payload?.bindingId || '').trim() !== this.options.bindingId) {
+        return;
+      }
+      await this.handleSignalInternal(type, payload);
+    });
+  }
 
+  close() {
+    this.log(`close() called state=${this.state}`);
+    this.closedByUser = true;
+    this.disposePeer('closed by user', 'disconnected');
+  }
+
+  private setState(state: PairV2PeerState, detail = '') {
+    this.state = state;
+    this.options.onStateChange?.(state, detail);
+  }
+
+  private log(line: string) {
+    this.options.onLog?.(line);
+  }
+
+  private async emitSignal(type: PairV2PeerSignalType, payload: PairV2PeerSignalPayload) {
+    await this.options.onSignal(type, payload);
+  }
+
+  private enqueueSignal(task: () => Promise<void>) {
+    const next = this.signalChain.catch(() => undefined).then(task);
+    this.signalChain = next.catch(() => undefined);
+    return next;
+  }
+
+  private async handleSignalInternal(type: PairV2PeerSignalType, payload: PairV2PeerSignalPayload) {
     if (type === 'webrtc.offer') {
       this.closedByUser = false;
-      const peer = this.ensurePeer('answerer', true);
+      const description = normalizeDescription(payload.description, 'offer');
+      const peer = this.ensurePeer('answerer', this.shouldRecreateForOffer(description));
       this.setState('connecting', 'received offer');
-      await peer.setRemoteDescription(normalizeDescription(payload.description, 'offer'));
+
+      if (this.hasSameDescription(peer.remoteDescription, description)) {
+        if (peer.localDescription?.type === 'answer' && peer.localDescription.sdp) {
+          await this.emitSignal('webrtc.answer', {
+            bindingId: this.options.bindingId,
+            description: {
+              type: peer.localDescription.type,
+              sdp: peer.localDescription.sdp
+            }
+          });
+          return;
+        }
+      } else {
+        await peer.setRemoteDescription(description);
+      }
+
       await this.flushRemoteCandidates();
       const answer = await peer.createAnswer();
       await peer.setLocalDescription(answer);
@@ -345,24 +393,6 @@ export class PairV2PeerChannel {
     }
   }
 
-  close() {
-    this.closedByUser = true;
-    this.disposePeer('closed by user', 'disconnected');
-  }
-
-  private setState(state: PairV2PeerState, detail = '') {
-    this.state = state;
-    this.options.onStateChange?.(state, detail);
-  }
-
-  private log(line: string) {
-    this.options.onLog?.(line);
-  }
-
-  private async emitSignal(type: PairV2PeerSignalType, payload: PairV2PeerSignalPayload) {
-    await this.options.onSignal(type, payload);
-  }
-
   private ensurePeer(role: 'initiator' | 'answerer', forceRecreate = false) {
     ensureWebRtcSupport();
     if (forceRecreate) {
@@ -391,19 +421,30 @@ export class PairV2PeerChannel {
       });
     };
     peer.ondatachannel = (event) => {
-      this.attachDataChannel(event.channel);
+      this.attachDataChannel(event.channel, peer);
     };
     peer.onconnectionstatechange = () => {
+      if (!this.isCurrentPeer(peer)) {
+        this.log(`ignored stale peer state: ${String(peer.connectionState || '').trim() || '-'}`);
+        return;
+      }
       const current = String(peer.connectionState || '').trim();
       if (current === 'failed') {
         this.disposePeer('peer connection failed', 'failed');
         return;
       }
-      if (current === 'disconnected' || current === 'closed') {
+      if (current === 'closed') {
         this.disposePeer(`peer connection ${current}`, 'disconnected');
+        return;
+      }
+      if (current === 'disconnected') {
+        this.setState('disconnected', 'peer connection disconnected');
       }
     };
     peer.oniceconnectionstatechange = () => {
+      if (!this.isCurrentPeer(peer)) {
+        return;
+      }
       const current = String(peer.iceConnectionState || '').trim();
       if (current === 'failed') {
         this.disposePeer('ice failed', 'failed');
@@ -414,7 +455,64 @@ export class PairV2PeerChannel {
     return peer;
   }
 
-  private attachDataChannel(channel: RTCDataChannel) {
+  private shouldRecreateForOffer(description: RTCSessionDescriptionInit) {
+    if (!this.peer) {
+      return false;
+    }
+    if (this.hasSameDescription(this.peer.remoteDescription, description)) {
+      return false;
+    }
+    return Boolean(this.peer.remoteDescription || this.peer.localDescription || this.dataChannel);
+  }
+
+  private shouldRecreateForConnect() {
+    if (!this.peer) {
+      return false;
+    }
+    if (this.isPeerTerminal(this.peer)) {
+      return true;
+    }
+    if (this.dataChannel && this.isDataChannelClosed(this.dataChannel)) {
+      return true;
+    }
+    return false;
+  }
+
+  private hasSameDescription(
+    current: RTCSessionDescription | RTCSessionDescriptionInit | null | undefined,
+    next: RTCSessionDescriptionInit | null | undefined
+  ) {
+    if (!current || !next) {
+      return false;
+    }
+    return String(current.type || '').trim() === String(next.type || '').trim() && String(current.sdp || '') === String(next.sdp || '');
+  }
+
+  private isPeerTerminal(peer: RTCPeerConnection) {
+    const state = String(peer.connectionState || '').trim();
+    return state === 'failed' || state === 'closed' || state === 'disconnected';
+  }
+
+  private isCurrentPeer(peer: RTCPeerConnection | null | undefined) {
+    return Boolean(peer) && this.peer === peer;
+  }
+
+  private isCurrentDataChannel(channel: RTCDataChannel | null | undefined, ownerPeer?: RTCPeerConnection | null) {
+    if (!channel || this.dataChannel !== channel) {
+      return false;
+    }
+    if (ownerPeer && this.peer !== ownerPeer) {
+      return false;
+    }
+    return true;
+  }
+
+  private isDataChannelClosed(channel: RTCDataChannel) {
+    const state = String(channel?.readyState || '').trim();
+    return state === 'closing' || state === 'closed';
+  }
+
+  private attachDataChannel(channel: RTCDataChannel, ownerPeer: RTCPeerConnection | null = this.peer) {
     if (this.dataChannel && this.dataChannel !== channel) {
       try {
         this.dataChannel.close();
@@ -424,6 +522,10 @@ export class PairV2PeerChannel {
     }
     this.dataChannel = channel;
     channel.onopen = () => {
+      if (!this.isCurrentDataChannel(channel, ownerPeer)) {
+        this.log('ignored stale data channel open');
+        return;
+      }
       this.setState('channel-open', 'data channel open');
       void this.sendHello().catch((error) => {
         this.log(`send hello failed: ${error?.message || String(error)}`);
@@ -431,14 +533,30 @@ export class PairV2PeerChannel {
       });
     };
     channel.onclose = () => {
-      if (!this.closedByUser) {
-        this.setState('disconnected', 'data channel closed');
+      if (!this.isCurrentDataChannel(channel, ownerPeer)) {
+        this.log('ignored stale data channel close');
+        return;
+      }
+      this.dataChannel = null;
+      if (!this.closedByUser && this.peer === ownerPeer) {
+        this.disposePeer('data channel closed', 'disconnected');
       }
     };
     channel.onerror = () => {
-      this.setState('failed', 'data channel error');
+      if (!this.isCurrentDataChannel(channel, ownerPeer)) {
+        this.log('ignored stale data channel error');
+        return;
+      }
+      this.dataChannel = null;
+      if (this.peer === ownerPeer) {
+        this.disposePeer('data channel error', 'failed');
+      }
     };
     channel.onmessage = (event) => {
+      if (!this.isCurrentDataChannel(channel, ownerPeer)) {
+        this.log('ignored stale data channel message');
+        return;
+      }
       void this.handleDataMessage(event.data).catch((error) => {
         this.log(`handle data message failed: ${error?.message || String(error)}`);
       });

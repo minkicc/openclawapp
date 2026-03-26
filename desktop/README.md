@@ -179,6 +179,24 @@ Behavior:
 - If notarization secrets are also provided, CI submits and staples the `.dmg`.
 - If secrets are missing, CI falls back to ad-hoc signing for internal testing.
 
+### Local macOS packaging
+
+`npm run dist:mac` now prefers a local `Developer ID Application` identity automatically.
+
+Local environment variables:
+
+- `APPLE_SIGN_IDENTITY` (optional): Explicit signing identity override
+- `ENABLE_CODESIGN` (optional): `1` or `0`, defaults to `1`
+- `ENABLE_NOTARIZE` (optional): `auto`, `1`, or `0`, defaults to `auto`
+- `NOTARY_PROFILE` (optional): Existing `notarytool` keychain profile
+- `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` (optional): Direct notarization credentials when `NOTARY_PROFILE` is not used
+
+Behavior:
+
+- If a local `Developer ID Application` identity is available, the script signs the `.app` and `.dmg` with hardened runtime + timestamp.
+- If notarization credentials are also available, the script notarizes and staples both the `.app` and the `.dmg`.
+- If no Developer ID identity is available, the script falls back to ad-hoc signing and skips notarization unless explicitly required.
+
 ### Windows code signing in GitHub Actions
 
 To reduce Microsoft Defender SmartScreen warnings, you can configure either SSL.com eSigner secrets or a local `.pfx` certificate in GitHub Actions.

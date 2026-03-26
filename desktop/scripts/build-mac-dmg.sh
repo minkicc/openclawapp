@@ -20,11 +20,114 @@ WINDOW_TOP=100
 WINDOW_RIGHT=$((WINDOW_LEFT + WINDOW_WIDTH))
 WINDOW_BOTTOM=$((WINDOW_TOP + WINDOW_HEIGHT))
 
-SIGN_IDENTITY="${APPLE_SIGN_IDENTITY:--}"
+SIGN_IDENTITY="${APPLE_SIGN_IDENTITY-}"
 ENABLE_CODESIGN="${ENABLE_CODESIGN:-1}"
-ENABLE_NOTARIZE="${ENABLE_NOTARIZE:-0}"
+ENABLE_NOTARIZE="${ENABLE_NOTARIZE:-auto}"
 ENABLE_DMG_UI_LAYOUT="${ENABLE_DMG_UI_LAYOUT:-1}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-}"
+APPLE_ID="${APPLE_ID:-}"
+APPLE_APP_SPECIFIC_PASSWORD="${APPLE_APP_SPECIFIC_PASSWORD:-}"
+APPLE_TEAM_ID="${APPLE_TEAM_ID:-}"
+
+find_developer_id_identity() {
+  security find-identity -v -p codesigning 2>/dev/null \
+    | awk -F'"' '/Developer ID Application:/{ print $2; exit }' \
+    | head -n 1
+}
+
+trim() {
+  local value="${1:-}"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+is_developer_id_identity() {
+  local identity
+  identity="$(trim "${1:-}")"
+  [[ "$identity" == Developer\ ID\ Application:* ]]
+}
+
+has_notary_credentials() {
+  [[ -n "$(trim "$NOTARY_PROFILE")" ]] || {
+    [[ -n "$(trim "$APPLE_ID")" && -n "$(trim "$APPLE_APP_SPECIFIC_PASSWORD")" && -n "$(trim "$APPLE_TEAM_ID")" ]]
+  }
+}
+
+submit_for_notarization() {
+  local target="$1"
+  if [[ -n "$(trim "$NOTARY_PROFILE")" ]]; then
+    xcrun notarytool submit "$target" --keychain-profile "$NOTARY_PROFILE" --wait
+    return
+  fi
+
+  xcrun notarytool submit \
+    "$target" \
+    --apple-id "$APPLE_ID" \
+    --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+    --team-id "$APPLE_TEAM_ID" \
+    --wait
+}
+
+if [[ -z "$(trim "$SIGN_IDENTITY")" ]]; then
+  AUTO_DETECTED_IDENTITY="$(find_developer_id_identity)"
+  if [[ -n "$AUTO_DETECTED_IDENTITY" ]]; then
+    SIGN_IDENTITY="$AUTO_DETECTED_IDENTITY"
+  else
+    SIGN_IDENTITY="-"
+  fi
+fi
+
+SIGN_MODE="adhoc"
+if is_developer_id_identity "$SIGN_IDENTITY"; then
+  SIGN_MODE="developer-id"
+fi
+
+NOTARIZE_MODE="disabled"
+case "$ENABLE_NOTARIZE" in
+  1|true|TRUE|yes|YES)
+    NOTARIZE_MODE="required"
+    ;;
+  auto|AUTO|"")
+    if has_notary_credentials; then
+      NOTARIZE_MODE="auto"
+    fi
+    ;;
+  0|false|FALSE|no|NO)
+    NOTARIZE_MODE="disabled"
+    ;;
+  *)
+    echo "Unsupported ENABLE_NOTARIZE value: $ENABLE_NOTARIZE" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "$NOTARIZE_MODE" != "disabled" && "$SIGN_MODE" != "developer-id" ]]; then
+  if [[ "$NOTARIZE_MODE" == "required" ]]; then
+    echo "Notarization requires a Developer ID Application identity. Current identity: ${SIGN_IDENTITY:-<none>}" >&2
+    exit 1
+  fi
+  echo "Notarization skipped: Developer ID Application identity not available."
+  NOTARIZE_MODE="disabled"
+fi
+
+if [[ "$NOTARIZE_MODE" != "disabled" && "$ENABLE_CODESIGN" != "1" ]]; then
+  if [[ "$NOTARIZE_MODE" == "required" ]]; then
+    echo "Notarization requires codesigning. ENABLE_CODESIGN must be 1." >&2
+    exit 1
+  fi
+  echo "Notarization skipped: ENABLE_CODESIGN is disabled."
+  NOTARIZE_MODE="disabled"
+fi
+
+if [[ "$NOTARIZE_MODE" != "disabled" ]] && ! has_notary_credentials; then
+  if [[ "$NOTARIZE_MODE" == "required" ]]; then
+    echo "Notarization requested but credentials are missing. Provide NOTARY_PROFILE or APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID." >&2
+    exit 1
+  fi
+  echo "Notarization skipped: credentials are missing."
+  NOTARIZE_MODE="disabled"
+fi
 
 echo "Building macOS app bundle..."
 npm run prepare:kernel
@@ -45,11 +148,28 @@ if [[ ! -d "$APP_PATH" ]]; then
 fi
 
 if [[ "$ENABLE_CODESIGN" == "1" ]]; then
-  echo "Signing app bundle (identity: $SIGN_IDENTITY)..."
-  codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_PATH"
+  echo "Signing app bundle (identity: $SIGN_IDENTITY, mode: $SIGN_MODE)..."
+  CODESIGN_APP_ARGS=(--force --deep --sign "$SIGN_IDENTITY")
+  if [[ "$SIGN_MODE" == "developer-id" ]]; then
+    CODESIGN_APP_ARGS+=(--options runtime --timestamp)
+  fi
+  codesign "${CODESIGN_APP_ARGS[@]}" "$APP_PATH"
   codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-  if [[ "$SIGN_IDENTITY" == "-" ]]; then
+  if [[ "$SIGN_MODE" == "adhoc" ]]; then
     echo "Warning: ad-hoc signing only. Public distribution should use Developer ID + notarization."
+  fi
+fi
+
+if [[ "$NOTARIZE_MODE" != "disabled" ]]; then
+  echo "Submitting app bundle for notarization..."
+  submit_for_notarization "$APP_PATH"
+  echo "Stapling app bundle notarization ticket..."
+  xcrun stapler staple "$APP_PATH"
+  echo "App bundle notarized."
+fi
+if [[ "$ENABLE_CODESIGN" == "1" && "$SIGN_MODE" == "developer-id" ]]; then
+  if ! spctl -a -t exec -vv "$APP_PATH" >/dev/null 2>&1; then
+    echo "Warning: spctl rejected app bundle before/without Gatekeeper context. Continue with DMG packaging."
   fi
 fi
 
@@ -222,17 +342,17 @@ if [[ "$LAYOUT_OK" != "1" ]]; then
 fi
 
 if [[ "$ENABLE_CODESIGN" == "1" ]]; then
-  echo "Signing DMG (identity: $SIGN_IDENTITY)..."
-  codesign --force --sign "$SIGN_IDENTITY" "$OUT_PATH"
+  echo "Signing DMG (identity: $SIGN_IDENTITY, mode: $SIGN_MODE)..."
+  CODESIGN_DMG_ARGS=(--force --sign "$SIGN_IDENTITY")
+  if [[ "$SIGN_MODE" == "developer-id" ]]; then
+    CODESIGN_DMG_ARGS+=(--timestamp)
+  fi
+  codesign "${CODESIGN_DMG_ARGS[@]}" "$OUT_PATH"
 fi
 
-if [[ "$ENABLE_NOTARIZE" == "1" ]]; then
-  if [[ -z "$NOTARY_PROFILE" ]]; then
-    echo "NOTARY_PROFILE is required when ENABLE_NOTARIZE=1" >&2
-    exit 1
-  fi
+if [[ "$NOTARIZE_MODE" != "disabled" ]]; then
   echo "Submitting DMG for notarization..."
-  xcrun notarytool submit "$OUT_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
+  submit_for_notarization "$OUT_PATH"
   echo "Stapling notarization ticket..."
   xcrun stapler staple "$OUT_PATH"
 fi

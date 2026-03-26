@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   createPairV2AppRegistry,
   openPairV2SignalStream,
@@ -53,6 +54,8 @@ type SignalStreamEntry = {
   token: string;
 };
 
+const DEBUG_AUTO_MESSAGE_KEY = 'openclaw.mobile.debug.auto-message';
+
 const SessionsContext = createContext<SessionsContextValue | null>(null);
 
 function randomId(prefix: string) {
@@ -83,6 +86,8 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
   const signalStreamsRef = useRef(new Map<string, SignalStreamEntry>());
   const signalConnectingRef = useRef(new Map<string, Promise<boolean>>());
   const peersRef = useRef(new Map<string, PairV2PeerChannel>());
+  const peerConnectingRef = useRef(new Map<string, Promise<boolean>>());
+  const debugAutoMessageTriggeredRef = useRef(new Set<string>());
   const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   function commitSessions(nextSessions: SessionItem[]) {
@@ -242,6 +247,8 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     if (!key) {
       return;
     }
+    console.log(`[pair-mobile] closePeer binding=${key} detail=${detail}`);
+    peerConnectingRef.current.delete(key);
     const peer = peersRef.current.get(key);
     if (!peer) {
       return;
@@ -264,6 +271,11 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     for (const bindingId of [...peersRef.current.keys()]) {
       const session = nextSessions.find((item) => item.bindingId === bindingId) || null;
       if (!activeBindings.has(bindingId) || !session || session.trustState !== 'active') {
+        console.log(
+          `[pair-mobile] close stale peer binding=${bindingId} hasSession=${Boolean(session)} trustState=${
+            session?.trustState || '-'
+          }`
+        );
         closePeer(bindingId, 'session removed');
       }
     }
@@ -318,6 +330,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     const appRegistry = createPairV2AppRegistry([
       createOpenClawPairChatModule({
         onChatMessage: (chat) => {
+          console.log(`[pair-mobile] inbound chat binding=${key} text=${chat.text}`);
           const current = getSessionByBindingIdSnapshot(key);
           if (!current) {
             return;
@@ -349,9 +362,16 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
         await sendPeerSignal(session.serverBaseUrl, trustedPeerId, type, payload);
       },
       onStateChange: (state, detail) => {
+        console.log(`[pair-mobile] state binding=${key} state=${state} detail=${detail || ''}`);
         updatePeerState(key, state, detail || '');
       },
+      onLog: (line) => {
+        console.log(`[pair-mobile] binding=${key} ${line}`);
+      },
       onCapabilities: (capabilities) => {
+        console.log(
+          `[pair-mobile] capabilities binding=${key} messages=${(capabilities.supportedMessages || []).join(',')}`
+        );
         patchSessionByBindingId(key, {
           peerCapabilities: capabilities,
         });
@@ -366,27 +386,67 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     return peer;
   }
 
-  async function ensureSessionPeerConnected(session: SessionItem, timeoutMs = 8000) {
+  async function ensureSessionPeerConnected(session: SessionItem, timeoutMs = 8000, retries = 1) {
     const latest = getSessionByIdSnapshot(session.id) || session;
     if (latest.trustState !== 'active') {
       return false;
     }
-
-    const peer = await ensureSessionPeer(latest);
-    if (!peer.isReady() && !isPeerNegotiating(peer.getState())) {
-      await peer.connect();
+    const bindingId = String(latest.bindingId || '').trim();
+    if (!bindingId) {
+      return false;
     }
 
-    const startedAt = Date.now();
-    while (Date.now() - startedAt < timeoutMs) {
-      if (peer.isReady()) {
-        return true;
+    const pending = peerConnectingRef.current.get(bindingId);
+    if (pending) {
+      return pending;
+    }
+
+    const task = (async () => {
+      let currentTarget = latest;
+      let attemptsLeft = retries;
+
+      loop: while (true) {
+        const peer = await ensureSessionPeer(currentTarget);
+        if (!peer.isReady() && !isPeerNegotiating(peer.getState())) {
+          await peer.connect();
+        }
+
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < timeoutMs) {
+          if (peer.isReady()) {
+            return true;
+          }
+          await new Promise<void>((resolve) => {
+            globalThis.setTimeout(resolve, 120);
+          });
+        }
+
+        if (peer.isReady()) {
+          return true;
+        }
+
+        if (attemptsLeft <= 0) {
+          console.log(`[pair-mobile] connect timeout binding=${bindingId} state=${peer.getState()}`);
+          break loop;
+        }
+
+        attemptsLeft -= 1;
+        await new Promise<void>((resolve) => {
+          globalThis.setTimeout(resolve, 240);
+        });
+        currentTarget = getSessionByIdSnapshot(session.id) || currentTarget;
       }
-      await new Promise<void>((resolve) => {
-        globalThis.setTimeout(resolve, 120);
-      });
-    }
-    return peer.isReady();
+
+      return false;
+    })().finally(() => {
+      const current = peerConnectingRef.current.get(bindingId);
+      if (current === task) {
+        peerConnectingRef.current.delete(bindingId);
+      }
+    });
+
+    peerConnectingRef.current.set(bindingId, task);
+    return task;
   }
 
   async function connectReadyPeers(targetBaseUrl = '') {
@@ -399,7 +459,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
 
     for (const session of candidates) {
       try {
-        await ensureSessionPeerConnected(session, 3000);
+        await ensureSessionPeerConnected(session, 10000, 0);
       } catch (error) {
         markPeerFailure(session, error);
       }
@@ -466,6 +526,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     if (type === 'webrtc.offer' || type === 'webrtc.answer' || type === 'webrtc.ice') {
       const bindingId = String(payload.bindingId || payload.binding_id || '').trim();
       const deviceId = String(payload.deviceId || payload.device_id || fromId || '').trim();
+      console.log(`[pair-mobile] signal type=${type} binding=${bindingId || '-'} device=${deviceId || '-'}`);
       const session = getSessionByBindingIdSnapshot(bindingId) || getSessionByDeviceIdSnapshot(deviceId);
       if (!session) {
         void refreshSessions();
@@ -574,7 +635,17 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
   }
 
   async function refreshSessions() {
+    console.log(
+      `[pair-mobile] refreshSessions start count=${sessionsRef.current.length} bindings=${sessionsRef.current
+        .map((item) => `${item.bindingId || '-'}:${item.trustState || '-'}`)
+        .join(',')}`
+    );
     const refreshed = await refreshSessionsV2(sessionsRef.current);
+    console.log(
+      `[pair-mobile] refreshSessions done count=${refreshed.length} bindings=${refreshed
+        .map((item) => `${item.bindingId || '-'}:${item.trustState || '-'}`)
+        .join(',')}`
+    );
     commitSessions(refreshed);
     await reconcileRealtime(refreshed);
   }
@@ -606,6 +677,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
 
     return () => {
       cancelled = true;
+      console.log('[pair-mobile] SessionsProvider cleanup');
       if (refreshTimerRef.current) {
         clearInterval(refreshTimerRef.current);
         refreshTimerRef.current = null;
@@ -623,6 +695,32 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     if (!loadedRef.current) {
       return;
     }
+
+    if (__DEV__) {
+      const target = sessions.find((session) => session.peerState === 'connected' && session.transportReady);
+      if (target && !debugAutoMessageTriggeredRef.current.has(target.id)) {
+        void AsyncStorage.getItem(DEBUG_AUTO_MESSAGE_KEY).then(async (value) => {
+          const raw = String(value || '').trim();
+          if (!raw) {
+            return;
+          }
+          debugAutoMessageTriggeredRef.current.add(target.id);
+          console.log(`[pair-mobile] debug auto message -> binding=${target.bindingId} text=${raw}`);
+          try {
+            await sendMessage(target.id, raw);
+            await AsyncStorage.removeItem(DEBUG_AUTO_MESSAGE_KEY);
+          } catch (error) {
+            debugAutoMessageTriggeredRef.current.delete(target.id);
+            console.log(
+              `[pair-mobile] debug auto message failed binding=${target.bindingId} error=${
+                error instanceof Error ? error.message : String(error || '')
+              }`
+            );
+          }
+        });
+      }
+    }
+
     void saveStoredSessions(sessions);
 
     if (sessions.length > 0 && !refreshTimerRef.current) {
@@ -697,6 +795,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     }
 
     const peer = await ensureSessionPeer(session);
+    console.log(`[pair-mobile] send chat binding=${session.bindingId} text=${normalizedText}`);
     await peer.sendAppMessage(openClawPairChatMessageType, buildOpenClawPairChatPayload(normalizedText));
     appendMessageLocal(session.id, {
       from: 'self',
