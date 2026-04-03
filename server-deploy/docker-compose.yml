@@ -70,34 +70,7 @@ services:
     ports:
       - "${TROJAN_GO_PORT:-8443}:8443"
     volumes:
-      - caddy_data:/data:ro
-    command:
-      - /bin/sh
-      - -ec
-      - |
-        CERT_DIR=/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/chnnl.net
-        CERT_FILE=$$CERT_DIR/chnnl.net.crt
-        KEY_FILE=$$CERT_DIR/chnnl.net.key
-        until [ -f "$$CERT_FILE" ] && [ -f "$$KEY_FILE" ]; do
-          echo "waiting for caddy certificates in $$CERT_DIR"
-          sleep 5
-        done
-        cat >/tmp/trojan-go.json <<EOF
-        {
-          "run_type": "server",
-          "local_addr": "0.0.0.0",
-          "local_port": 8443,
-          "remote_addr": "caddy",
-          "remote_port": 80,
-          "password": ["${TROJAN_GO_PASSWORD}"],
-          "ssl": {
-            "cert": "$$CERT_FILE",
-            "key": "$$KEY_FILE",
-            "sni": "chnnl.net"
-          }
-        }
-        EOF
-        exec trojan-go -config /tmp/trojan-go.json
+      - ./trojan.json:/etc/trojan-go/config.json:ro
 
 volumes:
   redis_data:

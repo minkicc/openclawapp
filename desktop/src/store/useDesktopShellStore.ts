@@ -221,7 +221,7 @@ export const useDesktopShellStore = create<DesktopShellState>((set) => ({
     statusType: '',
     configuredServerUrl: '',
     configuredDeviceId: '',
-    draftServerUrl: '',
+    draftServerUrl: 'https://chnnl.net',
     draftDeviceId: '',
     configSaving: false,
     channelOpen: false,

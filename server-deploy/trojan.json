@@ -1,0 +1,17 @@
+{
+    "run_type": "server",
+    "local_addr": "0.0.0.0",
+    "local_port": 8443,
+    "remote_addr": "openclaw-server",
+    "remote_port": 8787,
+    "password": ["*"],
+    "websocket": {
+      "enabled": true,
+      "path": "/wss-cgi/",
+      "host": "mdlbus.com"
+    },
+    "transport_plugin": {
+      "enabled": true,
+      "type": "plaintext"
+    }
+  }

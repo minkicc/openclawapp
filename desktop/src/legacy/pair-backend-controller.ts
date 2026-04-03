@@ -7,6 +7,7 @@ import { createPairBackendQrHelpers, normalizePairBaseUrl } from './pair-backend
 import { channelSupportsOpenClawChat, normalizeBackendChannel } from './pair-backend-model';
 
 const PAIR_EVENT_NAME = 'pair-backend://state';
+const DEFAULT_PAIR_SERVER_URL = 'https://chnnl.net';
 
 export function createPairBackendController(deps) {
   const {
@@ -70,10 +71,13 @@ export function createPairBackendController(deps) {
 
   function syncPairConfigDraftState({ preserveDraft = false } = {}) {
     const currentPairState = useDesktopShellStore.getState().pair;
+    const nextDraftServerUrl = preserveDraft
+      ? currentPairState.draftServerUrl
+      : pairConfiguredServerUrl || DEFAULT_PAIR_SERVER_URL;
     useDesktopShellStore.getState().setPairState({
       configuredServerUrl: pairConfiguredServerUrl,
       configuredDeviceId: pairConfiguredDeviceId,
-      draftServerUrl: preserveDraft ? currentPairState.draftServerUrl : pairConfiguredServerUrl,
+      draftServerUrl: nextDraftServerUrl,
       draftDeviceId: preserveDraft ? currentPairState.draftDeviceId : pairConfiguredDeviceId
     });
   }
