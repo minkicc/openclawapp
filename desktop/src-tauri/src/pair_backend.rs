@@ -18,8 +18,8 @@ use tauri::{AppHandle, Manager, State};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
-use tokio_util::io::StreamReader;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tokio_util::io::StreamReader;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
@@ -91,6 +91,7 @@ pub struct PairBackendChannel {
     pub channel_id: String,
     pub session_id: String,
     pub mobile_id: String,
+    pub mobile_name: String,
     pub binding_id: String,
     pub status: String,
     pub trust_state: String,
@@ -170,6 +171,8 @@ struct PairBinding {
     device_id: String,
     device_public_key: String,
     mobile_id: String,
+    #[serde(default)]
+    mobile_name: String,
     mobile_public_key: String,
     trust_state: String,
     created_at: u64,
@@ -476,12 +479,7 @@ impl PairBackendHandle {
     }
 
     fn random_id(prefix: &str) -> String {
-        format!(
-            "{}_{}{:08x}",
-            prefix,
-            Self::now_ms(),
-            rand::random::<u32>()
-        )
+        format!("{}_{}{:08x}", prefix, Self::now_ms(), rand::random::<u32>())
     }
 
     fn normalize_base_url(raw: &str) -> Result<String, String> {
@@ -515,10 +513,10 @@ impl PairBackendHandle {
 }
 
 mod auth;
-mod signal;
-mod chat;
 mod bridge;
+mod chat;
 mod helpers;
+mod signal;
 use helpers::*;
 pub mod commands;
 

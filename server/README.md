@@ -17,6 +17,7 @@ The server now also exposes a small protocol landing page:
 - `../mobile`: official React Native mobile client
 - `../packages/pair-sdk`: reusable discovery / pairing / signaling / peer-auth SDK
 - `../packages/message-sdk`: OpenClaw business message SDK on top of the pair transport
+- `../server-worker`: Cloudflare Worker + Durable Object deployment for the `v2` control plane
 
 ## Endpoints
 

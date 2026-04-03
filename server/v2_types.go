@@ -39,10 +39,11 @@ type v2Desktop struct {
 }
 
 type v2Mobile struct {
-	MobileID  string `json:"mobileId"`
-	PublicKey string `json:"publicKey"`
-	CreatedAt int64  `json:"createdAt"`
-	UpdatedAt int64  `json:"updatedAt"`
+	MobileID   string `json:"mobileId"`
+	MobileName string `json:"mobileName,omitempty"`
+	PublicKey  string `json:"publicKey"`
+	CreatedAt  int64  `json:"createdAt"`
+	UpdatedAt  int64  `json:"updatedAt"`
 }
 
 type v2AuthChallenge struct {
@@ -86,6 +87,7 @@ type v2Binding struct {
 	DeviceID        string       `json:"deviceId"`
 	DevicePublicKey string       `json:"devicePublicKey"`
 	MobileID        string       `json:"mobileId"`
+	MobileName      string       `json:"mobileName,omitempty"`
 	MobilePublicKey string       `json:"mobilePublicKey"`
 	TrustState      v2TrustState `json:"trustState"`
 	CreatedAt       int64        `json:"createdAt"`
@@ -160,6 +162,7 @@ type v2CreatePairSessionRequest struct {
 
 type v2PairClaimRequest struct {
 	ClaimToken string `json:"claimToken"`
+	MobileName string `json:"mobileName"`
 }
 
 type v2PairApproveRequest struct {

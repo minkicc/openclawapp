@@ -23,6 +23,7 @@ export type SessionItem = {
   deviceId: string;
   pairSessionId: string;
   bindingId: string;
+  mobileName?: string;
   trustState?: 'pending' | 'active' | 'revoked' | string;
   safetyCode?: string;
   mobilePublicKey?: string;

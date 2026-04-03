@@ -138,6 +138,33 @@ GitHub Actions 会在 Push / PR 自动构建安装包。
 .github/workflows/build.yml
 ```
 
+Cloudflare Worker 版 `v2` 配对控制面在：
+
+```text
+server-worker/
+```
+
+对应部署工作流：
+
+```text
+.github/workflows/deploy-worker.yml
+```
+
+线上域名目标：
+
+- `https://chnnl.net`
+- `https://www.chnnl.net`
+
+如果要把 `.dmg` 自动上传到 GitHub Release，直接推版本标签即可：
+
+```bash
+git push origin main
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Cloudflare 的具体配置和校验步骤见 `/Users/zhangruiqiang/dev/setupclaw/server-worker/README.md`。
+
 ### GitHub Actions 的 macOS 签名与公证
 
 为了避免用户在 macOS 上看到“已损坏、无法打开”的 Gatekeeper 提示，需要在仓库 Secrets 中配置：

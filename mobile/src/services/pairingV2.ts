@@ -1,12 +1,16 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants from 'expo-constants';
 import {
   claimPairV2Session,
   computePairV2SafetyCode,
   configurePairV2Storage,
+  formatPairV2ConnectionName,
   getOrCreatePairV2Identity,
   getPairV2ICEServers,
+  isGeneratedPairV2ConnectionName,
   listPairV2Bindings,
   loginPairV2Entity,
+  normalizePairV2MobileName,
   normalizePairV2IceServers,
   normalizePairV2BaseUrl,
   parsePairV2QrPayload,
@@ -58,21 +62,102 @@ function randomId(prefix: string) {
   return `${prefix}_${uuid || fallback}`;
 }
 
-function sessionNameSuffix(seed: string) {
-  const normalized = String(seed || '')
-    .trim()
-    .replaceAll('_', '')
-    .replace(/[^a-zA-Z0-9]/g, '');
-
-  if (normalized) {
-    return normalized.slice(-6);
-  }
-
-  return Date.now().toString().slice(-6);
+function resolveLocalMobileName() {
+  return (
+    normalizePairV2MobileName(Constants.deviceName) ||
+    normalizePairV2MobileName(Constants.expoConfig?.name) ||
+    '手机'
+  );
 }
 
-function defaultSessionName(seed: string) {
-  return `连接-${sessionNameSuffix(seed)}`;
+function resolveSessionNameSeed(value: {
+  bindingId?: unknown;
+  pairSessionId?: unknown;
+  deviceId?: unknown;
+  mobileId?: unknown;
+  id?: unknown;
+}) {
+  return value.bindingId || value.pairSessionId || value.deviceId || value.mobileId || value.id;
+}
+
+function resolveGeneratedSessionName(options: {
+  bindingId?: unknown;
+  pairSessionId?: unknown;
+  deviceId?: unknown;
+  mobileId?: unknown;
+  id?: unknown;
+  mobileName?: unknown;
+}) {
+  return formatPairV2ConnectionName(resolveSessionNameSeed(options), options.mobileName);
+}
+
+function resolveGeneratedSessionNameCandidates(
+  existing: SessionItem | null,
+  binding: PairV2Binding,
+  mobileName: string
+) {
+  return [
+    {
+      seed: resolveSessionNameSeed(binding),
+      mobileName,
+    },
+    {
+      seed: binding.bindingId,
+      mobileName,
+    },
+    {
+      seed: binding.pairSessionId,
+      mobileName,
+    },
+    {
+      seed: binding.deviceId,
+      mobileName,
+    },
+    {
+      seed: binding.mobileId,
+      mobileName,
+    },
+    {
+      seed: resolveSessionNameSeed({
+        bindingId: existing?.bindingId,
+        pairSessionId: existing?.pairSessionId,
+        deviceId: existing?.deviceId,
+        id: existing?.id,
+      }),
+      mobileName: existing?.mobileName || mobileName,
+    },
+    {
+      seed: existing?.bindingId,
+      mobileName: existing?.mobileName || mobileName,
+    },
+    {
+      seed: existing?.pairSessionId,
+      mobileName: existing?.mobileName || mobileName,
+    },
+    {
+      seed: existing?.deviceId,
+      mobileName: existing?.mobileName || mobileName,
+    },
+  ].filter((item) => String(item.seed || '').trim());
+}
+
+function resolveSessionName(existing: SessionItem | null, binding: PairV2Binding, mobileName: string) {
+  const currentName = String(existing?.name || '').trim();
+  const generatedName = resolveGeneratedSessionName({
+    bindingId: binding.bindingId,
+    pairSessionId: binding.pairSessionId,
+    deviceId: binding.deviceId,
+    mobileId: binding.mobileId,
+    id: existing?.id,
+    mobileName,
+  });
+  if (!currentName) {
+    return generatedName;
+  }
+  if (isGeneratedPairV2ConnectionName(currentName, resolveGeneratedSessionNameCandidates(existing, binding, mobileName))) {
+    return generatedName;
+  }
+  return currentName;
 }
 
 function formatCreatedAt(date = new Date()) {
@@ -156,10 +241,6 @@ function normalizeSession(existing: SessionItem | null, next: SessionItem): Sess
   return {
     ...existing,
     ...next,
-    name:
-      String(existing.name || '').trim() && String(existing.name || '').trim() !== defaultSessionName(existing.deviceId || '')
-        ? existing.name
-        : next.name,
     messages: mergeMessages(existing.messages || [], next.messages || []),
   };
 }
@@ -284,6 +365,7 @@ function buildSessionFromBinding(options: {
   const trustState = String(binding.trustState || '').trim() || 'pending';
   const peerState = String(existing?.peerState || '').trim();
   const transportReady = Boolean(existing?.transportReady) || peerState === 'connected';
+  const mobileName = normalizePairV2MobileName(binding.mobileName) || existing?.mobileName || resolveLocalMobileName();
   const preview = transportReady
     ? 'P2P 通道已建立，可以开始聊天。'
     : isPeerNegotiating(peerState)
@@ -291,10 +373,7 @@ function buildSessionFromBinding(options: {
       : describeSession(trustState, safetyCode || String(existing?.safetyCode || ''), presence);
   return normalizeSession(existing, {
     id: existing?.id || randomId('sess'),
-    name:
-      existing && String(existing.name || '').trim() && String(existing.name || '').trim() !== defaultSessionName(existing.deviceId || '')
-        ? existing.name
-        : defaultSessionName(binding.pairSessionId || binding.deviceId),
+    name: resolveSessionName(existing, binding, mobileName),
     status: normalizeStatus(trustState, presence),
     isReplying: false,
     createdAt: existing?.createdAt || formatCreatedAt(),
@@ -309,6 +388,7 @@ function buildSessionFromBinding(options: {
     deviceId: binding.deviceId,
     pairSessionId: binding.pairSessionId,
     bindingId: binding.bindingId,
+    mobileName,
     trustState,
     safetyCode: safetyCode || existing?.safetyCode || '',
     mobilePublicKey: mobilePublicKey || existing?.mobilePublicKey || '',
@@ -342,7 +422,10 @@ export async function pairByScanV2(raw: string, currentSessions: SessionItem[]) 
 
   const baseUrl = normalizePairV2BaseUrl(qrPayload.serverBaseUrl);
   const auth = await ensureMobileAuthV2(baseUrl, true);
-  const claimResult = await claimPairV2Session(baseUrl, auth.token, qrPayload.claimToken);
+  const mobileName = resolveLocalMobileName();
+  const claimResult = await claimPairV2Session(baseUrl, auth.token, qrPayload.claimToken, {
+    mobileName,
+  });
   const safetyCode = await computePairV2SafetyCode({
     devicePublicKey: qrPayload.devicePubkey,
     mobilePublicKey: auth.publicKey,

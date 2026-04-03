@@ -7,6 +7,12 @@ dist/
 desktop/dist/
 desktop/src-tauri/target/
 desktop/resources/kernel/
+desktop/resources/kernel.tar
+desktop/resources/kernel-meta.json
 desktop/vendor/
 mobile/ios/build/
+mobile/ios/build-device/
+mobile/.derived/
+server-worker/.wrangler/
+server-worker/.dev.vars
 package-lock.json

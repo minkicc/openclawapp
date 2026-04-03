@@ -2,14 +2,15 @@
 
 mod app_paths;
 mod config_store;
-mod pair_backend;
 mod dashboard_gateway;
+mod pair_backend;
 
 pub(crate) use app_paths::*;
-pub(crate) use config_store::*;
 use chrono::{DateTime, Utc};
+pub(crate) use config_store::*;
 #[cfg(target_os = "macos")]
 use objc::{sel, sel_impl};
+use pair_backend::PairBackendHandle;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -23,7 +24,6 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
-use pair_backend::PairBackendHandle;
 #[cfg(any(
     target_os = "linux",
     target_os = "dragonfly",
@@ -362,7 +362,11 @@ fn model_endpoint_candidates(base_url: &str) -> Vec<String> {
     urls
 }
 
-fn collect_model_ids_from_value(value: &serde_json::Value, models: &mut Vec<String>, seen: &mut BTreeSet<String>) {
+fn collect_model_ids_from_value(
+    value: &serde_json::Value,
+    models: &mut Vec<String>,
+    seen: &mut BTreeSet<String>,
+) {
     match value {
         serde_json::Value::Array(items) => {
             for item in items {
@@ -561,8 +565,10 @@ fn resolve_bundled_kernel_archive_path(app: &AppHandle) -> Option<PathBuf> {
         runtime_resources
             .as_ref()
             .map(|dir| dir.join(BUNDLED_KERNEL_ARCHIVE_FILE_NAME)),
-        app.path_resolver()
-            .resolve_resource(&format!("_up_/resources/{}", BUNDLED_KERNEL_ARCHIVE_FILE_NAME)),
+        app.path_resolver().resolve_resource(&format!(
+            "_up_/resources/{}",
+            BUNDLED_KERNEL_ARCHIVE_FILE_NAME
+        )),
         app.path_resolver().resolve_resource(&nested),
         app.path_resolver()
             .resolve_resource(BUNDLED_KERNEL_ARCHIVE_FILE_NAME),
@@ -586,9 +592,11 @@ fn resolve_bundled_kernel_meta_path(app: &AppHandle) -> Option<PathBuf> {
     let nested = format!("resources/{}", BUNDLED_KERNEL_META_FILE_NAME);
     let runtime_resources = runtime_resources_dir();
     let candidates = [
-        runtime_resources
-            .as_ref()
-            .map(|dir| dir.join("_up_").join("resources").join(BUNDLED_KERNEL_META_FILE_NAME)),
+        runtime_resources.as_ref().map(|dir| {
+            dir.join("_up_")
+                .join("resources")
+                .join(BUNDLED_KERNEL_META_FILE_NAME)
+        }),
         runtime_resources
             .as_ref()
             .map(|dir| dir.join("resources").join(BUNDLED_KERNEL_META_FILE_NAME)),
@@ -641,7 +649,9 @@ fn bundled_kernel_archive_fingerprint(path: &Path) -> Result<String, String> {
         .unwrap_or(0);
     Ok(format!(
         "{}:{}:{}",
-        path.file_name().and_then(|value| value.to_str()).unwrap_or_default(),
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default(),
         meta.len(),
         modified
     ))
@@ -662,20 +672,40 @@ fn extract_bundled_kernel_archive(app: &AppHandle, archive_path: &Path) -> Resul
         }
     }
 
-    let staging = app_config_dir(app)?.join(format!("{}.staging", EXTRACTED_BUNDLED_KERNEL_DIR_NAME));
+    let staging =
+        app_config_dir(app)?.join(format!("{}.staging", EXTRACTED_BUNDLED_KERNEL_DIR_NAME));
     if staging.exists() {
-        fs::remove_dir_all(&staging)
-            .map_err(|e| format!("清理 kernel 解压临时目录失败 ({}): {}", staging.display(), e))?;
+        fs::remove_dir_all(&staging).map_err(|e| {
+            format!(
+                "清理 kernel 解压临时目录失败 ({}): {}",
+                staging.display(),
+                e
+            )
+        })?;
     }
-    fs::create_dir_all(&staging)
-        .map_err(|e| format!("创建 kernel 解压临时目录失败 ({}): {}", staging.display(), e))?;
+    fs::create_dir_all(&staging).map_err(|e| {
+        format!(
+            "创建 kernel 解压临时目录失败 ({}): {}",
+            staging.display(),
+            e
+        )
+    })?;
 
-    let archive_file = File::open(archive_path)
-        .map_err(|e| format!("打开内置 kernel 归档失败 ({}): {}", archive_path.display(), e))?;
+    let archive_file = File::open(archive_path).map_err(|e| {
+        format!(
+            "打开内置 kernel 归档失败 ({}): {}",
+            archive_path.display(),
+            e
+        )
+    })?;
     let mut archive = tar::Archive::new(archive_file);
-    archive
-        .unpack(&staging)
-        .map_err(|e| format!("解压内置 kernel 归档失败 ({}): {}", archive_path.display(), e))?;
+    archive.unpack(&staging).map_err(|e| {
+        format!(
+            "解压内置 kernel 归档失败 ({}): {}",
+            archive_path.display(),
+            e
+        )
+    })?;
 
     if !bundled_kernel_required_script_path(&staging).exists() {
         return Err(format!(
@@ -733,10 +763,7 @@ fn sync_bundled_openclaw_mobile_extension(app: &AppHandle) -> Result<(), String>
         .join("extensions")
         .join("openclaw-mobile");
     if !source.exists() {
-        return Err(format!(
-            "未找到内置通信插件目录: {}",
-            source.display()
-        ));
+        return Err(format!("未找到内置通信插件目录: {}", source.display()));
     }
 
     let target = openclaw_runtime_extensions_dir(app)?.join("openclaw-mobile");
@@ -800,13 +827,15 @@ fn read_bundled_kernel_meta(app: &AppHandle) -> Option<BundledKernelMeta> {
 
     let meta_path = resolve_bundled_kernel_meta_path(app)?;
     let raw = fs::read_to_string(meta_path).ok()?;
-    serde_json::from_str::<BundledKernelMeta>(&raw).ok().map(|mut meta| {
-        let version = meta.openclaw_version.trim().to_string();
-        if !version.is_empty() && !version.to_lowercase().starts_with("openclaw ") {
-            meta.openclaw_version = format!("OpenClaw {}", version);
-        }
-        meta
-    })
+    serde_json::from_str::<BundledKernelMeta>(&raw)
+        .ok()
+        .map(|mut meta| {
+            let version = meta.openclaw_version.trim().to_string();
+            if !version.is_empty() && !version.to_lowercase().starts_with("openclaw ") {
+                meta.openclaw_version = format!("OpenClaw {}", version);
+            }
+            meta
+        })
 }
 
 fn node_binary_file_name() -> &'static str {
@@ -833,7 +862,10 @@ fn find_node_in_kernel_root(kernel_root: &Path) -> Option<PathBuf> {
     if let Ok(entries) = fs::read_dir(&nested_root) {
         for entry in entries.flatten() {
             let path = entry.path();
-            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
             if !file_name.starts_with("node-bin-") {
                 continue;
             }
@@ -855,15 +887,17 @@ fn managed_node_command_path(app: &AppHandle) -> Option<PathBuf> {
 }
 
 fn bundled_node_command_path(app: &AppHandle) -> Option<PathBuf> {
-    let bundled_kernel_node = resolve_bundled_kernel_dir(app)
-        .and_then(|root| find_node_in_kernel_root(&root));
+    let bundled_kernel_node =
+        resolve_bundled_kernel_dir(app).and_then(|root| find_node_in_kernel_root(&root));
 
-    let bundled_bin_node = resolve_bundled_bin_dir(app).map(|dir| {
-        dir.join(node_binary_file_name())
-    });
+    let bundled_bin_node =
+        resolve_bundled_bin_dir(app).map(|dir| dir.join(node_binary_file_name()));
 
     let candidates = [bundled_kernel_node, bundled_bin_node];
-    candidates.into_iter().flatten().find(|candidate| candidate.exists())
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|candidate| candidate.exists())
 }
 
 fn parse_node_version_tuple(raw: &str) -> Option<(u32, u32, u32)> {
@@ -907,7 +941,10 @@ fn nvm_node_candidate_paths() -> Vec<PathBuf> {
         _ => return Vec::new(),
     };
 
-    let versions_root = PathBuf::from(home).join(".nvm").join("versions").join("node");
+    let versions_root = PathBuf::from(home)
+        .join(".nvm")
+        .join("versions")
+        .join("node");
     let entries = match fs::read_dir(versions_root) {
         Ok(v) => v,
         Err(_) => return Vec::new(),
@@ -1108,7 +1145,11 @@ fn should_refresh_dashboard_prep(app: &AppHandle, cfg: &StoredConfig) -> bool {
         Ok(v) => v,
         Err(_) => return true,
     };
-    let expected = format!("{}|{}", DASHBOARD_PREP_VERSION, gateway_runtime_fingerprint(cfg));
+    let expected = format!(
+        "{}|{}",
+        DASHBOARD_PREP_VERSION,
+        gateway_runtime_fingerprint(cfg)
+    );
     let current = fs::read_to_string(path).unwrap_or_default();
     current.trim() != expected.trim()
 }
@@ -1117,7 +1158,11 @@ fn persist_dashboard_prep_fingerprint(app: &AppHandle, cfg: &StoredConfig) {
     if let Ok(path) = dashboard_prep_fingerprint_path(app) {
         let _ = fs::write(
             path,
-            format!("{}|{}", DASHBOARD_PREP_VERSION, gateway_runtime_fingerprint(cfg)),
+            format!(
+                "{}|{}",
+                DASHBOARD_PREP_VERSION,
+                gateway_runtime_fingerprint(cfg)
+            ),
         );
     }
 }
@@ -1246,8 +1291,7 @@ fn strip_ansi_sequences(raw: &str) -> String {
 fn is_path_boundary_char(ch: char) -> bool {
     matches!(
         ch,
-        ' '
-            | '\t'
+        ' ' | '\t'
             | '\r'
             | '\n'
             | '"'
@@ -1303,7 +1347,11 @@ fn extract_path_fragment_around(line: &str, needle: &str) -> Option<String> {
 
 fn runtime_home_fallback(app: &AppHandle) -> PathBuf {
     openclaw_runtime_home_dir(app)
-        .or_else(|_| env::var("HOME").map(PathBuf::from).map_err(|e| e.to_string()))
+        .or_else(|_| {
+            env::var("HOME")
+                .map(PathBuf::from)
+                .map_err(|e| e.to_string())
+        })
         .unwrap_or_else(|_| PathBuf::from("."))
 }
 
@@ -1444,7 +1492,10 @@ fn sync_gateway_control_ui_allowed_origins(root: &mut serde_json::Value) {
     let control_ui_obj = ensure_json_object_mut(control_ui_value);
 
     let mut origins = BTreeSet::new();
-    if let Some(existing) = control_ui_obj.get("allowedOrigins").and_then(|value| value.as_array()) {
+    if let Some(existing) = control_ui_obj
+        .get("allowedOrigins")
+        .and_then(|value| value.as_array())
+    {
         for value in existing {
             if let Some(origin) = value.as_str() {
                 let normalized = origin.trim();
@@ -1460,12 +1511,7 @@ fn sync_gateway_control_ui_allowed_origins(root: &mut serde_json::Value) {
 
     control_ui_obj.insert(
         "allowedOrigins".to_string(),
-        serde_json::Value::Array(
-            origins
-                .into_iter()
-                .map(serde_json::Value::String)
-                .collect(),
-        ),
+        serde_json::Value::Array(origins.into_iter().map(serde_json::Value::String).collect()),
     );
 }
 
@@ -1638,8 +1684,8 @@ fn apply_custom_provider_overrides(
             .or_insert_with(|| serde_json::json!({}));
     }
 
-    let data =
-        serde_json::to_string_pretty(&root).map_err(|e| format!("序列化 OpenClaw 配置失败: {}", e))?;
+    let data = serde_json::to_string_pretty(&root)
+        .map_err(|e| format!("序列化 OpenClaw 配置失败: {}", e))?;
     fs::write(&config_file, data)
         .map_err(|e| format!("写入 OpenClaw 配置失败 ({}): {}", config_file.display(), e))?;
     Ok(())
@@ -1701,8 +1747,8 @@ fn apply_runtime_default_model_overrides(
             .or_insert_with(|| serde_json::json!({}));
     }
 
-    let data =
-        serde_json::to_string_pretty(&root).map_err(|e| format!("序列化 OpenClaw 配置失败: {}", e))?;
+    let data = serde_json::to_string_pretty(&root)
+        .map_err(|e| format!("序列化 OpenClaw 配置失败: {}", e))?;
     fs::write(&config_file, data)
         .map_err(|e| format!("写入 OpenClaw 配置失败 ({}): {}", config_file.display(), e))?;
     Ok(())
@@ -1853,7 +1899,8 @@ fn is_custom_model_synced(
     resolved: &ResolvedOpenClawCommand,
 ) -> bool {
     let expected = normalize_model_ref("custom", &cfg.model);
-    let model_ok = match run_openclaw_capture(app, cfg, resolved, &["models", "status", "--plain"]) {
+    let model_ok = match run_openclaw_capture(app, cfg, resolved, &["models", "status", "--plain"])
+    {
         Ok((true, output)) => output
             .lines()
             .next()
@@ -1866,8 +1913,8 @@ fn is_custom_model_synced(
         return false;
     }
 
-    let expected_api =
-        normalize_custom_api_mode(Some(cfg.custom_api_mode.as_str())).unwrap_or_else(|_| default_custom_api_mode());
+    let expected_api = normalize_custom_api_mode(Some(cfg.custom_api_mode.as_str()))
+        .unwrap_or_else(|_| default_custom_api_mode());
     read_openclaw_config_value(app, cfg, resolved, "models.providers.custom.api")
         .map(|value| value.eq_ignore_ascii_case(&expected_api))
         .unwrap_or(false)
@@ -1892,8 +1939,8 @@ fn sync_custom_provider_if_needed(
     if model.is_empty() {
         return Err("Provider 为 custom 时必须配置 Model。".to_string());
     }
-    let custom_api_mode =
-        normalize_custom_api_mode(Some(cfg.custom_api_mode.as_str())).unwrap_or_else(|_| default_custom_api_mode());
+    let custom_api_mode = normalize_custom_api_mode(Some(cfg.custom_api_mode.as_str()))
+        .unwrap_or_else(|_| default_custom_api_mode());
     let compatibility = if custom_api_mode.eq_ignore_ascii_case("anthropic-messages") {
         "anthropic"
     } else {
@@ -2124,8 +2171,8 @@ fn get_kernel_status(app: AppHandle) -> Result<KernelStatusResponse, String> {
             .join("openclaw")
             .join("openclaw.mjs");
         if managed_script.exists() {
-            let version =
-                read_openclaw_version_from_kernel_root(&managed_root).unwrap_or_else(|| "unknown".to_string());
+            let version = read_openclaw_version_from_kernel_root(&managed_root)
+                .unwrap_or_else(|| "unknown".to_string());
 
             return Ok(KernelStatusResponse {
                 installed: true,
@@ -2143,10 +2190,12 @@ fn get_kernel_status(app: AppHandle) -> Result<KernelStatusResponse, String> {
         .map(|root| bundled_kernel_required_script_path(&root))
         .filter(|path| path.exists())
         .or_else(|| {
-            existing_extracted_bundled_kernel_dir(&app).map(|root| bundled_kernel_required_script_path(&root))
+            existing_extracted_bundled_kernel_dir(&app)
+                .map(|root| bundled_kernel_required_script_path(&root))
         });
-    let bundled_available =
-        bundled_script.is_some() || bundled_meta.is_some() || resolve_bundled_kernel_archive_path(&app).is_some();
+    let bundled_available = bundled_script.is_some()
+        || bundled_meta.is_some()
+        || resolve_bundled_kernel_archive_path(&app).is_some();
 
     if bundled_available {
         let bundled_version = bundled_meta
@@ -2369,12 +2418,11 @@ fn fetch_models(payload: FetchModelsPayload) -> Result<FetchModelsResponse, Stri
             })
         }
     };
-    let custom_api_mode = normalize_custom_api_mode_for_base_url(
-        Some(base_url_raw.as_str()),
-        &custom_api_mode,
-    );
+    let custom_api_mode =
+        normalize_custom_api_mode_for_base_url(Some(base_url_raw.as_str()), &custom_api_mode);
 
-    let mut custom_headers = match parse_custom_headers_json(payload.custom_headers_json.as_deref()) {
+    let mut custom_headers = match parse_custom_headers_json(payload.custom_headers_json.as_deref())
+    {
         Ok(headers) => headers,
         Err(message) => {
             return Ok(FetchModelsResponse {
@@ -2397,12 +2445,10 @@ fn fetch_models(payload: FetchModelsPayload) -> Result<FetchModelsResponse, Stri
     let mut has_accept = false;
 
     for (name, value) in &custom_headers {
-        let header_name = reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
-            format!("Custom Headers 中包含非法 Header 名称 `{}`: {}", name, e)
-        })?;
-        let header_value = reqwest::header::HeaderValue::from_str(value).map_err(|e| {
-            format!("Custom Headers 中 Header `{}` 的值非法: {}", name, e)
-        })?;
+        let header_name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+            .map_err(|e| format!("Custom Headers 中包含非法 Header 名称 `{}`: {}", name, e))?;
+        let header_value = reqwest::header::HeaderValue::from_str(value)
+            .map_err(|e| format!("Custom Headers 中 Header `{}` 的值非法: {}", name, e))?;
 
         if name.eq_ignore_ascii_case("authorization") {
             has_authorization = true;
@@ -2423,7 +2469,9 @@ fn fetch_models(payload: FetchModelsPayload) -> Result<FetchModelsResponse, Stri
             if let Ok(value) = reqwest::header::HeaderValue::from_str(&api_key) {
                 header_map.insert("x-api-key", value);
             }
-        } else if let Ok(value) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", api_key)) {
+        } else if let Ok(value) =
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {}", api_key))
+        {
             header_map.insert(reqwest::header::AUTHORIZATION, value);
         }
     }
@@ -2467,8 +2515,7 @@ fn fetch_models(payload: FetchModelsPayload) -> Result<FetchModelsResponse, Stri
 
             last_error = format!(
                 "接口返回成功但未解析出模型: {} (status: {})",
-                endpoint,
-                status
+                endpoint, status
             );
         } else {
             let snippet: String = body.chars().take(220).collect();
@@ -2790,7 +2837,10 @@ fn latest_openclaw_version_from_npm() -> Result<String, String> {
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let detail = if !stderr.is_empty() { stderr } else { stdout };
         let message = if detail.is_empty() {
-            format!("npm view openclaw version 失败 (exit code: {:?})", output.status.code())
+            format!(
+                "npm view openclaw version 失败 (exit code: {:?})",
+                output.status.code()
+            )
         } else {
             detail
         };
@@ -2868,12 +2918,10 @@ fn spawn_provider_auth_login_terminal(
         provider_id.replace(|ch: char| !ch.is_ascii_alphanumeric(), "_"),
         Utc::now().timestamp_millis()
     ));
-    fs::write(&script_path, script_content)
-        .map_err(|e| format!("写入登录脚本失败: {}", e))?;
+    fs::write(&script_path, script_content).map_err(|e| format!("写入登录脚本失败: {}", e))?;
 
     let mut cmd = Command::new("cmd.exe");
-    cmd.arg("/k")
-        .arg(script_path.to_string_lossy().to_string());
+    cmd.arg("/k").arg(script_path.to_string_lossy().to_string());
 
     if let Ok(home_dir) = openclaw_runtime_home_dir(app) {
         let home = home_dir.to_string_lossy().to_string();
@@ -3017,7 +3065,6 @@ fn check_provider_auth(provider: String, app: AppHandle) -> Result<ActionRespons
             copied_from: None,
             copied_to: None,
         });
-
     }
 
     let mut matched_auth_store: Option<PathBuf> = None;
@@ -3053,10 +3100,7 @@ fn check_provider_auth(provider: String, app: AppHandle) -> Result<ActionRespons
         login_command, checked_paths
     );
     if !check_errors.is_empty() {
-        detail.push_str(&format!(
-            "\n读取异常:\n- {}",
-            check_errors.join("\n- ")
-        ));
+        detail.push_str(&format!("\n读取异常:\n- {}", check_errors.join("\n- ")));
     }
     Ok(ActionResponse {
         ok: false,

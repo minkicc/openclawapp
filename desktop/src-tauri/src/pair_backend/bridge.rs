@@ -368,7 +368,10 @@ impl PairBackendHandle {
 
         let connect_request_id = Self::random_id("ocgw_connect");
         let mut client_map = Map::new();
-        client_map.insert("id".to_string(), Value::String(OPENCLAW_GATEWAY_CLIENT_ID.to_string()));
+        client_map.insert(
+            "id".to_string(),
+            Value::String(OPENCLAW_GATEWAY_CLIENT_ID.to_string()),
+        );
         client_map.insert(
             "version".to_string(),
             Value::String(OPENCLAW_GATEWAY_VERSION.to_string()),
@@ -434,10 +437,7 @@ impl PairBackendHandle {
         );
         params.insert(
             "userAgent".to_string(),
-            Value::String(format!(
-                "openclaw-desktop/{}",
-                app.package_info().version
-            )),
+            Value::String(format!("openclaw-desktop/{}", app.package_info().version)),
         );
         if let Ok(lang) = std::env::var("LANG") {
             let trimmed = lang.trim();
@@ -445,7 +445,12 @@ impl PairBackendHandle {
                 params.insert("locale".to_string(), Value::String(trimmed.to_string()));
             }
         }
-        if let Some(token) = info.token.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        if let Some(token) = info
+            .token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
             params.insert(
                 "auth".to_string(),
                 serde_json::json!({
@@ -592,7 +597,9 @@ impl PairBackendHandle {
                             .as_ref()
                             .map(|close| close.reason.to_string())
                             .unwrap_or_else(|| "gateway closed".to_string());
-                        backend.mark_openclaw_gateway_closed(generation, &reason).await;
+                        backend
+                            .mark_openclaw_gateway_closed(generation, &reason)
+                            .await;
                         break;
                     }
                     Some(Ok(_)) => {}
@@ -675,8 +682,9 @@ impl PairBackendHandle {
             if state.gateway_generation != generation {
                 return;
             }
-            let had_connection =
-                state.gateway_connected || state.gateway_connecting || state.gateway_writer_tx.is_some();
+            let had_connection = state.gateway_connected
+                || state.gateway_connecting
+                || state.gateway_writer_tx.is_some();
             state.gateway_connected = false;
             state.gateway_connecting = false;
             state.gateway_writer_tx = None;
@@ -799,6 +807,32 @@ impl PairBackendHandle {
         }
     }
 
+    async fn sync_openclaw_session_label_for_channel(
+        &self,
+        app: &AppHandle,
+        channel: &PairBackendChannel,
+    ) -> Result<(), String> {
+        let session_key = Self::build_openclaw_mobile_session_key(&channel.mobile_id);
+        if session_key.is_empty() {
+            return Ok(());
+        }
+        let label = resolve_channel_display_name(channel);
+        if label.trim().is_empty() {
+            return Ok(());
+        }
+        let _ = self
+            .request_openclaw_gateway(
+                app,
+                "sessions.patch",
+                serde_json::json!({
+                    "key": session_key,
+                    "label": label,
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
     pub(super) async fn forward_mobile_message_to_openclaw(
         &self,
         app: &AppHandle,
@@ -812,14 +846,32 @@ impl PairBackendHandle {
         }
         self.append_event(format!(
             "forwarding mobile chat -> openclaw: mobile={} binding={} text={}",
-            mobile_id,
-            binding_id,
-            normalized_text
+            mobile_id, binding_id, normalized_text
         ))
         .await;
         let session_key = Self::build_openclaw_mobile_session_key(mobile_id);
         if session_key.is_empty() {
             return Err("mobile id is empty".to_string());
+        }
+        let channel = {
+            let state = self.state.lock().await;
+            state
+                .channels
+                .iter()
+                .find(|item| {
+                    (!binding_id.trim().is_empty() && item.binding_id == binding_id.trim())
+                        || (!mobile_id.trim().is_empty() && item.mobile_id == mobile_id.trim())
+                })
+                .cloned()
+        };
+        if let Some(channel) = channel {
+            if let Err(error) = self
+                .sync_openclaw_session_label_for_channel(app, &channel)
+                .await
+            {
+                self.append_event(format!("openclaw session label sync failed: {}", error))
+                    .await;
+            }
         }
 
         let run_id = Self::random_id("ocgwrun");
@@ -886,10 +938,8 @@ impl PairBackendHandle {
             return;
         };
 
-        let payload_session_key = Self::normalize_openclaw_session_key(&read_json_string(
-            &payload,
-            &["sessionKey"],
-        ));
+        let payload_session_key =
+            Self::normalize_openclaw_session_key(&read_json_string(&payload, &["sessionKey"]));
         if !payload_session_key.is_empty()
             && payload_session_key != Self::normalize_openclaw_session_key(&pending.session_key)
         {
@@ -936,9 +986,8 @@ impl PairBackendHandle {
             return;
         }
 
-        let reply_text = Self::extract_openclaw_message_text(
-            payload.get("message").unwrap_or(&Value::Null),
-        );
+        let reply_text =
+            Self::extract_openclaw_message_text(payload.get("message").unwrap_or(&Value::Null));
         if reply_text.trim().is_empty() {
             self.append_event(format!(
                 "openclaw chat final empty: run={} mobile={}",
@@ -946,7 +995,8 @@ impl PairBackendHandle {
             ))
             .await;
         }
-        self.mirror_openclaw_reply_to_mobile(pending, &reply_text).await;
+        self.mirror_openclaw_reply_to_mobile(pending, &reply_text)
+            .await;
     }
 
     async fn notify_openclaw_error_to_mobile(
@@ -1050,11 +1100,8 @@ impl PairBackendHandle {
                 .await;
             }
             Err(error) => {
-                self.append_event(format!(
-                    "openclaw reply mirror failed: {}",
-                    error
-                ))
-                .await;
+                self.append_event(format!("openclaw reply mirror failed: {}", error))
+                    .await;
             }
         }
     }

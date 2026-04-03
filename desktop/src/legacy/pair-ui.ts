@@ -1,3 +1,4 @@
+import { formatPairV2ConnectionName, isGeneratedPairV2ConnectionName } from '@openclaw/pair-sdk';
 import { useDesktopShellStore } from '../store/useDesktopShellStore';
 
 type PairChannel = any;
@@ -53,45 +54,38 @@ export function createPairUiController(deps: PairUiDeps) {
       .replace(/'/g, '&#39;');
   }
 
-  function pairNameSuffix(seed: unknown) {
-    const normalized = String(seed || '')
-      .trim()
-      .replace(/_/g, '')
-      .replace(/[^a-zA-Z0-9]/g, '');
-    if (normalized) {
-      return normalized.slice(-6);
-    }
-    return Date.now().toString().slice(-6);
-  }
-
-  function defaultPairChannelName(seed: unknown) {
-    return `连接-${pairNameSuffix(seed)}`;
-  }
-
   function resolvePairChannelNameSeed(channel: PairChannel) {
-    return channel?.sessionId || channel?.mobileId || channel?.channelId;
+    return channel?.bindingId || channel?.sessionId || channel?.mobileId || channel?.channelId;
   }
 
-  function isGeneratedPairChannelName(name: unknown, seeds: unknown[]) {
-    const normalizedName = String(name || '').trim();
-    if (!normalizedName) {
-      return false;
-    }
-    return seeds.some((seed) => normalizedName === defaultPairChannelName(seed));
+  function resolvePairChannelMobileName(channel: PairChannel) {
+    return String(channel?.mobileName || '').trim();
+  }
+
+  function defaultPairChannelName(channel: PairChannel) {
+    return formatPairV2ConnectionName(resolvePairChannelNameSeed(channel), resolvePairChannelMobileName(channel));
+  }
+
+  function resolvePairChannelGeneratedCandidates(channel: PairChannel) {
+    const mobileName = resolvePairChannelMobileName(channel);
+    return [
+      { seed: resolvePairChannelNameSeed(channel), mobileName },
+      { seed: channel?.bindingId, mobileName },
+      { seed: channel?.sessionId, mobileName },
+      { seed: channel?.mobileId, mobileName },
+      { seed: channel?.channelId, mobileName },
+    ].filter((item) => String(item.seed || '').trim());
   }
 
   function normalizePairChannelName(channel: PairChannel) {
-    const canonicalSeed = resolvePairChannelNameSeed(channel);
     const currentName = String(channel?.name || '').trim();
+    const generatedName = defaultPairChannelName(channel);
     if (!currentName) {
-      return defaultPairChannelName(canonicalSeed);
+      return generatedName;
     }
-
-    const legacySeeds = [channel?.mobileId, channel?.sessionId, channel?.channelId];
-    if (isGeneratedPairChannelName(currentName, legacySeeds)) {
-      return defaultPairChannelName(canonicalSeed);
+    if (isGeneratedPairV2ConnectionName(currentName, resolvePairChannelGeneratedCandidates(channel))) {
+      return generatedName;
     }
-
     return currentName;
   }
 

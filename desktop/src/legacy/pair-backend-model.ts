@@ -15,6 +15,7 @@ export function normalizeBackendChannel(channel) {
     channelId: String(channel?.channelId || channel?.sessionId || channel?.bindingId || '').trim(),
     sessionId: String(channel?.sessionId || channel?.channelId || '').trim(),
     mobileId: String(channel?.mobileId || '').trim(),
+    mobileName: String(channel?.mobileName || '').trim(),
     bindingId: String(channel?.bindingId || '').trim(),
     status: String(channel?.status || 'offline'),
     trustState: String(channel?.trustState || 'pending'),

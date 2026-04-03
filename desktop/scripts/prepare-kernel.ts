@@ -24,6 +24,8 @@ const openclawPkg = join(kernelRoot, "node_modules", "openclaw", "package.json")
 const nodePkg = join(kernelRoot, "node_modules", "node", "package.json");
 const kernelRequiredFiles = [
   join(kernelRoot, "node_modules", "openclaw", "openclaw.mjs"),
+  join(kernelRoot, "node_modules", "openclaw", "dist", "entry.js"),
+  join(kernelRoot, "node_modules", "openclaw", "dist", "control-ui", "index.html"),
   join(kernelRoot, "node_modules", "yaml", "dist", "compose", "composer.js"),
   join(kernelRoot, "node_modules", "yaml", "dist", "doc", "directives.js"),
 ];
@@ -275,6 +277,15 @@ const install = spawnSync(
 
 if (install.status !== 0) {
   process.exit(install.status ?? 1);
+}
+
+const missing = missingKernelFiles();
+if (missing.length > 0) {
+  console.error("Bundled kernel install is incomplete.");
+  for (const filePath of missing) {
+    console.error(`  missing: ${filePath}`);
+  }
+  process.exit(1);
 }
 
 syncCustomExtensions();

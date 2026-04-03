@@ -21,10 +21,7 @@ impl PairBackendHandle {
         peer: &Arc<DesktopPeer>,
         channel: &Arc<RTCDataChannel>,
     ) -> bool {
-        if !self
-            .is_current_peer_instance(&peer.binding_id, peer)
-            .await
-        {
+        if !self.is_current_peer_instance(&peer.binding_id, peer).await {
             return false;
         }
         let current = peer.data_channel.lock().await;
@@ -40,10 +37,7 @@ impl PairBackendHandle {
         detail: &str,
         state_name: &str,
     ) {
-        if !self
-            .is_current_peer_instance(&peer.binding_id, peer)
-            .await
-        {
+        if !self.is_current_peer_instance(&peer.binding_id, peer).await {
             self.append_event(format!(
                 "ignored stale peer callback: binding={} ({})",
                 peer.binding_id, detail
@@ -51,7 +45,8 @@ impl PairBackendHandle {
             .await;
             return;
         }
-        self.dispose_peer(&peer.binding_id, detail, state_name).await;
+        self.dispose_peer(&peer.binding_id, detail, state_name)
+            .await;
     }
 
     pub(super) async fn dispose_peer_if_current_channel(
@@ -61,10 +56,7 @@ impl PairBackendHandle {
         detail: &str,
         state_name: &str,
     ) {
-        if !self
-            .is_current_data_channel_instance(peer, channel)
-            .await
-        {
+        if !self.is_current_data_channel_instance(peer, channel).await {
             self.append_event(format!(
                 "ignored stale data channel callback: binding={} ({})",
                 peer.binding_id, detail
@@ -72,14 +64,18 @@ impl PairBackendHandle {
             .await;
             return;
         }
-        self.dispose_peer(&peer.binding_id, detail, state_name).await;
+        self.dispose_peer(&peer.binding_id, detail, state_name)
+            .await;
     }
 
     pub(super) async fn send_peer_hello(&self, peer: Arc<DesktopPeer>) -> Result<(), String> {
         let (identity, device_id) = {
             let state = self.state.lock().await;
             (
-                state.identity.clone().ok_or_else(|| "desktop identity missing".to_string())?,
+                state
+                    .identity
+                    .clone()
+                    .ok_or_else(|| "desktop identity missing".to_string())?,
                 state.configured_device_id.clone(),
             )
         };
@@ -128,7 +124,10 @@ impl PairBackendHandle {
         Ok(())
     }
 
-    pub(super) async fn send_peer_capabilities(&self, peer: Arc<DesktopPeer>) -> Result<(), String> {
+    pub(super) async fn send_peer_capabilities(
+        &self,
+        peer: Arc<DesktopPeer>,
+    ) -> Result<(), String> {
         let mut sent = peer.capabilities_sent.lock().await;
         if *sent || !*peer.hello_sent.lock().await || !*peer.remote_verified.lock().await {
             return Ok(());
@@ -267,7 +266,11 @@ impl PairBackendHandle {
             };
             {
                 let mut state = self.state.lock().await;
-                if let Some(channel) = state.channels.iter_mut().find(|item| item.binding_id == peer.binding_id) {
+                if let Some(channel) = state
+                    .channels
+                    .iter_mut()
+                    .find(|item| item.binding_id == peer.binding_id)
+                {
                     channel.peer_capabilities = Some(capabilities.clone());
                 }
             }
@@ -339,12 +342,19 @@ impl PairBackendHandle {
             return Ok(());
         }
 
-        self.append_event(format!("peer app message from {}: {}", peer.mobile_id, event_type))
-            .await;
+        self.append_event(format!(
+            "peer app message from {}: {}",
+            peer.mobile_id, event_type
+        ))
+        .await;
         Ok(())
     }
 
-    pub(super) async fn append_channel_message(&self, binding_id: &str, message: PairBackendMessage) {
+    pub(super) async fn append_channel_message(
+        &self,
+        binding_id: &str,
+        message: PairBackendMessage,
+    ) {
         {
             let mut state = self.state.lock().await;
             if let Some(channel) = state
@@ -362,8 +372,13 @@ impl PairBackendHandle {
         self.emit_snapshot().await;
     }
 
-    pub(super) async fn send_peer_json(&self, peer: &DesktopPeer, payload: &Value) -> Result<(), String> {
-        let text = serde_json::to_string(payload).map_err(|e| format!("序列化 peer payload 失败: {}", e))?;
+    pub(super) async fn send_peer_json(
+        &self,
+        peer: &DesktopPeer,
+        payload: &Value,
+    ) -> Result<(), String> {
+        let text = serde_json::to_string(payload)
+            .map_err(|e| format!("序列化 peer payload 失败: {}", e))?;
         let current = peer.data_channel.lock().await;
         let channel = current
             .as_ref()
@@ -436,10 +451,19 @@ impl PairBackendHandle {
         Ok(self.snapshot().await)
     }
 
-    pub(super) async fn set_channel_peer_state(&self, binding_id: &str, peer_state: &str, detail: &str) {
+    pub(super) async fn set_channel_peer_state(
+        &self,
+        binding_id: &str,
+        peer_state: &str,
+        detail: &str,
+    ) {
         {
             let mut state = self.state.lock().await;
-            if let Some(channel) = state.channels.iter_mut().find(|item| item.binding_id == binding_id) {
+            if let Some(channel) = state
+                .channels
+                .iter_mut()
+                .find(|item| item.binding_id == binding_id)
+            {
                 channel.peer_state = peer_state.to_string();
                 channel.peer_detail = detail.to_string();
             }
@@ -471,7 +495,11 @@ impl PairBackendHandle {
         }
         {
             let mut state = self.state.lock().await;
-            if let Some(channel) = state.channels.iter_mut().find(|item| item.binding_id == binding_id) {
+            if let Some(channel) = state
+                .channels
+                .iter_mut()
+                .find(|item| item.binding_id == binding_id)
+            {
                 channel.peer_state = state_name.to_string();
                 channel.peer_detail = detail.to_string();
             }

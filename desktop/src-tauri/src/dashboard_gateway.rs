@@ -1,5 +1,4 @@
 use super::*;
-use tauri::Window;
 #[cfg(target_os = "macos")]
 use cocoa::{
     base::{id, nil},
@@ -7,6 +6,7 @@ use cocoa::{
 };
 #[cfg(target_os = "macos")]
 use objc::{class, msg_send};
+use tauri::Window;
 #[cfg(any(
     target_os = "linux",
     target_os = "dragonfly",
@@ -24,7 +24,9 @@ pub(crate) struct GatewayConnectionInfo {
     pub token: Option<String>,
 }
 
-pub(crate) fn resolve_gateway_connection_info(app: AppHandle) -> Result<GatewayConnectionInfo, String> {
+pub(crate) fn resolve_gateway_connection_info(
+    app: AppHandle,
+) -> Result<GatewayConnectionInfo, String> {
     let response = get_dashboard_url_impl(app)?;
     if !response.ok {
         return Err(response
@@ -36,8 +38,8 @@ pub(crate) fn resolve_gateway_connection_info(app: AppHandle) -> Result<GatewayC
     if dashboard_url.is_empty() {
         return Err("OpenClaw gateway url is empty".to_string());
     }
-    let parsed = url::Url::parse(&dashboard_url)
-        .map_err(|e| format!("OpenClaw gateway url 无效: {}", e))?;
+    let parsed =
+        url::Url::parse(&dashboard_url).map_err(|e| format!("OpenClaw gateway url 无效: {}", e))?;
     let token = {
         let fragment = parsed.fragment().unwrap_or_default();
         let fragment_params = url::form_urlencoded::parse(fragment.as_bytes())
@@ -228,7 +230,10 @@ pub fn open_dashboard_window(app: AppHandle) -> Result<ActionResponse, String> {
 }
 
 #[tauri::command]
-pub fn open_dashboard_session(session_key: String, app: AppHandle) -> Result<ActionResponse, String> {
+pub fn open_dashboard_session(
+    session_key: String,
+    app: AppHandle,
+) -> Result<ActionResponse, String> {
     let normalized_session_key = session_key.trim().to_string();
     if normalized_session_key.is_empty() {
         return Ok(ActionResponse {
@@ -329,7 +334,10 @@ fn navigate_window_to_url(window: &Window<tauri::Wry>, url: &str) -> Result<(), 
     let target_url = url.to_string();
     window
         .with_webview(move |webview| unsafe {
-            let wide: Vec<u16> = target_url.encode_utf16().chain(std::iter::once(0)).collect();
+            let wide: Vec<u16> = target_url
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
             if let Ok(core) = webview.controller().CoreWebView2() {
                 let _ = core.Navigate(PCWSTR::from_raw(wide.as_ptr()));
             }

@@ -247,7 +247,8 @@ pub(crate) fn save_config_payload(
     } else {
         custom_api_mode
     };
-    let mut custom_headers = match parse_custom_headers_json(payload.custom_headers_json.as_deref()) {
+    let mut custom_headers = match parse_custom_headers_json(payload.custom_headers_json.as_deref())
+    {
         Ok(headers) => headers,
         Err(message) => {
             return Ok(ActionResponse {
@@ -281,32 +282,35 @@ pub(crate) fn save_config_payload(
         });
     }
 
-    let channel_server_base_url = match normalize_channel_server_base_url(
-        payload.channel_server_base_url.as_deref(),
-    ) {
-        Ok(Some(value)) => Some(value),
-        Ok(None) => existing.as_ref().and_then(|cfg| {
-            normalize_channel_server_base_url(cfg.channel_server_base_url.as_deref())
-                .ok()
-                .flatten()
-        }),
-        Err(message) => {
-            return Ok(ActionResponse {
-                ok: false,
-                message,
-                detail: None,
-                copied_from: None,
-                copied_to: None,
-            })
-        }
-    };
+    let channel_server_base_url =
+        match normalize_channel_server_base_url(payload.channel_server_base_url.as_deref()) {
+            Ok(Some(value)) => Some(value),
+            Ok(None) => existing.as_ref().and_then(|cfg| {
+                normalize_channel_server_base_url(cfg.channel_server_base_url.as_deref())
+                    .ok()
+                    .flatten()
+            }),
+            Err(message) => {
+                return Ok(ActionResponse {
+                    ok: false,
+                    message,
+                    detail: None,
+                    copied_from: None,
+                    copied_to: None,
+                })
+            }
+        };
     let channel_device_id = normalize_channel_device_id(payload.channel_device_id.as_deref())
         .or_else(|| {
             existing
                 .as_ref()
                 .and_then(|cfg| normalize_channel_device_id(cfg.channel_device_id.as_deref()))
         })
-        .or_else(|| channel_server_base_url.as_ref().map(|_| generate_channel_device_id()));
+        .or_else(|| {
+            channel_server_base_url
+                .as_ref()
+                .map(|_| generate_channel_device_id())
+        });
 
     let cfg = StoredConfig {
         provider,

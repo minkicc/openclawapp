@@ -1,0 +1,17 @@
+name = "chnnl-server"
+main = "src/index.js"
+compatibility_date = "2026-03-27"
+workers_dev = true
+
+routes = [
+  { pattern = "chnnl.net/*", zone_name = "chnnl.net" },
+  { pattern = "www.chnnl.net/*", zone_name = "chnnl.net" }
+]
+
+[[durable_objects.bindings]]
+name = "PAIR_V2_HUB"
+class_name = "PairV2Hub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PairV2Hub"]

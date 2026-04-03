@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { formatPairV2ConnectionName, isGeneratedPairV2ConnectionName } from '@openclaw/pair-sdk';
 import { I18N } from '../../legacy/i18n-catalog';
 import { useDesktopShellStore } from '../../store/useDesktopShellStore';
 
@@ -9,23 +10,39 @@ function t(currentLang: 'zh-CN' | 'en-US', key: string, params: Record<string, u
   return template.replace(/\{(\w+)\}/g, (_, name) => String(params[name] ?? ''));
 }
 
-function pairNameSuffix(seed: unknown) {
-  const normalized = String(seed || '')
-    .trim()
-    .replace(/_/g, '')
-    .replace(/[^a-zA-Z0-9]/g, '');
-  if (normalized) {
-    return normalized.slice(-6);
-  }
-  return Date.now().toString().slice(-6);
-}
-
-function defaultPairChannelName(seed: unknown) {
-  return `连接-${pairNameSuffix(seed)}`;
-}
-
 function resolvePairChannelNameSeed(channel: any) {
-  return channel?.sessionId || channel?.mobileId || channel?.channelId;
+  return channel?.bindingId || channel?.sessionId || channel?.mobileId || channel?.channelId;
+}
+
+function resolvePairChannelMobileName(channel: any) {
+  return String(channel?.mobileName || '').trim();
+}
+
+function resolvePairChannelGeneratedCandidates(channel: any) {
+  const mobileName = resolvePairChannelMobileName(channel);
+  return [
+    { seed: resolvePairChannelNameSeed(channel), mobileName },
+    { seed: channel?.bindingId, mobileName },
+    { seed: channel?.sessionId, mobileName },
+    { seed: channel?.mobileId, mobileName },
+    { seed: channel?.channelId, mobileName },
+  ].filter((item) => String(item.seed || '').trim());
+}
+
+function defaultPairChannelName(channel: any) {
+  return formatPairV2ConnectionName(resolvePairChannelNameSeed(channel), resolvePairChannelMobileName(channel));
+}
+
+function normalizePairChannelName(channel: any, currentName?: string) {
+  const generatedName = defaultPairChannelName(channel);
+  const normalizedCurrent = String(currentName ?? channel?.name ?? '').trim();
+  if (!normalizedCurrent) {
+    return generatedName;
+  }
+  if (isGeneratedPairV2ConnectionName(normalizedCurrent, resolvePairChannelGeneratedCandidates(channel))) {
+    return generatedName;
+  }
+  return normalizedCurrent;
 }
 
 function formatPairTs(ts: unknown) {
@@ -71,8 +88,7 @@ export function PairChannelList() {
     setDrafts((current) => {
       const next: Record<string, string> = {};
       for (const channel of sortedChannels) {
-        const fallbackName = defaultPairChannelName(resolvePairChannelNameSeed(channel));
-        next[channel.channelId] = current[channel.channelId] ?? (String(channel?.name || '').trim() || fallbackName);
+        next[channel.channelId] = normalizePairChannelName(channel, current[channel.channelId]);
       }
       return next;
     });
@@ -91,8 +107,7 @@ export function PairChannelList() {
     <>
       {sortedChannels.map((channel) => {
         const mobileId = String(channel?.mobileId || '').trim() || '-';
-        const fallbackName = defaultPairChannelName(resolvePairChannelNameSeed(channel));
-        const name = drafts[channel.channelId] ?? (String(channel?.name || '').trim() || fallbackName);
+        const name = drafts[channel.channelId] ?? normalizePairChannelName(channel);
         const channelStatus = String(channel?.status || 'pending');
         const statusClass =
           channelStatus === 'active' ? 'is-active' : channelStatus === 'offline' ? 'is-offline' : 'is-pending';

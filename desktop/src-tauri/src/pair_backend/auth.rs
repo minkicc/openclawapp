@@ -34,10 +34,7 @@ impl PairBackendHandle {
 
         let home = std::env::var("HOME").ok()?;
         let webkit_root = PathBuf::from(home).join("Library").join("WebKit");
-        let key = format!(
-            "openclaw.pair.v2.identity.desktop.{}",
-            normalized_entity_id
-        );
+        let key = format!("openclaw.pair.v2.identity.desktop.{}", normalized_entity_id);
         let mut candidates = Vec::new();
         for app_dir in [
             "dev.openclawapp.desktop",
@@ -45,7 +42,10 @@ impl PairBackendHandle {
             "OpenClaw",
             "tauri-app",
         ] {
-            let base = webkit_root.join(app_dir).join("WebsiteData").join("Default");
+            let base = webkit_root
+                .join(app_dir)
+                .join("WebsiteData")
+                .join("Default");
             if !base.exists() {
                 continue;
             }
@@ -158,7 +158,10 @@ impl PairBackendHandle {
             return Ok(identity);
         }
 
-        if let Some(identity) = self.try_restore_legacy_pair_identity(app, entity_id).await? {
+        if let Some(identity) = self
+            .try_restore_legacy_pair_identity(app, entity_id)
+            .await?
+        {
             self.append_event(format!(
                 "recovered pair identity from legacy webview storage: device={}",
                 entity_id
@@ -225,7 +228,11 @@ impl PairBackendHandle {
         Ok(URL_SAFE_NO_PAD.encode(signing_key.sign(text.as_bytes()).to_bytes()))
     }
 
-    pub(super) fn verify_text(public_key_base64url: &str, text: &str, signature_base64url: &str) -> Result<bool, String> {
+    pub(super) fn verify_text(
+        public_key_base64url: &str,
+        text: &str,
+        signature_base64url: &str,
+    ) -> Result<bool, String> {
         let public_key = URL_SAFE_NO_PAD
             .decode(public_key_base64url)
             .map_err(|e| format!("解析公钥失败: {}", e))?;
@@ -239,8 +246,8 @@ impl PairBackendHandle {
                 .map_err(|_| "公钥长度无效".to_string())?,
         )
         .map_err(|e| format!("构造公钥失败: {}", e))?;
-        let signature = Signature::from_slice(&signature_bytes)
-            .map_err(|e| format!("构造签名失败: {}", e))?;
+        let signature =
+            Signature::from_slice(&signature_bytes).map_err(|e| format!("构造签名失败: {}", e))?;
         Ok(verifying_key.verify(text.as_bytes(), &signature).is_ok())
     }
 
@@ -285,7 +292,10 @@ impl PairBackendHandle {
         serde_json::from_value(value).map_err(|e| format!("解析 {} 数据失败: {}", path, e))
     }
 
-    pub(super) async fn ensure_auth_session(&self, app: &AppHandle) -> Result<(String, String, PairIdentityRecord, PairAuthSession), String> {
+    pub(super) async fn ensure_auth_session(
+        &self,
+        app: &AppHandle,
+    ) -> Result<(String, String, PairIdentityRecord, PairAuthSession), String> {
         let (base_url, device_id, cached_auth_base_url, cached_session) = {
             let state = self.state.lock().await;
             (
@@ -312,7 +322,10 @@ impl PairBackendHandle {
         {
             Ok(session) => session,
             Err(error) if error.contains("already exists with another public key") => {
-                if let Some(restored) = self.try_restore_legacy_pair_identity(app, &device_id).await? {
+                if let Some(restored) = self
+                    .try_restore_legacy_pair_identity(app, &device_id)
+                    .await?
+                {
                     identity = restored;
                     self.append_event(format!(
                         "restored legacy pair identity after server mismatch: device={}",
@@ -333,7 +346,8 @@ impl PairBackendHandle {
             state.auth_session = Some(session.clone());
             state.auth_base_url = base_url.clone();
         }
-        self.append_event(format!("v2 auth ready: device={}", device_id)).await;
+        self.append_event(format!("v2 auth ready: device={}", device_id))
+            .await;
         Ok((base_url, device_id, identity, session))
     }
 
@@ -363,8 +377,10 @@ impl PairBackendHandle {
                 .ok_or_else(|| "challenge 响应缺失".to_string())?,
         )
         .map_err(|e| format!("解析 challenge 失败: {}", e))?;
-        let signature =
-            Self::sign_text(&identity.private_key, &Self::build_auth_login_text(&challenge))?;
+        let signature = Self::sign_text(
+            &identity.private_key,
+            &Self::build_auth_login_text(&challenge),
+        )?;
         let login_response: Value = self
             .request_json(
                 base_url,
@@ -389,7 +405,10 @@ impl PairBackendHandle {
         .map_err(|e| format!("解析 auth session 失败: {}", e))
     }
 
-    pub(super) async fn announce_presence(&self, app: &AppHandle) -> Result<(String, String, PairIdentityRecord, PairAuthSession), String> {
+    pub(super) async fn announce_presence(
+        &self,
+        app: &AppHandle,
+    ) -> Result<(String, String, PairIdentityRecord, PairAuthSession), String> {
         let (base_url, device_id, identity, session) = self.ensure_auth_session(app).await?;
         let _response: Value = self
             .request_json(
@@ -456,7 +475,10 @@ impl PairBackendHandle {
         {
             let mut state = self.state.lock().await;
             let channel_open = state.channel_open;
-            for binding in bindings.into_iter().filter(|item| item.trust_state == "active") {
+            for binding in bindings
+                .into_iter()
+                .filter(|item| item.trust_state == "active")
+            {
                 let channel = find_or_create_channel_mut(
                     &mut state.channels,
                     Some(&binding.pair_session_id),
@@ -467,6 +489,7 @@ impl PairBackendHandle {
                 channel.session_id = binding.pair_session_id.clone();
                 channel.binding_id = binding.binding_id.clone();
                 channel.mobile_id = binding.mobile_id.clone();
+                channel.mobile_name = binding.mobile_name.clone();
                 channel.device_public_key = Some(binding.device_public_key.clone());
                 channel.mobile_public_key = Some(binding.mobile_public_key.clone());
                 channel.trust_state = binding.trust_state.clone();
@@ -482,7 +505,10 @@ impl PairBackendHandle {
         Ok(())
     }
 
-    pub(super) async fn resolve_ice_servers(&self, app: &AppHandle) -> Result<Vec<RTCIceServer>, String> {
+    pub(super) async fn resolve_ice_servers(
+        &self,
+        app: &AppHandle,
+    ) -> Result<Vec<RTCIceServer>, String> {
         let (base_url, _device_id, _identity, session) = self.ensure_auth_session(app).await?;
         let now = Self::now_ms();
         {
@@ -573,7 +599,10 @@ impl PairBackendHandle {
         Ok(())
     }
 
-    pub(super) async fn create_session(&self, app: &AppHandle) -> Result<PairBackendSnapshot, String> {
+    pub(super) async fn create_session(
+        &self,
+        app: &AppHandle,
+    ) -> Result<PairBackendSnapshot, String> {
         let (base_url, _device_id, _identity, session) = self.ensure_auth_session(app).await?;
         let response: Value = self
             .request_json(
@@ -613,19 +642,32 @@ impl PairBackendHandle {
             channel.session_nonce = Some(pair_session.session_nonce.clone());
             channel.device_public_key = Some(pair_session.device_public_key.clone());
         }
-        self.append_event(format!("pair session created: {}", pair_session.pair_session_id))
-            .await;
+        self.append_event(format!(
+            "pair session created: {}",
+            pair_session.pair_session_id
+        ))
+        .await;
         Ok(self.snapshot().await)
     }
 
-    pub(super) async fn approve_channel(&self, app: &AppHandle, channel_id: &str) -> Result<PairBackendSnapshot, String> {
+    pub(super) async fn approve_channel(
+        &self,
+        app: &AppHandle,
+        channel_id: &str,
+    ) -> Result<PairBackendSnapshot, String> {
         let binding_id = {
             let state = self.state.lock().await;
             state
                 .channels
                 .iter()
                 .find(|item| item.channel_id == channel_id)
-                .and_then(|item| if item.binding_id.is_empty() { None } else { Some(item.binding_id.clone()) })
+                .and_then(|item| {
+                    if item.binding_id.is_empty() {
+                        None
+                    } else {
+                        Some(item.binding_id.clone())
+                    }
+                })
                 .ok_or_else(|| "bindingId missing".to_string())?
         };
         let (base_url, _device_id, _identity, session) = self.ensure_auth_session(app).await?;
@@ -658,6 +700,7 @@ impl PairBackendHandle {
             channel.session_id = binding.pair_session_id.clone();
             channel.binding_id = binding.binding_id.clone();
             channel.mobile_id = binding.mobile_id.clone();
+            channel.mobile_name = binding.mobile_name.clone();
             channel.device_public_key = Some(binding.device_public_key.clone());
             channel.mobile_public_key = Some(binding.mobile_public_key.clone());
             channel.trust_state = binding.trust_state.clone();
@@ -673,14 +716,24 @@ impl PairBackendHandle {
         Ok(self.snapshot().await)
     }
 
-    pub(super) async fn revoke_channel(&self, app: &AppHandle, channel_id: &str) -> Result<PairBackendSnapshot, String> {
+    pub(super) async fn revoke_channel(
+        &self,
+        app: &AppHandle,
+        channel_id: &str,
+    ) -> Result<PairBackendSnapshot, String> {
         let binding_id = {
             let state = self.state.lock().await;
             state
                 .channels
                 .iter()
                 .find(|item| item.channel_id == channel_id)
-                .and_then(|item| if item.binding_id.is_empty() { None } else { Some(item.binding_id.clone()) })
+                .and_then(|item| {
+                    if item.binding_id.is_empty() {
+                        None
+                    } else {
+                        Some(item.binding_id.clone())
+                    }
+                })
                 .ok_or_else(|| "bindingId missing".to_string())?
         };
         let (base_url, _device_id, _identity, session) = self.ensure_auth_session(app).await?;
@@ -699,7 +752,8 @@ impl PairBackendHandle {
             let mut state = self.state.lock().await;
             state.channels.retain(|item| item.channel_id != channel_id);
         }
-        self.append_event(format!("channel deleted: {}", channel_id)).await;
+        self.append_event(format!("channel deleted: {}", channel_id))
+            .await;
         Ok(self.snapshot().await)
     }
 
@@ -713,6 +767,4 @@ impl PairBackendHandle {
             }
         });
     }
-
-
 }

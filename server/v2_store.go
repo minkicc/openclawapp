@@ -30,6 +30,10 @@ type v2Store struct {
 	subscribers         map[string]map[chan SignalEvent]struct{}
 }
 
+func normalizeV2DisplayName(value string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+}
+
 func newV2Store() *v2Store {
 	return &v2Store{
 		desktops:            map[string]v2Desktop{},
@@ -510,6 +514,12 @@ func (s *v2Store) claimPair(principal v2Principal, req v2PairClaimRequest) (v2Pa
 	if !exists {
 		return v2PairSession{}, v2Binding{}, newError("NOT_FOUND", "mobile not found")
 	}
+	mobileName := normalizeV2DisplayName(req.MobileName)
+	if mobileName != "" {
+		mobile.MobileName = mobileName
+		mobile.UpdatedAt = now
+		s.mobiles[mobile.MobileID] = mobile
+	}
 
 	existingBinding, hasBinding := s.findBindingLocked(session.DeviceID, mobile.MobileID)
 	if hasBinding && existingBinding.TrustState == v2TrustStateActive {
@@ -521,6 +531,7 @@ func (s *v2Store) claimPair(principal v2Principal, req v2PairClaimRequest) (v2Pa
 		binding = existingBinding
 		binding.PairSessionID = session.PairSessionID
 		binding.MobilePublicKey = mobile.PublicKey
+		binding.MobileName = mobile.MobileName
 		binding.DevicePublicKey = session.DevicePublicKey
 		binding.UpdatedAt = now
 	} else {
@@ -534,6 +545,7 @@ func (s *v2Store) claimPair(principal v2Principal, req v2PairClaimRequest) (v2Pa
 			DeviceID:        session.DeviceID,
 			DevicePublicKey: session.DevicePublicKey,
 			MobileID:        mobile.MobileID,
+			MobileName:      mobile.MobileName,
 			MobilePublicKey: mobile.PublicKey,
 			TrustState:      v2TrustStatePending,
 			CreatedAt:       now,

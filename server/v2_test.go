@@ -126,6 +126,7 @@ func TestV2AuthPresencePairingFlow(t *testing.T) {
 
 	claimRec := doJSONRequest(t, app, http.MethodPost, "/v2/pair/claims", map[string]any{
 		"claimToken": pairSessionResp.Session.ClaimToken,
+		"mobileName": "测试手机",
 	}, mobileSession.Token)
 	if claimRec.Code != http.StatusOK {
 		t.Fatalf("claim failed: status=%d body=%s", claimRec.Code, claimRec.Body.String())
@@ -136,6 +137,9 @@ func TestV2AuthPresencePairingFlow(t *testing.T) {
 	decodeResponseBody(t, claimRec, &claimResp)
 	if claimResp.Binding.TrustState != v2TrustStatePending {
 		t.Fatalf("expected pending binding, got %s", claimResp.Binding.TrustState)
+	}
+	if claimResp.Binding.MobileName != "测试手机" {
+		t.Fatalf("expected mobile name to round-trip, got %q", claimResp.Binding.MobileName)
 	}
 
 	bindingsRec := doJSONRequest(t, app, http.MethodGet, "/v2/bindings", nil, desktopSession.Token)
@@ -148,6 +152,9 @@ func TestV2AuthPresencePairingFlow(t *testing.T) {
 	decodeResponseBody(t, bindingsRec, &bindingsResp)
 	if len(bindingsResp.Bindings) != 1 {
 		t.Fatalf("expected 1 binding, got %d", len(bindingsResp.Bindings))
+	}
+	if bindingsResp.Bindings[0].MobileName != "测试手机" {
+		t.Fatalf("expected binding mobile name, got %q", bindingsResp.Bindings[0].MobileName)
 	}
 
 	approveRec := doJSONRequest(t, app, http.MethodPost, "/v2/pair/approvals", map[string]any{

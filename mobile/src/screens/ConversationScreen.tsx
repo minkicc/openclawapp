@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { RootStackParamList } from '../navigation/AppNavigator';
+import { MarkdownText } from '../components/MarkdownText';
 import { useSessions } from '../state/SessionsContext';
 import { appColors } from '../theme/colors';
 
@@ -140,7 +141,11 @@ export function ConversationScreen({ route, navigation }: Props) {
             return (
               <View key={message.id} style={[styles.messageRow, isSelf ? styles.messageRowSelf : null]}>
                 <View style={[styles.bubble, isSelf ? styles.bubbleSelf : styles.bubblePeer]}>
-                  <Text style={styles.messageText}>{message.text}</Text>
+                  <MarkdownText
+                    text={message.text}
+                    style={styles.messageText}
+                    variant={isSelf ? 'self' : 'peer'}
+                  />
                 </View>
                 <Text style={styles.messageTs}>{message.createdAt}</Text>
               </View>

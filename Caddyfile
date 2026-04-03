@@ -1,0 +1,8 @@
+chnnl.net, www.chnnl.net {
+  encode zstd gzip
+
+  @www host www.chnnl.net
+  redir @www https://chnnl.net{uri} permanent
+
+  reverse_proxy openclaw-server:8787
+}

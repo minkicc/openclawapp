@@ -36,6 +36,7 @@ export type PairV2Binding = {
   deviceId: string;
   devicePublicKey: string;
   mobileId: string;
+  mobileName?: string | null;
   mobilePublicKey: string;
   trustState: 'pending' | 'active' | 'revoked' | string;
   createdAt: number;
@@ -452,13 +453,23 @@ export async function createPairV2Session(baseUrl: string, token: string, ttlSec
   );
 }
 
-export async function claimPairV2Session(baseUrl: string, token: string, claimToken: string) {
+export async function claimPairV2Session(
+  baseUrl: string,
+  token: string,
+  claimToken: string,
+  options?: {
+    mobileName?: string;
+  }
+) {
   return await pairV2RequestJson<{ ok: boolean; pairSession: PairV2PairSession; binding: PairV2Binding }>(
     baseUrl,
     '/v2/pair/claims',
     {
       method: 'POST',
-      body: JSON.stringify({ claimToken })
+      body: JSON.stringify({
+        claimToken,
+        mobileName: String(options?.mobileName || '').trim() || undefined
+      })
     },
     token
   );

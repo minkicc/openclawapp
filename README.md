@@ -146,6 +146,33 @@ Workflow file:
 .github/workflows/build.yml
 ```
 
+Cloudflare Worker deployment for the `v2` pairing control plane lives in:
+
+```text
+server-worker/
+```
+
+Worker deployment workflow:
+
+```text
+.github/workflows/deploy-worker.yml
+```
+
+Production domain target:
+
+- `https://chnnl.net`
+- `https://www.chnnl.net`
+
+To publish a DMG into GitHub Release assets, push a version tag:
+
+```bash
+git push origin main
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+See `/Users/zhangruiqiang/dev/setupclaw/server-worker/README.md` for Cloudflare setup details.
+
 ### macOS signing and notarization in GitHub Actions
 
 To distribute a macOS app without Gatekeeper damage warnings, configure these repository secrets:

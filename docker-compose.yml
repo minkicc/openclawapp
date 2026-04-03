@@ -5,23 +5,101 @@ services:
       context: ./server
       dockerfile: Dockerfile
       args:
-        GOPROXY: ${OPENCLAW_SERVER_GOPROXY:-https://goproxy.cn,direct}
-    image: openclaw/server-mvp:dev
+        GOPROXY: ${OPENCLAW_SERVER_GOPROXY:-https://proxy.golang.org,direct}
+    image: ${OPENCLAW_SERVER_IMAGE:-openclaw/server:latest}
     restart: unless-stopped
     environment:
       HOST: 0.0.0.0
-      PORT: 38089
-      STORE_BACKEND: ${OPENCLAW_SERVER_STORE_BACKEND:-memory}
+      PORT: 8787
+      STORE_BACKEND: ${OPENCLAW_SERVER_STORE_BACKEND:-redis}
       REDIS_URL: ${OPENCLAW_SERVER_REDIS_URL:-redis://redis:6379}
       REDIS_KEY_PREFIX: ${OPENCLAW_SERVER_REDIS_KEY_PREFIX:-openclaw:server}
-    ports:
-      - "${OPENCLAW_SERVER_PORT:-38089}:38089"
+      V2_ICE_SERVERS_JSON: ${OPENCLAW_SERVER_V2_ICE_SERVERS_JSON:-}
+      V2_ICE_TTL_SECONDS: ${OPENCLAW_SERVER_V2_ICE_TTL_SECONDS:-600}
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    expose:
+      - "8787"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8787/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
 
   redis:
     image: redis:7-alpine
     container_name: openclaw-redis
     restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: openclaw-caddy
+    restart: unless-stopped
+    depends_on:
+      openclaw-server:
+        condition: service_healthy
     ports:
-      - "${OPENCLAW_REDIS_PORT:-6379}:6379"
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  trojan-go:
+    image: p4gefau1t/trojan-go:latest
+    container_name: openclaw-trojan-go
+    restart: unless-stopped
+    depends_on:
+      caddy:
+        condition: service_started
+    environment:
+      TROJAN_GO_PASSWORD: ${TROJAN_GO_PASSWORD:?set TROJAN_GO_PASSWORD in .env}
+    ports:
+      - "${TROJAN_GO_PORT:-8443}:8443"
+    volumes:
+      - caddy_data:/data:ro
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        CERT_DIR=/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/chnnl.net
+        CERT_FILE=$$CERT_DIR/chnnl.net.crt
+        KEY_FILE=$$CERT_DIR/chnnl.net.key
+        until [ -f "$$CERT_FILE" ] && [ -f "$$KEY_FILE" ]; do
+          echo "waiting for caddy certificates in $$CERT_DIR"
+          sleep 5
+        done
+        cat >/tmp/trojan-go.json <<EOF
+        {
+          "run_type": "server",
+          "local_addr": "0.0.0.0",
+          "local_port": 8443,
+          "remote_addr": "caddy",
+          "remote_port": 80,
+          "password": ["${TROJAN_GO_PASSWORD}"],
+          "ssl": {
+            "cert": "$$CERT_FILE",
+            "key": "$$KEY_FILE",
+            "sni": "chnnl.net"
+          }
+        }
+        EOF
+        exec trojan-go -config /tmp/trojan-go.json
+
+volumes:
+  redis_data:
+  caddy_data:
+  caddy_config:

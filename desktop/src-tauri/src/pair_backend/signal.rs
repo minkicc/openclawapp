@@ -29,11 +29,8 @@ impl PairBackendHandle {
         }
 
         if let Err(error) = self.refresh_bindings(app).await {
-            self.append_event(format!(
-                "refresh bindings before signal failed: {}",
-                error
-            ))
-            .await;
+            self.append_event(format!("refresh bindings before signal failed: {}", error))
+                .await;
         }
 
         if let Some(channel) = self.find_channel_for_signal(binding_id, mobile_id).await {
@@ -237,7 +234,9 @@ impl PairBackendHandle {
                 tokio::time::sleep(Duration::from_secs(PAIR_HEARTBEAT_SECS)).await;
                 let still_current = {
                     let state = heartbeat_backend.state.lock().await;
-                    state.channel_open && state.desired_connected && state.connect_generation == generation
+                    state.channel_open
+                        && state.desired_connected
+                        && state.connect_generation == generation
                 };
                 if !still_current {
                     break;
@@ -274,7 +273,8 @@ impl PairBackendHandle {
     ) -> Result<(), String> {
         let encoded_device_id: String =
             url::form_urlencoded::byte_serialize(device_id.as_bytes()).collect();
-        let encoded_token: String = url::form_urlencoded::byte_serialize(token.as_bytes()).collect();
+        let encoded_token: String =
+            url::form_urlencoded::byte_serialize(token.as_bytes()).collect();
         let stream_url = format!(
             "{}/v2/signal/stream?clientType=desktop&clientId={}&token={}",
             base_url.trim_end_matches('/'),
@@ -397,7 +397,9 @@ impl PairBackendHandle {
             };
             let still_current = {
                 let state = backend.state.lock().await;
-                state.channel_open && state.desired_connected && state.connect_generation == generation
+                state.channel_open
+                    && state.desired_connected
+                    && state.connect_generation == generation
             };
             if !still_current {
                 return;
@@ -451,34 +453,41 @@ impl PairBackendHandle {
             self.dispose_peer(&key, "desktop channel closed", "disconnected")
                 .await;
         }
-        self.disconnect_openclaw_gateway("pair channel closed").await;
+        self.disconnect_openclaw_gateway("pair channel closed")
+            .await;
         self.append_event("ws disconnected by user").await;
         self.emit_snapshot().await;
     }
 
-    pub async fn reload_from_app_config(&self, app: AppHandle) -> Result<PairBackendSnapshot, String> {
+    pub async fn reload_from_app_config(
+        &self,
+        app: AppHandle,
+    ) -> Result<PairBackendSnapshot, String> {
         self.set_app_handle(app.clone()).await;
-        let config = read_config_with_runtime_custom_api_mode_sync(&app)?
-            .unwrap_or(StoredConfig {
-                provider: String::new(),
-                model: String::new(),
-                api_key: String::new(),
-                base_url: None,
-                custom_api_mode: String::new(),
-                custom_headers: Default::default(),
-                skills_dirs: Vec::new(),
-                openclaw_command: "openclaw".to_string(),
-                channel_server_base_url: None,
-                channel_device_id: None,
-                updated_at: String::new(),
-            });
+        let config = read_config_with_runtime_custom_api_mode_sync(&app)?.unwrap_or(StoredConfig {
+            provider: String::new(),
+            model: String::new(),
+            api_key: String::new(),
+            base_url: None,
+            custom_api_mode: String::new(),
+            custom_headers: Default::default(),
+            skills_dirs: Vec::new(),
+            openclaw_command: "openclaw".to_string(),
+            channel_server_base_url: None,
+            channel_device_id: None,
+            updated_at: String::new(),
+        });
         let base_url = config
             .channel_server_base_url
             .as_deref()
             .map(Self::normalize_base_url)
             .transpose()?
             .unwrap_or_default();
-        let device_id = config.channel_device_id.unwrap_or_default().trim().to_string();
+        let device_id = config
+            .channel_device_id
+            .unwrap_or_default()
+            .trim()
+            .to_string();
         let should_connect = !base_url.is_empty() && !device_id.is_empty();
         {
             let mut state = self.state.lock().await;
@@ -487,7 +496,9 @@ impl PairBackendHandle {
             state.channel_open = should_connect;
             state.desired_connected = should_connect;
             if !should_connect {
-                state.status_message = "通信功能尚未配置。请先在下方填写服务端地址并保存，设备 ID 会自动生成。".to_string();
+                state.status_message =
+                    "通信功能尚未配置。请先在下方填写服务端地址并保存，设备 ID 会自动生成。"
+                        .to_string();
                 state.status_type = String::new();
             } else {
                 state.status_message.clear();
@@ -496,7 +507,8 @@ impl PairBackendHandle {
         }
         self.emit_snapshot().await;
         if should_connect {
-            self.append_event("auto opening pair channel after config sync").await;
+            self.append_event("auto opening pair channel after config sync")
+                .await;
             self.connect(app.clone(), false).await?;
         } else {
             self.disconnect().await;
@@ -528,14 +540,19 @@ impl PairBackendHandle {
             .as_ref()
             .map(|value| value.id.trim().to_string())
             .unwrap_or_default();
-        let payload = envelope.payload.unwrap_or_else(|| Value::Object(Default::default()));
+        let payload = envelope
+            .payload
+            .unwrap_or_else(|| Value::Object(Default::default()));
 
         if event_type == "pair.claimed" {
             let mobile_id = read_json_string(&payload, &["mobileId", "mobile_id"]);
+            let mobile_name = read_json_string(&payload, &["mobileName", "mobile_name"]);
             let session_id = read_json_string(&payload, &["pairSessionId", "pair_session_id"]);
             let binding_id = read_json_string(&payload, &["bindingId", "binding_id"]);
-            let device_public_key = read_json_string(&payload, &["devicePublicKey", "device_public_key"]);
-            let mobile_public_key = read_json_string(&payload, &["mobilePublicKey", "mobile_public_key"]);
+            let device_public_key =
+                read_json_string(&payload, &["devicePublicKey", "device_public_key"]);
+            let mobile_public_key =
+                read_json_string(&payload, &["mobilePublicKey", "mobile_public_key"]);
             let session_nonce = read_json_string(&payload, &["sessionNonce", "session_nonce"]);
             let trust_state = read_json_string(&payload, &["trustState", "trust_state"]);
             let safety_code = if !device_public_key.is_empty()
@@ -569,6 +586,9 @@ impl PairBackendHandle {
                 }
                 if !mobile_id.is_empty() {
                     channel.mobile_id = mobile_id.clone();
+                }
+                if !mobile_name.is_empty() {
+                    channel.mobile_name = mobile_name.clone();
                 }
                 if !device_public_key.is_empty() {
                     channel.device_public_key = Some(device_public_key.clone());
@@ -626,7 +646,10 @@ impl PairBackendHandle {
             return Ok(());
         }
 
-        if matches!(event_type.as_str(), "webrtc.offer" | "webrtc.answer" | "webrtc.ice") {
+        if matches!(
+            event_type.as_str(),
+            "webrtc.offer" | "webrtc.answer" | "webrtc.ice"
+        ) {
             let signal_payload: PairSignalPayload =
                 serde_json::from_value(payload).map_err(|e| format!("解析信令失败: {}", e))?;
             let binding_id = signal_payload.binding_id.trim().to_string();
@@ -682,7 +705,11 @@ impl PairBackendHandle {
         let mut reuse_existing_peer = None;
         if let Some(peer) = existing_peer {
             let same_offer = self
-                .peer_has_same_remote_description(&peer, &description.sdp_type, &normalized_offer_sdp)
+                .peer_has_same_remote_description(
+                    &peer,
+                    &description.sdp_type,
+                    &normalized_offer_sdp,
+                )
                 .await;
             if same_offer {
                 if let Some(local_description) = peer.peer.local_description().await {
@@ -747,7 +774,8 @@ impl PairBackendHandle {
                 .map_err(|e| format!("设置远端 offer 失败: {}", e))?;
         }
         self.flush_remote_candidates(&peer).await?;
-        let answer = peer.peer
+        let answer = peer
+            .peer
             .create_answer(None)
             .await
             .map_err(|e| format!("创建 answer 失败: {}", e))?;
@@ -755,12 +783,9 @@ impl PairBackendHandle {
             .set_local_description(answer.clone())
             .await
             .map_err(|e| format!("设置本地 answer 失败: {}", e))?;
-        let local_description = peer
-            .peer
-            .local_description()
-            .await
-            .unwrap_or(answer);
-        self.send_answer_signal(app, &peer, local_description).await?;
+        let local_description = peer.peer.local_description().await.unwrap_or(answer);
+        self.send_answer_signal(app, &peer, local_description)
+            .await?;
         Ok(())
     }
 
@@ -853,54 +878,55 @@ impl PairBackendHandle {
 
         let backend = self.clone();
         let peer_state = peer.clone();
-        peer.peer.on_peer_connection_state_change(Box::new(move |state| {
-            let backend = backend.clone();
-            let peer_state = peer_state.clone();
-            Box::pin(async move {
-                if !backend
-                    .is_current_peer_instance(&peer_state.binding_id, &peer_state)
-                    .await
-                {
-                    backend
-                        .append_event(format!(
-                            "ignored stale peer state: binding={} state={}",
-                            peer_state.binding_id, state
-                        ))
-                        .await;
-                    return;
-                }
-                match state {
-                    RTCPeerConnectionState::Failed => {
+        peer.peer
+            .on_peer_connection_state_change(Box::new(move |state| {
+                let backend = backend.clone();
+                let peer_state = peer_state.clone();
+                Box::pin(async move {
+                    if !backend
+                        .is_current_peer_instance(&peer_state.binding_id, &peer_state)
+                        .await
+                    {
                         backend
-                            .dispose_peer_if_current(
-                                &peer_state,
-                                "peer connection failed",
-                                "failed",
-                            )
+                            .append_event(format!(
+                                "ignored stale peer state: binding={} state={}",
+                                peer_state.binding_id, state
+                            ))
                             .await;
+                        return;
                     }
-                    RTCPeerConnectionState::Closed => {
-                        backend
-                            .dispose_peer_if_current(
-                                &peer_state,
-                                &format!("peer connection {}", state),
-                                "disconnected",
-                            )
-                            .await;
+                    match state {
+                        RTCPeerConnectionState::Failed => {
+                            backend
+                                .dispose_peer_if_current(
+                                    &peer_state,
+                                    "peer connection failed",
+                                    "failed",
+                                )
+                                .await;
+                        }
+                        RTCPeerConnectionState::Closed => {
+                            backend
+                                .dispose_peer_if_current(
+                                    &peer_state,
+                                    &format!("peer connection {}", state),
+                                    "disconnected",
+                                )
+                                .await;
+                        }
+                        RTCPeerConnectionState::Disconnected => {
+                            backend
+                                .set_channel_peer_state(
+                                    &peer_state.binding_id,
+                                    "disconnected",
+                                    "peer connection disconnected",
+                                )
+                                .await;
+                        }
+                        _ => {}
                     }
-                    RTCPeerConnectionState::Disconnected => {
-                        backend
-                            .set_channel_peer_state(
-                                &peer_state.binding_id,
-                                "disconnected",
-                                "peer connection disconnected",
-                            )
-                            .await;
-                    }
-                    _ => {}
-                }
-            })
-        }));
+                })
+            }));
 
         let backend = self.clone();
         let peer_ice = peer.clone();
@@ -974,7 +1000,11 @@ impl PairBackendHandle {
                     return;
                 }
                 backend
-                    .set_channel_peer_state(&peer_open.binding_id, "channel-open", "data channel open")
+                    .set_channel_peer_state(
+                        &peer_open.binding_id,
+                        "channel-open",
+                        "data channel open",
+                    )
                     .await;
                 let _ = backend.send_peer_hello(peer_open).await;
             })
@@ -1045,6 +1075,4 @@ impl PairBackendHandle {
         self.set_channel_peer_state(&channel.binding_id, "connecting", "data channel attached")
             .await;
     }
-
-
 }
