@@ -228,7 +228,15 @@ EOF
     sleep 1
   done
 
-  hdiutil detach "$target" -force >/dev/null 2>&1
+  for _ in {1..3}; do
+    if hdiutil detach "$target" -force >/dev/null 2>&1; then
+      return 0
+    fi
+    sync
+    sleep 1
+  done
+
+  return 1
 }
 cleanup() {
   if [[ -n "${DEVICE:-}" ]]; then

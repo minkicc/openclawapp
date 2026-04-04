@@ -1,2 +1,0 @@
-V2_ICE_TTL_SECONDS=600
-V2_ICE_SERVERS_JSON=[{"urls":["stun:stun.cloudflare.com:3478","stun:stun.l.google.com:19302"]}]
