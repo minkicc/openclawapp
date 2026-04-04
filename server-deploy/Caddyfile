@@ -4,5 +4,9 @@ chnnl.net, www.chnnl.net {
   @www host www.chnnl.net
   redir @www https://chnnl.net{uri} permanent
 
+  reverse_proxy /wss-cgi/* trojan-go:8443 {
+    header_up Host {host}
+  }
+
   reverse_proxy openclaw-server:8787
 }

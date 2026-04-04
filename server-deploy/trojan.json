@@ -4,11 +4,11 @@
     "local_port": 8443,
     "remote_addr": "openclaw-server",
     "remote_port": 8787,
-    "password": ["*"],
+    "password": ["change-this-to-a-long-random-password"],
     "websocket": {
       "enabled": true,
       "path": "/wss-cgi/",
-      "host": "mdlbus.com"
+      "host": "chnnl.net"
     },
     "transport_plugin": {
       "enabled": true,

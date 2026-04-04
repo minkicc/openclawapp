@@ -1,11 +1,6 @@
 services:
   openclaw-server:
     container_name: openclaw-server
-    build:
-      context: ./server
-      dockerfile: Dockerfile
-      args:
-        GOPROXY: ${OPENCLAW_SERVER_GOPROXY:-https://proxy.golang.org,direct}
     image: ${OPENCLAW_SERVER_IMAGE:-openclaw/server:latest}
     restart: unless-stopped
     environment:
@@ -14,7 +9,7 @@ services:
       STORE_BACKEND: ${OPENCLAW_SERVER_STORE_BACKEND:-redis}
       REDIS_URL: ${OPENCLAW_SERVER_REDIS_URL:-redis://redis:6379}
       REDIS_KEY_PREFIX: ${OPENCLAW_SERVER_REDIS_KEY_PREFIX:-openclaw:server}
-      V2_ICE_SERVERS_JSON: ${OPENCLAW_SERVER_V2_ICE_SERVERS_JSON:-}
+      V2_ICE_SERVERS_JSON: ${OPENCLAW_SERVER_V2_ICE_SERVERS_JSON:-[{"urls":["stun:stun.cloudflare.com:3478","stun:stun.l.google.com:19302"]},{"urls":["turn:${TURN_DOMAIN:-chnnl.net}:${TURN_PORT:-3478}?transport=udp","turn:${TURN_DOMAIN:-chnnl.net}:${TURN_PORT:-3478}?transport=tcp"],"username":"${TURN_USERNAME:-openclaw}","credential":"${TURN_PASSWORD:-change-this-to-a-long-random-password}"}]}
       V2_ICE_TTL_SECONDS: ${OPENCLAW_SERVER_V2_ICE_TTL_SECONDS:-600}
     depends_on:
       redis:
@@ -43,6 +38,41 @@ services:
       timeout: 3s
       retries: 5
 
+  coturn:
+    image: coturn/coturn:4.7
+    container_name: openclaw-coturn
+    restart: unless-stopped
+    command:
+      - turnserver
+      - -n
+      - --listening-ip=0.0.0.0
+      - --listening-port=${TURN_PORT:-3478}
+      - --fingerprint
+      - --lt-cred-mech
+      - --realm=${TURN_DOMAIN:-chnnl.net}
+      - --server-name=${TURN_DOMAIN:-chnnl.net}
+      - --user=${TURN_USERNAME:-openclaw}:${TURN_PASSWORD:?set TURN_PASSWORD in .env}
+      - --external-ip=${TURN_PUBLIC_IP:?set TURN_PUBLIC_IP in .env}
+      - --min-port=${TURN_MIN_PORT:-49160}
+      - --max-port=${TURN_MAX_PORT:-49200}
+      - --no-cli
+      - --no-tls
+      - --no-dtls
+      - --simple-log
+    environment:
+      TURN_DOMAIN: ${TURN_DOMAIN:-chnnl.net}
+      TURN_PORT: ${TURN_PORT:-3478}
+      TURN_TLS_PORT: ${TURN_TLS_PORT:-5349}
+      TURN_MIN_PORT: ${TURN_MIN_PORT:-49160}
+      TURN_MAX_PORT: ${TURN_MAX_PORT:-49200}
+      TURN_PUBLIC_IP: ${TURN_PUBLIC_IP:?set TURN_PUBLIC_IP in .env}
+      TURN_USERNAME: ${TURN_USERNAME:-openclaw}
+      TURN_PASSWORD: ${TURN_PASSWORD:?set TURN_PASSWORD in .env}
+    ports:
+      - "${TURN_PORT:-3478}:${TURN_PORT:-3478}/tcp"
+      - "${TURN_PORT:-3478}:${TURN_PORT:-3478}/udp"
+      - "${TURN_MIN_PORT:-49160}-${TURN_MAX_PORT:-49200}:${TURN_MIN_PORT:-49160}-${TURN_MAX_PORT:-49200}/udp"
+
   caddy:
     image: caddy:2.8-alpine
     container_name: openclaw-caddy
@@ -62,13 +92,8 @@ services:
     image: p4gefau1t/trojan-go:latest
     container_name: openclaw-trojan-go
     restart: unless-stopped
-    depends_on:
-      caddy:
-        condition: service_started
-    environment:
-      TROJAN_GO_PASSWORD: ${TROJAN_GO_PASSWORD:?set TROJAN_GO_PASSWORD in .env}
-    ports:
-      - "${TROJAN_GO_PORT:-8443}:8443"
+    expose:
+      - "8443"
     volumes:
       - ./trojan.json:/etc/trojan-go/config.json:ro
 
