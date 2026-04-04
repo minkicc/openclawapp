@@ -762,9 +762,21 @@ fn sync_bundled_openclaw_mobile_extension(app: &AppHandle) -> Result<(), String>
         .join("openclaw")
         .join("extensions")
         .join("openclaw-mobile");
-    if !source.exists() {
-        return Err(format!("未找到内置通信插件目录: {}", source.display()));
-    }
+    let source = if source.exists() {
+        source
+    } else {
+        let dist_source = kernel_dir
+            .join("node_modules")
+            .join("openclaw")
+            .join("dist")
+            .join("extensions")
+            .join("openclaw-mobile");
+        if dist_source.exists() {
+            dist_source
+        } else {
+            return Err(format!("未找到内置通信插件目录: {}", source.display()));
+        }
+    };
 
     let target = openclaw_runtime_extensions_dir(app)?.join("openclaw-mobile");
     if target.exists() {
