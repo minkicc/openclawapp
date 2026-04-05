@@ -20,12 +20,20 @@ import {
   type PairV2SignalStreamLike,
 } from '@openclaw/pair-sdk';
 import {
+  buildOpenClawPairChatAckPayload,
+  buildOpenClawPairChatSyncRequestPayload,
   buildOpenClawPairChatPayload,
+  createOpenClawPairChatMessageId,
   createOpenClawPairChatModule,
+  openClawPairChatAckType,
   openClawPairChatMessageType,
+  openClawPairChatSyncRequestType,
+  parseOpenClawPairChatAck,
+  parseOpenClawPairChatSyncRequest,
   supportsOpenClawPairChat,
 } from '@openclaw/message-sdk';
 import type { ChatMessage, SessionItem } from '../types/session';
+import { collectSessionLeafIds, upsertSessionMessage } from '../utils/chatGraph';
 import {
   ensureMobileAuthV2,
   loadStoredSessions,
@@ -165,32 +173,106 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
 
   function appendMessageLocal(
     sessionId: string,
-    message: { from: ChatMessage['from']; text: string; createdAt?: string }
+    message: {
+      id?: string;
+      from: ChatMessage['from'];
+      text: string;
+      createdAt?: string;
+      ts?: number;
+      kind?: ChatMessage['kind'];
+      after?: string[];
+    }
   ) {
     const text = String(message.text || '').trim();
     if (!text) {
       return;
     }
 
+    const ts = Number(message.ts || Date.now());
+    const nextMessage: ChatMessage = {
+      id: String(message.id || '').trim() || randomId('msg'),
+      from: message.from,
+      text,
+      createdAt: message.createdAt || formatMessageTime(new Date(ts)),
+      ts,
+      kind: message.kind === 'system' ? 'system' : 'chat',
+      after: Array.isArray(message.after) ? [...message.after] : [],
+      missingAfter: [],
+    };
+
     updateSessions((current) =>
       current.map((item) => {
         if (item.id !== sessionId) {
           return item;
         }
-        const nextMessage: ChatMessage = {
-          id: randomId('msg'),
-          from: message.from,
-          text,
-          createdAt: message.createdAt || formatMessageTime(),
-        };
+        const reconciled = upsertSessionMessage(item.messages || [], nextMessage);
         return {
           ...item,
           preview: text,
           isReplying: false,
-          messages: [...(item.messages || []), nextMessage].slice(-300),
+          messages: reconciled.messages.slice(-300),
+          missingMessageIds: reconciled.missingMessageIds,
         };
       })
     );
+  }
+
+  function upsertRemoteChatMessage(
+    sessionId: string,
+    message: {
+      id: string;
+      from: ChatMessage['from'];
+      text: string;
+      ts: number;
+      after?: string[];
+    }
+  ) {
+    const normalizedId = String(message.id || '').trim();
+    if (!normalizedId) {
+      return {
+        inserted: false,
+        missingMessageIds: [] as string[],
+        newlyMissingMessageIds: [] as string[],
+      };
+    }
+
+    let result = {
+      inserted: false,
+      missingMessageIds: [] as string[],
+      newlyMissingMessageIds: [] as string[],
+    };
+
+    updateSessions((current) =>
+      current.map((item) => {
+        if (item.id !== sessionId) {
+          return item;
+        }
+        const reconciled = upsertSessionMessage(item.messages || [], {
+          id: normalizedId,
+          from: message.from,
+          text: String(message.text || ''),
+          createdAt: formatMessageTime(new Date(Number(message.ts || Date.now()))),
+          ts: Number(message.ts || Date.now()),
+          kind: 'chat',
+          after: Array.isArray(message.after) ? [...message.after] : [],
+          missingAfter: [],
+        });
+        result = {
+          inserted: reconciled.inserted,
+          missingMessageIds: reconciled.missingMessageIds,
+          newlyMissingMessageIds: reconciled.newlyMissingMessageIds,
+        };
+        return {
+          ...item,
+          preview: String(message.text || '').trim() || item.preview,
+          isReplying: false,
+          messages: reconciled.messages.slice(-300),
+          missingMessageIds: reconciled.missingMessageIds,
+        };
+      })
+    );
+
+    return result;
   }
 
   function updatePeerState(bindingId: string, state: string, detail = '') {
@@ -384,6 +466,159 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  async function deliverAppMessage(
+    session: SessionItem,
+    message: PairV2PeerAppMessage,
+    options: {
+      preferRelay?: boolean;
+      peerTimeoutMs?: number;
+      peerRetries?: number;
+    } = {}
+  ) {
+    const latestSession = getSessionByIdSnapshot(session.id) || session;
+    const preferRelay = Boolean(options.preferRelay);
+    const currentPeerState = String(latestSession.peerState || '').trim();
+    const shouldAttemptPeer =
+      !preferRelay && currentPeerState !== 'failed' && currentPeerState !== 'disconnected';
+
+    if (shouldAttemptPeer) {
+      try {
+        const peerReady = await ensureSessionPeerConnected(
+          latestSession,
+          options.peerTimeoutMs ?? 3500,
+          options.peerRetries ?? 0
+        );
+        if (peerReady) {
+          const peer = await ensureSessionPeer(latestSession);
+          await peer.sendAppMessage(message.type, message.payload || {});
+          return 'p2p' as const;
+        }
+      } catch (error) {
+        markPeerFailure(latestSession, error);
+      }
+    }
+
+    if (!canUseRelayTransport(latestSession)) {
+      throw new Error('桌面端当前离线，无法使用服务端转发');
+    }
+
+    await sendRelayAppMessage(latestSession, message);
+    patchSessionById(latestSession.id, {
+      transportReady: true,
+      preview: '已切换到服务端转发，可继续聊天。',
+    });
+    return 'relay' as const;
+  }
+
+  async function requestMissingMessages(
+    session: SessionItem,
+    messageIds: string[],
+    preferRelay = false
+  ) {
+    const normalizedIds = Array.from(
+      new Set((Array.isArray(messageIds) ? messageIds : []).map((value) => String(value || '').trim()).filter(Boolean))
+    );
+    if (normalizedIds.length === 0) {
+      return;
+    }
+    try {
+      await deliverAppMessage(
+        session,
+        {
+          type: openClawPairChatSyncRequestType,
+          payload: buildOpenClawPairChatSyncRequestPayload(normalizedIds),
+          ts: Date.now(),
+          from: 'mobile',
+        },
+        {
+          preferRelay,
+          peerTimeoutMs: 1200,
+          peerRetries: 0,
+        }
+      );
+      console.log(`[pair-mobile] requested missing chat ids binding=${session.bindingId} ids=${normalizedIds.join(',')}`);
+    } catch (error) {
+      console.log(
+        `[pair-mobile] request missing chat ids failed binding=${session.bindingId} error=${
+          error instanceof Error ? error.message : String(error || '')
+        }`
+      );
+    }
+  }
+
+  async function acknowledgeMessages(
+    session: SessionItem,
+    messageIds: string[],
+    preferRelay = false
+  ) {
+    const normalizedIds = Array.from(
+      new Set((Array.isArray(messageIds) ? messageIds : []).map((value) => String(value || '').trim()).filter(Boolean))
+    );
+    if (normalizedIds.length === 0) {
+      return;
+    }
+    try {
+      await deliverAppMessage(
+        session,
+        {
+          type: openClawPairChatAckType,
+          payload: buildOpenClawPairChatAckPayload(normalizedIds),
+          ts: Date.now(),
+          from: 'mobile',
+        },
+        {
+          preferRelay,
+          peerTimeoutMs: 1200,
+          peerRetries: 0,
+        }
+      );
+    } catch (error) {
+      console.log(
+        `[pair-mobile] ack chat failed binding=${session.bindingId} ids=${normalizedIds.join(',')} error=${
+          error instanceof Error ? error.message : String(error || '')
+        }`
+      );
+    }
+  }
+
+  async function resendKnownMessages(
+    session: SessionItem,
+    messageIds: string[],
+    preferRelay = false
+  ) {
+    const knownMessages = (session.messages || [])
+      .filter((message) => message.kind !== 'system' && message.from === 'self')
+      .filter((message) => messageIds.includes(message.id));
+
+    for (const message of knownMessages) {
+      try {
+        await deliverAppMessage(
+          session,
+          {
+            type: openClawPairChatMessageType,
+            payload: buildOpenClawPairChatPayload(message.text, {
+              id: message.id,
+              after: message.after || [],
+            }),
+            ts: Number(message.ts || Date.now()),
+            from: 'mobile',
+          },
+          {
+            preferRelay,
+            peerTimeoutMs: 1200,
+            peerRetries: 0,
+          }
+        );
+      } catch (error) {
+        console.log(
+          `[pair-mobile] resend chat failed binding=${session.bindingId} message=${message.id} error=${
+            error instanceof Error ? error.message : String(error || '')
+          }`
+        );
+      }
+    }
+  }
+
   async function ensureSessionPeer(session: SessionItem) {
     const key = String(session.bindingId || '').trim();
     if (!key) {
@@ -404,16 +639,21 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     const appRegistry = createPairV2AppRegistry([
       createOpenClawPairChatModule({
         onChatMessage: (chat) => {
-          console.log(`[pair-mobile] inbound chat binding=${key} text=${chat.text}`);
           const current = getSessionByBindingIdSnapshot(key);
           if (!current) {
             return;
           }
-          appendMessageLocal(current.id, {
+          const result = upsertRemoteChatMessage(current.id, {
+            id: chat.id,
             from: 'host',
             text: chat.text,
-            createdAt: formatMessageTime(new Date(chat.ts)),
+            ts: chat.ts,
+            after: chat.after,
           });
+          if (result.newlyMissingMessageIds.length > 0) {
+            void requestMissingMessages(current, result.newlyMissingMessageIds, false);
+          }
+          void acknowledgeMessages(current, [chat.id], false);
         },
       }),
     ]);
@@ -451,6 +691,19 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
         });
       },
       onAppMessage: async (message: PairV2PeerAppMessage) => {
+        const ack = parseOpenClawPairChatAck(message);
+        if (ack) {
+          return;
+        }
+        const syncRequest = parseOpenClawPairChatSyncRequest(message);
+        if (syncRequest) {
+          const current = getSessionByBindingIdSnapshot(key);
+          if (!current) {
+            return;
+          }
+          await resendKnownMessages(current, syncRequest.messageIds, false);
+          return;
+        }
         await appRegistry.dispatch(message, undefined);
       },
     });
@@ -620,19 +873,35 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
             ? session.preview
             : '已切换到服务端转发，可继续聊天。',
       });
+      const syncRequest = parseOpenClawPairChatSyncRequest(message);
+      if (syncRequest) {
+        void resendKnownMessages(session, syncRequest.messageIds, true);
+        return;
+      }
+      const ack = parseOpenClawPairChatAck(message);
+      if (ack) {
+        return;
+      }
       if (String(message.type || '').trim() === openClawPairChatMessageType) {
-        const text =
+        const payload =
           message.payload && typeof message.payload === 'object'
-            ? String(message.payload.text || '').trim()
-            : '';
+            ? message.payload
+            : {};
+        const text = String(payload.text || '').trim();
         if (!text) {
           return;
         }
-        appendMessageLocal(session.id, {
+        const result = upsertRemoteChatMessage(session.id, {
+          id: String(payload.id || '').trim(),
           from: 'host',
           text,
-          createdAt: formatMessageTime(new Date(Number(message.ts || Date.now()))),
+          ts: Number(message.ts || Date.now()),
+          after: Array.isArray(payload.after) ? payload.after.map((value) => String(value || '')) : [],
         });
+        void acknowledgeMessages(session, [String(payload.id || '').trim()], true);
+        if (result.newlyMissingMessageIds.length > 0) {
+          void requestMissingMessages(session, result.newlyMissingMessageIds, true);
+        }
       }
       return;
     }
@@ -905,45 +1174,34 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
 
     const message: PairV2PeerAppMessage = {
       type: openClawPairChatMessageType,
-      payload: buildOpenClawPairChatPayload(normalizedText),
       ts: Date.now(),
       from: 'mobile',
+      payload: {},
     };
-
-    let deliveredVia: 'p2p' | 'relay' = 'relay';
     const latestSession = getSessionByIdSnapshot(session.id) || session;
-    const currentPeerState = String(latestSession.peerState || '').trim();
-    const shouldAttemptPeer = currentPeerState !== 'failed' && currentPeerState !== 'disconnected';
+    const messageId = createOpenClawPairChatMessageId(message.ts);
+    const after = collectSessionLeafIds(latestSession.messages || []);
+    message.payload = buildOpenClawPairChatPayload(normalizedText, {
+      id: messageId,
+      after,
+    });
 
-    if (shouldAttemptPeer) {
-      try {
-        const peerReady = await ensureSessionPeerConnected(latestSession, 3500, 0);
-        if (peerReady) {
-          const peer = await ensureSessionPeer(latestSession);
-          console.log(`[pair-mobile] send chat binding=${latestSession.bindingId} text=${normalizedText} via=p2p`);
-          await peer.sendAppMessage(openClawPairChatMessageType, buildOpenClawPairChatPayload(normalizedText));
-          deliveredVia = 'p2p';
-        }
-      } catch (error) {
-        markPeerFailure(latestSession, error);
-      }
-    }
-
-    if (deliveredVia !== 'p2p') {
-      if (!canUseRelayTransport(latestSession)) {
-        throw new Error('桌面端当前离线，无法使用服务端转发');
-      }
-      console.log(`[pair-mobile] send chat binding=${latestSession.bindingId} text=${normalizedText} via=relay`);
-      await sendRelayAppMessage(latestSession, message);
-      patchSessionById(latestSession.id, {
-        transportReady: true,
-        preview: '已切换到服务端转发，可继续聊天。',
-      });
-    }
+    const deliveredVia = await deliverAppMessage(latestSession, message, {
+      preferRelay: false,
+      peerTimeoutMs: 3500,
+      peerRetries: 0,
+    });
+    console.log(
+      `[pair-mobile] send chat binding=${latestSession.bindingId} text=${normalizedText} via=${deliveredVia} id=${messageId}`
+    );
 
     appendMessageLocal(session.id, {
+      id: messageId,
       from: 'self',
       text: normalizedText,
+      ts: message.ts,
+      kind: 'chat',
+      after,
     });
   }
 

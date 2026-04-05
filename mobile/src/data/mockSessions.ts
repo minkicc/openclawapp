@@ -10,9 +10,9 @@ export const mockSessions: SessionItem[] = [
     peerLabel: 'Agent Host / kc-mac-01',
     preview: '移动端已接入，等待下一条任务。',
     messages: [
-      { id: 'm1', from: 'host', text: '通信渠道已建立。', createdAt: '09:14' },
-      { id: 'm2', from: 'self', text: '收到，我先做链路验证。', createdAt: '09:15' },
-      { id: 'm3', from: 'host', text: '验证通过后，后续会接入 Agent 对话。', createdAt: '09:17' },
+      { id: 'm1', from: 'host', text: '通信渠道已建立。', createdAt: '09:14', ts: Date.now() - 180000 },
+      { id: 'm2', from: 'self', text: '收到，我先做链路验证。', createdAt: '09:15', ts: Date.now() - 120000 },
+      { id: 'm3', from: 'host', text: '验证通过后，后续会接入 Agent 对话。', createdAt: '09:17', ts: Date.now() - 60000 },
     ],
     serverBaseUrl: 'https://chnnl.net',
     serverToken: '',
@@ -29,8 +29,8 @@ export const mockSessions: SessionItem[] = [
     peerLabel: 'Agent Host / office-mac',
     preview: '等待宿主机重新开放通道。',
     messages: [
-      { id: 'm4', from: 'host', text: '宿主机将于稍后重启。', createdAt: '昨天 21:38' },
-      { id: 'm5', from: 'self', text: '收到，恢复后我再继续。', createdAt: '昨天 21:40' },
+      { id: 'm4', from: 'host', text: '宿主机将于稍后重启。', createdAt: '昨天 21:38', ts: Date.now() - 86400000 },
+      { id: 'm5', from: 'self', text: '收到，恢复后我再继续。', createdAt: '昨天 21:40', ts: Date.now() - 86340000 },
     ],
     serverBaseUrl: 'https://chnnl.net',
     serverToken: '',

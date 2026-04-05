@@ -7,6 +7,10 @@ export type ChatMessage = {
   from: 'self' | 'host';
   text: string;
   createdAt: string;
+  ts: number;
+  kind?: 'chat' | 'system';
+  after?: string[];
+  missingAfter?: string[];
 };
 
 export type SessionItem = {
@@ -33,4 +37,5 @@ export type SessionItem = {
   peerState?: string;
   peerDetail?: string;
   peerCapabilities?: PairV2PeerCapabilities;
+  missingMessageIds?: string[];
 };

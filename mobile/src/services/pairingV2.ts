@@ -20,6 +20,7 @@ import {
   type PairV2PresenceStatus
 } from '@openclaw/pair-sdk';
 import type { ChatMessage, ConnectionStatus, SessionItem } from '../types/session';
+import { reconcileSessionMessages } from '../utils/chatGraph';
 import { configureReactNativePairRuntime } from './reactNativePairRuntime';
 
 const MOBILE_ID_KEY = 'openclaw.mobile.mobile-id.v2';
@@ -188,23 +189,34 @@ function compactPeer(seed: string) {
 }
 
 function buildInfoMessage(text: string): ChatMessage {
+  const ts = Date.now();
   return {
     id: randomId('msg'),
     from: 'host',
     text,
-    createdAt: formatMessageTime(),
+    createdAt: formatMessageTime(new Date(ts)),
+    ts,
+    kind: 'system',
+    after: [],
+    missingAfter: [],
   };
 }
 
 function mergeMessages(current: ChatMessage[], incoming: ChatMessage[]) {
-  const merged = [...current];
-  for (const message of incoming) {
-    if (merged.some((item) => item.id === message.id)) {
-      continue;
-    }
-    merged.push(message);
+  return reconcileSessionMessages([...(current || []), ...(incoming || [])]).messages.slice(-300);
+}
+
+function normalizePendingMessages(existing: SessionItem | null, preview: string) {
+  const nextInfo = [buildInfoMessage(preview)];
+  if (!existing) {
+    return nextInfo;
   }
-  return merged.slice(-300);
+  const current = Array.isArray(existing.messages) ? existing.messages : [];
+  const hasUserConversation = current.some((item) => item.from === 'self');
+  if (hasUserConversation) {
+    return current;
+  }
+  return nextInfo;
 }
 
 function normalizeStatus(trustState: string, presence?: PairV2PresenceStatus | null): ConnectionStatus {
@@ -236,12 +248,19 @@ function isPeerNegotiating(state: string) {
 
 function normalizeSession(existing: SessionItem | null, next: SessionItem): SessionItem {
   if (!existing) {
-    return next;
+    const reconciled = reconcileSessionMessages(next.messages || []);
+    return {
+      ...next,
+      messages: reconciled.messages,
+      missingMessageIds: reconciled.missingMessageIds,
+    };
   }
+  const reconciled = reconcileSessionMessages([...(existing.messages || []), ...(next.messages || [])]);
   return {
     ...existing,
     ...next,
-    messages: mergeMessages(existing.messages || [], next.messages || []),
+    messages: reconciled.messages,
+    missingMessageIds: reconciled.missingMessageIds,
   };
 }
 
@@ -320,13 +339,20 @@ export async function loadStoredSessions() {
   try {
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed)
-      ? (parsed as SessionItem[]).map((item) => ({
-          ...item,
-          transportReady: false,
-          peerState: '',
-          peerDetail: '',
-          peerCapabilities: undefined,
-        }))
+      ? (parsed as SessionItem[]).map((item) => {
+          const reconciledMessages = reconcileSessionMessages(
+            Array.isArray(item?.messages) ? item.messages : []
+          );
+          return {
+            ...item,
+            transportReady: false,
+            peerState: '',
+            peerDetail: '',
+            peerCapabilities: undefined,
+            messages: reconciledMessages.messages,
+            missingMessageIds: reconciledMessages.missingMessageIds,
+          };
+        })
       : [];
   } catch {
     return [];
@@ -374,6 +400,12 @@ function buildSessionFromBinding(options: {
     : isPeerNegotiating(peerState)
       ? '正在建立直连通道，失败会自动切换服务端转发...'
       : describeSession(trustState, safetyCode || String(existing?.safetyCode || ''), presence);
+  const messages =
+    trustState === 'pending'
+      ? normalizePendingMessages(existing, preview)
+      : existing?.messages?.length
+        ? existing.messages
+        : [buildInfoMessage(preview)];
   return normalizeSession(existing, {
     id: existing?.id || randomId('sess'),
     name: resolveSessionName(existing, binding, mobileName),
@@ -382,10 +414,7 @@ function buildSessionFromBinding(options: {
     createdAt: existing?.createdAt || formatCreatedAt(),
     peerLabel: `Agent Host / ${compactPeer(binding.deviceId)}`,
     preview,
-    messages:
-      existing?.messages?.length
-        ? existing.messages
-        : [buildInfoMessage(preview)],
+    messages,
     serverBaseUrl: baseUrl,
     serverToken,
     deviceId: binding.deviceId,

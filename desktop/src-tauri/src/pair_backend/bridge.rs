@@ -167,6 +167,143 @@ impl PairBackendHandle {
         "OpenClaw 处理失败，请重试。".to_string()
     }
 
+    fn extract_openclaw_chat_event_text(payload: &Value) -> String {
+        for key in [
+            "message",
+            "delta",
+            "messageDelta",
+            "contentDelta",
+            "textDelta",
+        ] {
+            if let Some(value) = payload.get(key) {
+                let text = Self::extract_openclaw_message_text(value);
+                if !text.is_empty() {
+                    return text;
+                }
+                if let Some(text) = value.as_str().map(str::trim).filter(|text| !text.is_empty()) {
+                    return text.to_string();
+                }
+            }
+        }
+
+        if let Some(text) = payload
+            .get("outputText")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            return text.to_string();
+        }
+
+        Self::extract_openclaw_message_text(payload)
+    }
+
+    fn merge_openclaw_reply_text(existing: &str, next: &str) -> String {
+        let existing = existing.trim();
+        let next = next.trim();
+        if existing.is_empty() {
+            return next.to_string();
+        }
+        if next.is_empty() {
+            return existing.to_string();
+        }
+        if existing == next {
+            return existing.to_string();
+        }
+        if next.starts_with(existing) || next.contains(existing) {
+            return next.to_string();
+        }
+        if existing.starts_with(next) || existing.contains(next) {
+            return existing.to_string();
+        }
+        format!("{}{}", existing, next)
+    }
+
+    fn remove_pending_openclaw_run_locked(state: &mut PairBackendState, primary_run_id: &str) {
+        state.gateway_pending_runs.remove(primary_run_id);
+        state
+            .gateway_pending_run_aliases
+            .retain(|alias_run_id, mapped_primary| {
+                alias_run_id != primary_run_id && mapped_primary != primary_run_id
+            });
+    }
+
+    fn prune_pending_openclaw_runs_locked(state: &mut PairBackendState) {
+        let cutoff = Self::now_ms().saturating_sub(OPENCLAW_GATEWAY_PENDING_RUN_TTL_MS);
+        let expired = state
+            .gateway_pending_runs
+            .iter()
+            .filter_map(|(primary_run_id, pending)| {
+                (pending.last_event_at <= cutoff).then_some(primary_run_id.clone())
+            })
+            .collect::<Vec<_>>();
+        for primary_run_id in expired {
+            Self::remove_pending_openclaw_run_locked(state, &primary_run_id);
+        }
+    }
+
+    async fn resolve_pending_openclaw_run(
+        &self,
+        run_id: &str,
+        session_key: &str,
+    ) -> Option<(String, PendingOpenClawRun, bool)> {
+        let normalized_session_key = Self::normalize_openclaw_session_key(session_key);
+        let mut state = self.state.lock().await;
+        Self::prune_pending_openclaw_runs_locked(&mut state);
+
+        if let Some(primary_run_id) = state.gateway_pending_run_aliases.get(run_id).cloned() {
+            if let Some(pending) = state.gateway_pending_runs.get(&primary_run_id).cloned() {
+                return Some((primary_run_id, pending, false));
+            }
+            state.gateway_pending_run_aliases.remove(run_id);
+        }
+
+        if let Some(pending) = state.gateway_pending_runs.get(run_id).cloned() {
+            return Some((run_id.to_string(), pending, false));
+        }
+
+        if normalized_session_key.is_empty() {
+            return None;
+        }
+
+        let mut waiting_followup = Vec::new();
+        let mut same_session = Vec::new();
+        for (primary_run_id, pending) in state.gateway_pending_runs.iter() {
+            if Self::normalize_openclaw_session_key(&pending.session_key) != normalized_session_key {
+                continue;
+            }
+            same_session.push((primary_run_id.clone(), pending.clone()));
+            if pending.awaiting_followup_run {
+                waiting_followup.push((primary_run_id.clone(), pending.clone()));
+            }
+        }
+
+        let selected = if waiting_followup.len() == 1 {
+            waiting_followup.into_iter().next()
+        } else if waiting_followup.len() > 1 {
+            waiting_followup
+                .into_iter()
+                .min_by_key(|(_, pending)| pending.last_event_at)
+        } else if same_session.len() == 1 {
+            same_session.into_iter().next()
+        } else {
+            None
+        };
+
+        let (primary_run_id, _) = selected?;
+        state
+            .gateway_pending_run_aliases
+            .insert(run_id.to_string(), primary_run_id.clone());
+        let pending = if let Some(entry) = state.gateway_pending_runs.get_mut(&primary_run_id) {
+            entry.awaiting_followup_run = false;
+            entry.last_event_at = Self::now_ms();
+            entry.clone()
+        } else {
+            return None;
+        };
+        Some((primary_run_id, pending, true))
+    }
+
     async fn finish_gateway_connect_failure(&self, _detail: &str) {
         let mut state = self.state.lock().await;
         state.gateway_connecting = false;
@@ -648,6 +785,8 @@ impl PairBackendHandle {
             state.gateway_generation = state.gateway_generation.saturating_add(1);
             state.gateway_connected = false;
             state.gateway_connecting = false;
+            state.gateway_pending_runs.clear();
+            state.gateway_pending_run_aliases.clear();
             (
                 state.gateway_writer_tx.take(),
                 state.gateway_reader_task.take(),
@@ -689,6 +828,8 @@ impl PairBackendHandle {
             state.gateway_connecting = false;
             state.gateway_writer_tx = None;
             state.gateway_reader_task = None;
+            state.gateway_pending_runs.clear();
+            state.gateway_pending_run_aliases.clear();
             (
                 state.gateway_writer_task.take(),
                 std::mem::take(&mut state.gateway_pending_requests),
@@ -839,11 +980,13 @@ impl PairBackendHandle {
         binding_id: &str,
         mobile_id: &str,
         text: &str,
+        source: &str,
     ) -> Result<(), String> {
         let normalized_text = text.trim();
         if normalized_text.is_empty() {
             return Ok(());
         }
+        let prefer_relay_reply = source.trim() == "relay";
         self.append_event(format!(
             "forwarding mobile chat -> openclaw: mobile={} binding={} text={}",
             mobile_id, binding_id, normalized_text
@@ -877,6 +1020,7 @@ impl PairBackendHandle {
         let run_id = Self::random_id("ocgwrun");
         {
             let mut state = self.state.lock().await;
+            Self::prune_pending_openclaw_runs_locked(&mut state);
             state.gateway_pending_runs.insert(
                 run_id.clone(),
                 PendingOpenClawRun {
@@ -884,6 +1028,10 @@ impl PairBackendHandle {
                     binding_id: binding_id.trim().to_string(),
                     mobile_id: mobile_id.trim().to_string(),
                     session_key: session_key.clone(),
+                    prefer_relay_reply,
+                    buffered_text: String::new(),
+                    awaiting_followup_run: false,
+                    last_event_at: Self::now_ms(),
                 },
             );
         }
@@ -911,9 +1059,14 @@ impl PairBackendHandle {
             }
             Err(error) => {
                 let mut state = self.state.lock().await;
-                state.gateway_pending_runs.remove(&run_id);
+                Self::remove_pending_openclaw_run_locked(&mut state, &run_id);
                 drop(state);
-                self.notify_openclaw_error_to_mobile(binding_id, mobile_id, &error)
+                self.notify_openclaw_error_to_mobile(
+                    binding_id,
+                    mobile_id,
+                    &error,
+                    prefer_relay_reply,
+                )
                     .await;
                 Err(error)
             }
@@ -925,21 +1078,28 @@ impl PairBackendHandle {
         if run_id.is_empty() {
             return;
         }
-        let pending = {
-            let state = self.state.lock().await;
-            state.gateway_pending_runs.get(&run_id).cloned()
-        };
-        let Some(pending) = pending else {
+        let payload_session_key = read_json_string(&payload, &["sessionKey"]);
+        let pending = self
+            .resolve_pending_openclaw_run(&run_id, &payload_session_key)
+            .await;
+        let Some((primary_run_id, pending, matched_alias)) = pending else {
             self.append_event(format!(
-                "openclaw chat event ignored without pending run: run={}",
-                run_id
+                "openclaw chat event ignored without pending run: run={} session={}",
+                run_id,
+                value_or_dash(&payload_session_key)
             ))
             .await;
             return;
         };
+        if matched_alias {
+            self.append_event(format!(
+                "openclaw chat event rebound: alias={} primary={}",
+                run_id, primary_run_id
+            ))
+            .await;
+        }
 
-        let payload_session_key =
-            Self::normalize_openclaw_session_key(&read_json_string(&payload, &["sessionKey"]));
+        let payload_session_key = Self::normalize_openclaw_session_key(&payload_session_key);
         if !payload_session_key.is_empty()
             && payload_session_key != Self::normalize_openclaw_session_key(&pending.session_key)
         {
@@ -953,11 +1113,12 @@ impl PairBackendHandle {
             value_or_dash(&chat_state)
         ))
         .await;
+        let event_text = Self::extract_openclaw_chat_event_text(&payload);
         if chat_state == "error" {
             let error_message = read_json_string(&payload, &["errorMessage"]);
             {
                 let mut state = self.state.lock().await;
-                state.gateway_pending_runs.remove(&run_id);
+                Self::remove_pending_openclaw_run_locked(&mut state, &primary_run_id);
             }
             self.append_event(format!(
                 "openclaw chat error: run={} {}",
@@ -969,6 +1130,7 @@ impl PairBackendHandle {
                 &pending.binding_id,
                 &pending.mobile_id,
                 &error_message,
+                pending.prefer_relay_reply,
             )
             .await;
             return;
@@ -976,24 +1138,51 @@ impl PairBackendHandle {
         if chat_state == "aborted" {
             {
                 let mut state = self.state.lock().await;
-                state.gateway_pending_runs.remove(&run_id);
+                Self::remove_pending_openclaw_run_locked(&mut state, &primary_run_id);
             }
             self.append_event(format!("openclaw chat aborted: run={}", run_id))
                 .await;
+            return;
+        }
+        if chat_state == "delta" {
+            if !event_text.is_empty() {
+                let mut state = self.state.lock().await;
+                if let Some(entry) = state.gateway_pending_runs.get_mut(&primary_run_id) {
+                    entry.buffered_text =
+                        Self::merge_openclaw_reply_text(&entry.buffered_text, &event_text);
+                    entry.awaiting_followup_run = false;
+                    entry.last_event_at = Self::now_ms();
+                }
+            }
             return;
         }
         if chat_state != "final" {
             return;
         }
 
-        let reply_text =
-            Self::extract_openclaw_message_text(payload.get("message").unwrap_or(&Value::Null));
+        let reply_text = {
+            let mut state = self.state.lock().await;
+            let Some(entry) = state.gateway_pending_runs.get_mut(&primary_run_id) else {
+                return;
+            };
+            entry.last_event_at = Self::now_ms();
+            let merged_text = Self::merge_openclaw_reply_text(&entry.buffered_text, &event_text);
+            if merged_text.trim().is_empty() {
+                entry.awaiting_followup_run = true;
+                String::new()
+            } else {
+                entry.buffered_text = merged_text.clone();
+                entry.awaiting_followup_run = false;
+                merged_text
+            }
+        };
         if reply_text.trim().is_empty() {
             self.append_event(format!(
-                "openclaw chat final empty: run={} mobile={}",
+                "openclaw chat final empty: run={} mobile={} waiting-followup",
                 run_id, pending.mobile_id
             ))
             .await;
+            return;
         }
         self.mirror_openclaw_reply_to_mobile(pending, &reply_text)
             .await;
@@ -1004,32 +1193,45 @@ impl PairBackendHandle {
         binding_id: &str,
         mobile_id: &str,
         error_message: &str,
+        prefer_relay_reply: bool,
     ) {
         let user_text = Self::build_openclaw_mobile_error_text(error_message);
-        self.append_channel_message(
-            binding_id,
-            PairBackendMessage {
-                id: Self::random_id("msg"),
-                from: "agent".to_string(),
-                text: user_text.clone(),
-                ts: Self::now_ms(),
-            },
-        )
-        .await;
+        let outgoing = self
+            .build_outgoing_chat_message(binding_id, "agent", &user_text, None)
+            .await;
+        let _ = self.append_channel_message(binding_id, outgoing.clone()).await;
 
-        let payload = serde_json::json!({
-            "type": OPENCLAW_CHAT_MESSAGE_TYPE,
-            "payload": {
-                "text": user_text,
-            },
-            "ts": Self::now_ms(),
-            "from": "desktop",
-        });
+        let payload = Self::build_openclaw_chat_payload(&outgoing, "desktop");
+        let expect_ack = self
+            .channel_supports_message_type(binding_id, OPENCLAW_CHAT_ACK_TYPE)
+            .await;
+        if expect_ack {
+            self.register_pending_mobile_ack(
+                binding_id,
+                mobile_id,
+                &outgoing.id,
+                &payload,
+                prefer_relay_reply,
+            )
+            .await;
+        }
         match self
-            .send_app_envelope_to_mobile(binding_id, mobile_id, payload)
+            .send_app_envelope_to_mobile_with_delivery(
+                binding_id,
+                mobile_id,
+                payload.clone(),
+                prefer_relay_reply,
+            )
             .await
         {
             Ok(delivery) => {
+                if expect_ack {
+                    self.arm_pending_mobile_ack(
+                        &outgoing.id,
+                        prefer_relay_reply || delivery == "relay",
+                    )
+                    .await;
+                }
                 self.append_event(format!(
                     "openclaw error sent -> mobile={} via={}",
                     mobile_id, delivery
@@ -1037,6 +1239,9 @@ impl PairBackendHandle {
                 .await;
             }
             Err(error) => {
+                if expect_ack {
+                    self.clear_pending_mobile_ack(&outgoing.id).await;
+                }
                 self.append_event(format!("openclaw error mirror failed: {}", error))
                     .await;
             }
@@ -1047,35 +1252,49 @@ impl PairBackendHandle {
         let normalized_text = text.trim();
         {
             let mut state = self.state.lock().await;
-            state.gateway_pending_runs.remove(&pending.run_id);
+            Self::remove_pending_openclaw_run_locked(&mut state, &pending.run_id);
         }
         if normalized_text.is_empty() {
             return;
         }
 
-        let payload = serde_json::json!({
-            "type": OPENCLAW_CHAT_MESSAGE_TYPE,
-            "payload": {
-                "text": normalized_text,
-            },
-            "ts": Self::now_ms(),
-            "from": "desktop",
-        });
+        let outgoing = self
+            .build_outgoing_chat_message(&pending.binding_id, "agent", normalized_text, None)
+            .await;
+        let payload = Self::build_openclaw_chat_payload(&outgoing, "desktop");
+        let expect_ack = self
+            .channel_supports_message_type(&pending.binding_id, OPENCLAW_CHAT_ACK_TYPE)
+            .await;
+        if expect_ack {
+            self.register_pending_mobile_ack(
+                &pending.binding_id,
+                &pending.mobile_id,
+                &outgoing.id,
+                &payload,
+                pending.prefer_relay_reply,
+            )
+            .await;
+        }
         match self
-            .send_app_envelope_to_mobile(&pending.binding_id, &pending.mobile_id, payload)
+            .send_app_envelope_to_mobile_with_delivery(
+                &pending.binding_id,
+                &pending.mobile_id,
+                payload.clone(),
+                pending.prefer_relay_reply,
+            )
             .await
         {
             Ok(delivery) => {
-                self.append_channel_message(
-                    &pending.binding_id,
-                    PairBackendMessage {
-                        id: Self::random_id("msg"),
-                        from: "agent".to_string(),
-                        text: normalized_text.to_string(),
-                        ts: Self::now_ms(),
-                    },
-                )
-                .await;
+                if expect_ack {
+                    self.arm_pending_mobile_ack(
+                        &outgoing.id,
+                        pending.prefer_relay_reply || delivery == "relay",
+                    )
+                    .await;
+                }
+                let _ = self
+                    .append_channel_message(&pending.binding_id, outgoing)
+                    .await;
                 self.append_event(format!(
                     "openclaw reply sent -> mobile={} via={}",
                     pending.mobile_id, delivery
@@ -1083,6 +1302,9 @@ impl PairBackendHandle {
                 .await;
             }
             Err(error) => {
+                if expect_ack {
+                    self.clear_pending_mobile_ack(&outgoing.id).await;
+                }
                 self.append_event(format!("openclaw reply mirror failed: {}", error))
                     .await;
             }

@@ -44,10 +44,13 @@ const PAIR_HEARTBEAT_SECS: u64 = 30;
 const PAIR_CAPABILITY_HELLO_TYPE: &str = "sys.auth.hello";
 const PAIR_CAPABILITY_CAPS_TYPE: &str = "sys.capabilities";
 const OPENCLAW_CHAT_MESSAGE_TYPE: &str = "app.openclaw.chat.message";
+const OPENCLAW_CHAT_ACK_TYPE: &str = "app.openclaw.chat.ack";
+const OPENCLAW_CHAT_SYNC_REQUEST_TYPE: &str = "app.openclaw.chat.sync-request";
 const OPENCLAW_RELAY_APP_SIGNAL_TYPE: &str = "relay.app";
 const OPENCLAW_GATEWAY_IDENTITY_FILE_NAME: &str = "openclaw-gateway-device-identity.json";
 const OPENCLAW_GATEWAY_CONNECT_TIMEOUT_SECS: u64 = 20;
 const OPENCLAW_GATEWAY_REQUEST_TIMEOUT_SECS: u64 = 90;
+const OPENCLAW_GATEWAY_PENDING_RUN_TTL_MS: u64 = 3 * 60 * 1000;
 const OPENCLAW_GATEWAY_CLIENT_ID: &str = "gateway-client";
 const OPENCLAW_GATEWAY_CLIENT_MODE: &str = "backend";
 const OPENCLAW_GATEWAY_ROLE: &str = "operator";
@@ -69,6 +72,12 @@ pub struct PairBackendMessage {
     pub from: String,
     pub text: String,
     pub ts: u64,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub after: Vec<String>,
+    #[serde(default)]
+    pub missing_after: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -117,6 +126,8 @@ pub struct PairBackendChannel {
     pub peer_capabilities: Option<PairBackendCapabilities>,
     #[serde(default)]
     pub messages: Vec<PairBackendMessage>,
+    #[serde(default)]
+    pub missing_message_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -287,6 +298,20 @@ struct PendingOpenClawRun {
     binding_id: String,
     mobile_id: String,
     session_key: String,
+    prefer_relay_reply: bool,
+    buffered_text: String,
+    awaiting_followup_run: bool,
+    last_event_at: u64,
+}
+
+#[derive(Debug, Clone)]
+struct PendingMobileAck {
+    message_id: String,
+    binding_id: String,
+    mobile_id: String,
+    payload: Value,
+    prefer_relay: bool,
+    attempts: u8,
 }
 
 struct DesktopPeer {
@@ -331,6 +356,8 @@ struct PairBackendState {
     gateway_writer_task: Option<JoinHandle<()>>,
     gateway_pending_requests: HashMap<String, oneshot::Sender<Result<Value, String>>>,
     gateway_pending_runs: HashMap<String, PendingOpenClawRun>,
+    gateway_pending_run_aliases: HashMap<String, String>,
+    pending_mobile_acks: HashMap<String, PendingMobileAck>,
 }
 
 impl Default for PairBackendState {
@@ -366,6 +393,8 @@ impl Default for PairBackendState {
             gateway_writer_task: None,
             gateway_pending_requests: HashMap::new(),
             gateway_pending_runs: HashMap::new(),
+            gateway_pending_run_aliases: HashMap::new(),
+            pending_mobile_acks: HashMap::new(),
         }
     }
 }

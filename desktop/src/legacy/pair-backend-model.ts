@@ -34,8 +34,16 @@ export function normalizeBackendChannel(channel) {
               ? message.from
               : 'mobile',
           text: String(message?.text || ''),
-          ts: Number(message?.ts || Date.now())
+          ts: Number(message?.ts || Date.now()),
+          kind: String(message?.kind || 'chat'),
+          after: Array.isArray(message?.after) ? message.after.map((value) => String(value || '').trim()).filter(Boolean) : [],
+          missingAfter: Array.isArray(message?.missingAfter)
+            ? message.missingAfter.map((value) => String(value || '').trim()).filter(Boolean)
+            : []
         }))
+      : [],
+    missingMessageIds: Array.isArray(channel?.missingMessageIds)
+      ? channel.missingMessageIds.map((value) => String(value || '').trim()).filter(Boolean)
       : []
   };
 }

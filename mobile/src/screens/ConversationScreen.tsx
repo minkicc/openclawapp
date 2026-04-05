@@ -176,7 +176,13 @@ export function ConversationScreen({ route, navigation }: Props) {
             disabled={sending || !composerEnabled}
           >
             <Text style={styles.sendButtonText}>
-              {!composerEnabled ? '桌面离线' : sending ? '发送中...' : '发送'}
+              {activeSession.trustState === 'pending'
+                ? '等待确认'
+                : !composerEnabled
+                  ? '桌面离线'
+                  : sending
+                    ? '发送中...'
+                    : '发送'}
             </Text>
           </Pressable>
         </View>

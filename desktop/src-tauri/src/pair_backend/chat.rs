@@ -1,6 +1,477 @@
 use super::*;
 
 impl PairBackendHandle {
+    fn normalize_chat_message_kind(value: &str) -> String {
+        if value.trim() == "system" {
+            "system".to_string()
+        } else {
+            "chat".to_string()
+        }
+    }
+
+    fn normalize_chat_message_ids(values: &[String]) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        values
+            .iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .filter(|value| seen.insert(value.clone()))
+            .collect()
+    }
+
+    fn is_graph_chat_message(message: &PairBackendMessage) -> bool {
+        Self::normalize_chat_message_kind(&message.kind) != "system" && !message.id.trim().is_empty()
+    }
+
+    fn compare_pair_message_order(
+        left: &PairBackendMessage,
+        right: &PairBackendMessage,
+    ) -> std::cmp::Ordering {
+        left.ts
+            .cmp(&right.ts)
+            .then_with(|| left.id.cmp(&right.id))
+    }
+
+    fn reconcile_channel_messages_locked(channel: &mut PairBackendChannel) {
+        for message in channel.messages.iter_mut() {
+            message.kind = Self::normalize_chat_message_kind(&message.kind);
+            if message.kind == "system" {
+                message.after.clear();
+                message.missing_after.clear();
+            } else {
+                message.after = Self::normalize_chat_message_ids(&message.after);
+                message.missing_after.clear();
+            }
+        }
+
+        let known_ids = channel
+            .messages
+            .iter()
+            .filter(|message| Self::is_graph_chat_message(message))
+            .map(|message| message.id.clone())
+            .collect::<std::collections::HashSet<_>>();
+
+        for message in channel.messages.iter_mut() {
+            if message.kind == "system" {
+                continue;
+            }
+            message.missing_after = message
+                .after
+                .iter()
+                .filter(|parent_id| !known_ids.contains(parent_id.as_str()))
+                .cloned()
+                .collect();
+        }
+
+        let message_by_id = channel
+            .messages
+            .iter()
+            .filter(|message| Self::is_graph_chat_message(message))
+            .map(|message| (message.id.clone(), message.clone()))
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut indegree = std::collections::HashMap::<String, usize>::new();
+        let mut children_by_parent =
+            std::collections::HashMap::<String, Vec<String>>::new();
+
+        for message in message_by_id.values() {
+            let parent_ids = message
+                .after
+                .iter()
+                .filter(|parent_id| known_ids.contains(parent_id.as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
+            indegree.insert(message.id.clone(), parent_ids.len());
+            for parent_id in parent_ids {
+                children_by_parent
+                    .entry(parent_id)
+                    .or_default()
+                    .push(message.id.clone());
+            }
+        }
+
+        let mut ready = message_by_id
+            .values()
+            .filter(|message| indegree.get(&message.id).copied().unwrap_or(0) == 0)
+            .cloned()
+            .collect::<Vec<_>>();
+        ready.sort_by(Self::compare_pair_message_order);
+
+        let mut ordered_ids = Vec::<String>::new();
+        while !ready.is_empty() {
+            let current = ready.remove(0);
+            ordered_ids.push(current.id.clone());
+            if let Some(children) = children_by_parent.get(&current.id).cloned() {
+                for child_id in children {
+                    let next_degree = indegree
+                        .get(&child_id)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_sub(1);
+                    indegree.insert(child_id.clone(), next_degree);
+                    if next_degree == 0 {
+                        if let Some(child) = message_by_id.get(&child_id).cloned() {
+                            ready.push(child);
+                        }
+                    }
+                }
+                ready.sort_by(Self::compare_pair_message_order);
+            }
+        }
+
+        let ordered_set = ordered_ids
+            .iter()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        let mut remaining = message_by_id
+            .values()
+            .filter(|message| !ordered_set.contains(message.id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        remaining.sort_by(Self::compare_pair_message_order);
+        ordered_ids.extend(remaining.into_iter().map(|message| message.id));
+
+        let order_index = ordered_ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id.clone(), index))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        channel.messages.sort_by(|left, right| match (
+            order_index.get(&left.id).copied(),
+            order_index.get(&right.id).copied(),
+        ) {
+            (Some(left_index), Some(right_index)) => left_index.cmp(&right_index),
+            _ => Self::compare_pair_message_order(left, right),
+        });
+
+        let mut missing_ids = channel
+            .messages
+            .iter()
+            .flat_map(|message| message.missing_after.clone())
+            .collect::<Vec<_>>();
+        missing_ids.sort();
+        missing_ids.dedup();
+        channel.missing_message_ids = missing_ids;
+    }
+
+    fn collect_channel_leaf_ids_locked(channel: &PairBackendChannel) -> Vec<String> {
+        let known_ids = channel
+            .messages
+            .iter()
+            .filter(|message| Self::is_graph_chat_message(message))
+            .map(|message| message.id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let referenced_ids = channel
+            .messages
+            .iter()
+            .filter(|message| Self::is_graph_chat_message(message))
+            .flat_map(|message| {
+                message
+                    .after
+                    .iter()
+                    .filter(|parent_id| known_ids.contains(parent_id.as_str()))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .collect::<std::collections::HashSet<_>>();
+
+        channel
+            .messages
+            .iter()
+            .filter(|message| Self::is_graph_chat_message(message))
+            .filter(|message| !referenced_ids.contains(message.id.as_str()))
+            .map(|message| message.id.clone())
+            .collect()
+    }
+
+    pub(super) async fn current_channel_leaf_ids(&self, binding_id: &str) -> Vec<String> {
+        let state = self.state.lock().await;
+        state
+            .channels
+            .iter()
+            .find(|channel| channel.binding_id == binding_id || channel.channel_id == binding_id)
+            .map(Self::collect_channel_leaf_ids_locked)
+            .unwrap_or_default()
+    }
+
+    pub(super) async fn channel_supports_message_type(
+        &self,
+        binding_id: &str,
+        message_type: &str,
+    ) -> bool {
+        let normalized = message_type.trim();
+        if normalized.is_empty() {
+            return false;
+        }
+        let state = self.state.lock().await;
+        state
+            .channels
+            .iter()
+            .find(|channel| channel.binding_id == binding_id || channel.channel_id == binding_id)
+            .and_then(|channel| channel.peer_capabilities.as_ref())
+            .map(|capabilities| {
+                !capabilities.supported_messages.is_empty()
+                    && capabilities
+                        .supported_messages
+                        .iter()
+                        .any(|item| item.trim() == normalized)
+            })
+            .unwrap_or(false)
+    }
+
+    fn parse_openclaw_chat_payload(payload: &Value) -> Option<PairBackendMessage> {
+        let body = payload.get("payload")?.as_object()?;
+        let text = body.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
+        if text.trim().is_empty() {
+            return None;
+        }
+        let after = body
+            .get("after")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|item| item.as_str().map(|value| value.trim().to_string()))
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        let ts = payload
+            .get("ts")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(Self::now_ms);
+        let id = body
+            .get("id")
+            .and_then(Value::as_str)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| Self::random_id("msg"));
+        Some(PairBackendMessage {
+            id,
+            from: String::new(),
+            text,
+            ts,
+            kind: "chat".to_string(),
+            after,
+            missing_after: Vec::new(),
+        })
+    }
+
+    fn parse_openclaw_sync_request_ids(payload: &Value) -> Vec<String> {
+        payload
+            .get("payload")
+            .and_then(Value::as_object)
+            .and_then(|body| body.get("messageIds"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|item| item.as_str().map(|value| value.trim().to_string()))
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>()
+    }
+
+    fn parse_openclaw_ack_ids(payload: &Value) -> Vec<String> {
+        payload
+            .get("payload")
+            .and_then(Value::as_object)
+            .and_then(|body| body.get("messageIds"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|item| item.as_str().map(|value| value.trim().to_string()))
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>()
+    }
+
+    pub(super) fn build_openclaw_chat_payload(message: &PairBackendMessage, from: &str) -> Value {
+        serde_json::json!({
+            "type": OPENCLAW_CHAT_MESSAGE_TYPE,
+            "payload": {
+                "id": message.id,
+                "after": message.after,
+                "text": message.text,
+            },
+            "ts": message.ts,
+            "from": from,
+        })
+    }
+
+    fn build_openclaw_chat_ack_payload(message_ids: &[String], from: &str) -> Value {
+        serde_json::json!({
+            "type": OPENCLAW_CHAT_ACK_TYPE,
+            "payload": {
+                "messageIds": Self::normalize_chat_message_ids(message_ids),
+            },
+            "ts": Self::now_ms(),
+            "from": from,
+        })
+    }
+
+    fn build_openclaw_sync_request_payload(message_ids: &[String], from: &str) -> Value {
+        serde_json::json!({
+            "type": OPENCLAW_CHAT_SYNC_REQUEST_TYPE,
+            "payload": {
+                "messageIds": Self::normalize_chat_message_ids(message_ids),
+            },
+            "ts": Self::now_ms(),
+            "from": from,
+        })
+    }
+
+    pub(super) async fn build_outgoing_chat_message(
+        &self,
+        binding_id: &str,
+        from: &str,
+        text: &str,
+        ts: Option<u64>,
+    ) -> PairBackendMessage {
+        PairBackendMessage {
+            id: Self::random_id("msg"),
+            from: from.trim().to_string(),
+            text: text.trim().to_string(),
+            ts: ts.unwrap_or_else(Self::now_ms),
+            kind: "chat".to_string(),
+            after: self.current_channel_leaf_ids(binding_id).await,
+            missing_after: Vec::new(),
+        }
+    }
+
+    async fn mark_mobile_ack_received(&self, message_ids: &[String]) {
+        let normalized_ids = Self::normalize_chat_message_ids(message_ids);
+        if normalized_ids.is_empty() {
+            return;
+        }
+        let removed = {
+            let mut state = self.state.lock().await;
+            normalized_ids
+                .iter()
+                .filter_map(|message_id| state.pending_mobile_acks.remove(message_id))
+                .collect::<Vec<_>>()
+        };
+        if !removed.is_empty() {
+            self.append_event(format!(
+                "mobile ack received ids={}",
+                removed
+                    .iter()
+                    .map(|pending| pending.message_id.clone())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ))
+            .await;
+        }
+    }
+
+    fn schedule_mobile_ack_retry(&self, message_id: String) {
+        let backend = self.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(3));
+            tauri::async_runtime::block_on(async move {
+                backend.retry_pending_mobile_ack(&message_id).await;
+            });
+        });
+    }
+
+    pub(super) async fn register_pending_mobile_ack(
+        &self,
+        binding_id: &str,
+        mobile_id: &str,
+        message_id: &str,
+        payload: &Value,
+        prefer_relay: bool,
+    ) {
+        let normalized_message_id = message_id.trim().to_string();
+        if normalized_message_id.is_empty() {
+            return;
+        }
+        {
+            let mut state = self.state.lock().await;
+            state.pending_mobile_acks.insert(
+                normalized_message_id.clone(),
+                PendingMobileAck {
+                    message_id: normalized_message_id.clone(),
+                    binding_id: binding_id.trim().to_string(),
+                    mobile_id: mobile_id.trim().to_string(),
+                    payload: payload.clone(),
+                    prefer_relay,
+                    attempts: 0,
+                },
+            );
+        }
+    }
+
+    pub(super) async fn arm_pending_mobile_ack(&self, message_id: &str, prefer_relay: bool) {
+        let normalized_message_id = message_id.trim().to_string();
+        if normalized_message_id.is_empty() {
+            return;
+        }
+        let exists = {
+            let mut state = self.state.lock().await;
+            let Some(entry) = state.pending_mobile_acks.get_mut(&normalized_message_id) else {
+                return;
+            };
+            entry.prefer_relay = prefer_relay;
+            true
+        };
+        if exists {
+            self.schedule_mobile_ack_retry(normalized_message_id);
+        }
+    }
+
+    pub(super) async fn clear_pending_mobile_ack(&self, message_id: &str) {
+        let normalized_message_id = message_id.trim().to_string();
+        if normalized_message_id.is_empty() {
+            return;
+        }
+        let mut state = self.state.lock().await;
+        state.pending_mobile_acks.remove(&normalized_message_id);
+    }
+
+    async fn retry_pending_mobile_ack(&self, message_id: &str) {
+        let pending = {
+            let mut state = self.state.lock().await;
+            let Some(entry) = state.pending_mobile_acks.get_mut(message_id) else {
+                return;
+            };
+            if entry.attempts >= 2 {
+                state.pending_mobile_acks.remove(message_id);
+                None
+            } else {
+                entry.attempts += 1;
+                Some(entry.clone())
+            }
+        };
+        let Some(pending) = pending else {
+            self.append_event(format!("mobile ack timeout: id={}", message_id))
+                .await;
+            return;
+        };
+        match self
+            .send_app_envelope_to_mobile_with_delivery(
+                &pending.binding_id,
+                &pending.mobile_id,
+                pending.payload.clone(),
+                pending.prefer_relay || pending.attempts > 0,
+            )
+            .await
+        {
+            Ok(delivery) => {
+                self.append_event(format!(
+                    "retry chat -> mobile={} via={} id={} attempt={}",
+                    pending.mobile_id, delivery, pending.message_id, pending.attempts
+                ))
+                .await;
+                self.schedule_mobile_ack_retry(pending.message_id.clone());
+            }
+            Err(error) => {
+                self.append_event(format!(
+                    "retry chat failed: mobile={} id={} error={}",
+                    pending.mobile_id, pending.message_id, error
+                ))
+                .await;
+            }
+        }
+    }
+
     pub(super) async fn is_current_peer_instance(
         &self,
         binding_id: &str,
@@ -138,7 +609,9 @@ impl PairBackendHandle {
             "supportedMessages": [
                 PAIR_CAPABILITY_HELLO_TYPE,
                 PAIR_CAPABILITY_CAPS_TYPE,
-                OPENCLAW_CHAT_MESSAGE_TYPE
+                OPENCLAW_CHAT_MESSAGE_TYPE,
+                OPENCLAW_CHAT_ACK_TYPE,
+                OPENCLAW_CHAT_SYNC_REQUEST_TYPE
             ],
             "features": ["chat"],
             "appId": "openclaw",
@@ -163,30 +636,49 @@ impl PairBackendHandle {
             .trim()
             .to_string();
 
-        if event_type == OPENCLAW_CHAT_MESSAGE_TYPE {
-            let text = payload
-                .get("payload")
-                .and_then(Value::as_object)
-                .and_then(|map| map.get("text"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let ts = payload
-                .get("ts")
-                .and_then(Value::as_u64)
-                .unwrap_or_else(Self::now_ms);
-            self.append_channel_message(
+        if event_type == OPENCLAW_CHAT_ACK_TYPE {
+            let message_ids = Self::parse_openclaw_ack_ids(payload);
+            self.mark_mobile_ack_received(&message_ids).await;
+            return Ok(());
+        }
+
+        if event_type == OPENCLAW_CHAT_SYNC_REQUEST_TYPE {
+            let message_ids = Self::parse_openclaw_sync_request_ids(payload);
+            if message_ids.is_empty() {
+                return Ok(());
+            }
+            self.resend_channel_messages_to_mobile(
                 binding_id,
-                PairBackendMessage {
-                    id: Self::random_id("msg"),
-                    from: "mobile".to_string(),
-                    text: text.clone(),
-                    ts,
-                },
+                mobile_id,
+                &message_ids,
+                source.trim() == "relay",
             )
             .await;
+            return Ok(());
+        }
+
+        if event_type == OPENCLAW_CHAT_MESSAGE_TYPE {
+            let Some(mut message) = Self::parse_openclaw_chat_payload(payload) else {
+                return Ok(());
+            };
+            message.from = "mobile".to_string();
+            let text = message.text.clone();
+            let (inserted, newly_missing_ids) =
+                self.append_channel_message(binding_id, message).await;
             self.append_event(format!("{} chat from {}: {}", source, mobile_id, text))
                 .await;
+            if !newly_missing_ids.is_empty() {
+                self.request_missing_messages_from_mobile(
+                    binding_id,
+                    mobile_id,
+                    &newly_missing_ids,
+                    source.trim() == "relay",
+                )
+                .await;
+            }
+            if !inserted {
+                return Ok(());
+            }
             let app = {
                 let state = self.state.lock().await;
                 state.app.clone()
@@ -196,6 +688,7 @@ impl PairBackendHandle {
                 let binding_id = binding_id.trim().to_string();
                 let mobile_id = mobile_id.trim().to_string();
                 let forwarded_text = text.clone();
+                let forwarded_source = source.trim().to_string();
                 tokio::spawn(async move {
                     if let Err(error) = backend
                         .forward_mobile_message_to_openclaw(
@@ -203,6 +696,7 @@ impl PairBackendHandle {
                             &binding_id,
                             &mobile_id,
                             &forwarded_text,
+                            &forwarded_source,
                         )
                         .await
                     {
@@ -223,6 +717,107 @@ impl PairBackendHandle {
         ))
         .await;
         Ok(())
+    }
+
+    async fn request_missing_messages_from_mobile(
+        &self,
+        binding_id: &str,
+        mobile_id: &str,
+        message_ids: &[String],
+        prefer_relay: bool,
+    ) {
+        let normalized_ids = Self::normalize_chat_message_ids(message_ids);
+        if normalized_ids.is_empty() {
+            return;
+        }
+        let payload = Self::build_openclaw_sync_request_payload(&normalized_ids, "desktop");
+        match self
+            .send_app_envelope_to_mobile_with_delivery(
+                binding_id,
+                mobile_id,
+                payload,
+                prefer_relay,
+            )
+            .await
+        {
+            Ok(delivery) => {
+                self.append_event(format!(
+                    "request missing chat -> mobile={} via={} ids={}",
+                    mobile_id,
+                    delivery,
+                    normalized_ids.join(",")
+                ))
+                .await;
+            }
+            Err(error) => {
+                self.append_event(format!(
+                    "request missing chat failed: mobile={} error={}",
+                    mobile_id, error
+                ))
+                .await;
+            }
+        }
+    }
+
+    async fn resend_channel_messages_to_mobile(
+        &self,
+        binding_id: &str,
+        mobile_id: &str,
+        message_ids: &[String],
+        prefer_relay: bool,
+    ) {
+        let normalized_ids = Self::normalize_chat_message_ids(message_ids);
+        if normalized_ids.is_empty() {
+            return;
+        }
+        let known_messages = {
+            let state = self.state.lock().await;
+            state
+                .channels
+                .iter()
+                .find(|item| item.binding_id == binding_id || item.channel_id == binding_id)
+                .map(|channel| {
+                    channel
+                        .messages
+                        .iter()
+                        .filter(|message| {
+                            Self::normalize_chat_message_kind(&message.kind) != "system"
+                                && message.from != "mobile"
+                                && normalized_ids.contains(&message.id)
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+
+        for message in known_messages {
+            let payload = Self::build_openclaw_chat_payload(&message, "desktop");
+            match self
+                .send_app_envelope_to_mobile_with_delivery(
+                    binding_id,
+                    mobile_id,
+                    payload,
+                    prefer_relay,
+                )
+                .await
+            {
+                Ok(delivery) => {
+                    self.append_event(format!(
+                        "resend chat -> mobile={} via={} id={}",
+                        mobile_id, delivery, message.id
+                    ))
+                    .await;
+                }
+                Err(error) => {
+                    self.append_event(format!(
+                        "resend chat failed: mobile={} id={} error={}",
+                        mobile_id, message.id, error
+                    ))
+                    .await;
+                }
+            }
+        }
     }
 
     async fn relay_app_message_to_mobile(
@@ -251,6 +846,17 @@ impl PairBackendHandle {
         mobile_id: &str,
         payload: Value,
     ) -> Result<&'static str, String> {
+        self.send_app_envelope_to_mobile_with_delivery(binding_id, mobile_id, payload, false)
+            .await
+    }
+
+    pub(super) async fn send_app_envelope_to_mobile_with_delivery(
+        &self,
+        binding_id: &str,
+        mobile_id: &str,
+        payload: Value,
+        prefer_relay: bool,
+    ) -> Result<&'static str, String> {
         let (peer, peer_ready) = {
             let state = self.state.lock().await;
             let peer = state.peers.get(binding_id).cloned();
@@ -263,7 +869,7 @@ impl PairBackendHandle {
             (peer, peer_ready)
         };
 
-        if peer_ready {
+        if !prefer_relay && peer_ready {
             if let Some(peer) = peer {
                 match self.send_peer_json(&peer, &payload).await {
                     Ok(_) => return Ok("p2p"),
@@ -438,8 +1044,10 @@ impl PairBackendHandle {
     pub(super) async fn append_channel_message(
         &self,
         binding_id: &str,
-        message: PairBackendMessage,
-    ) {
+        mut message: PairBackendMessage,
+    ) -> (bool, Vec<String>) {
+        let mut inserted = false;
+        let mut newly_missing_ids = Vec::<String>::new();
         {
             let mut state = self.state.lock().await;
             if let Some(channel) = state
@@ -447,14 +1055,49 @@ impl PairBackendHandle {
                 .iter_mut()
                 .find(|item| item.binding_id == binding_id || item.channel_id == binding_id)
             {
-                channel.messages.push(message);
-                if channel.messages.len() > 300 {
-                    let keep_from = channel.messages.len().saturating_sub(300);
-                    channel.messages = channel.messages.split_off(keep_from);
+                let previous_missing = channel
+                    .missing_message_ids
+                    .iter()
+                    .cloned()
+                    .collect::<std::collections::HashSet<_>>();
+
+                message.kind = Self::normalize_chat_message_kind(&message.kind);
+                if message.kind == "system" {
+                    message.after.clear();
+                    message.missing_after.clear();
+                } else {
+                    message.after = Self::normalize_chat_message_ids(&message.after);
                 }
+
+                if let Some(existing) = channel
+                    .messages
+                    .iter_mut()
+                    .find(|item| !message.id.trim().is_empty() && item.id == message.id)
+                {
+                    existing.from = message.from.clone();
+                    existing.text = message.text.clone();
+                    existing.ts = message.ts;
+                    existing.kind = message.kind.clone();
+                    existing.after = message.after.clone();
+                } else {
+                    inserted = true;
+                    channel.messages.push(message);
+                    if channel.messages.len() > 300 {
+                        let keep_from = channel.messages.len().saturating_sub(300);
+                        channel.messages = channel.messages.split_off(keep_from);
+                    }
+                }
+                Self::reconcile_channel_messages_locked(channel);
+                newly_missing_ids = channel
+                    .missing_message_ids
+                    .iter()
+                    .filter(|message_id| !previous_missing.contains(message_id.as_str()))
+                    .cloned()
+                    .collect();
             }
         }
         self.emit_snapshot().await;
+        (inserted, newly_missing_ids)
     }
 
     pub(super) async fn send_peer_json(
@@ -507,28 +1150,41 @@ impl PairBackendHandle {
             }
             (channel.binding_id.clone(), channel.mobile_id.clone())
         };
-        let delivery = self
+        let outgoing = self
+            .build_outgoing_chat_message(&binding_id, "desktop", text, None)
+            .await;
+        let payload = Self::build_openclaw_chat_payload(&outgoing, "desktop");
+        let expect_ack = self
+            .channel_supports_message_type(&binding_id, OPENCLAW_CHAT_ACK_TYPE)
+            .await;
+        if expect_ack {
+            self.register_pending_mobile_ack(&binding_id, &mobile_id, &outgoing.id, &payload, false)
+                .await;
+        }
+        let delivery = match self
             .send_app_envelope_to_mobile(
                 &binding_id,
                 &mobile_id,
-                serde_json::json!({
-                "type": OPENCLAW_CHAT_MESSAGE_TYPE,
-                "payload": { "text": text },
-                "ts": Self::now_ms(),
-                "from": "desktop"
-                }),
+                payload.clone(),
             )
-            .await?;
-        self.append_channel_message(
-            &binding_id,
-            PairBackendMessage {
-                id: Self::random_id("msg"),
-                from: "desktop".to_string(),
-                text: text.to_string(),
-                ts: Self::now_ms(),
-            },
-        )
-        .await;
+            .await
+        {
+            Ok(delivery) => delivery,
+            Err(error) => {
+                if expect_ack {
+                    self.clear_pending_mobile_ack(&outgoing.id).await;
+                }
+                return Err(error);
+            }
+        };
+        let _ = self.append_channel_message(&binding_id, outgoing).await;
+        if expect_ack {
+            self.arm_pending_mobile_ack(
+                &payload["payload"]["id"].as_str().unwrap_or_default(),
+                delivery == "relay",
+            )
+            .await;
+        }
         self.append_event(format!("chat sent -> mobile={} via={}", mobile_id, delivery))
             .await;
         Ok(self.snapshot().await)
