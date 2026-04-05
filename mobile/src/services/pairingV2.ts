@@ -364,12 +364,15 @@ function buildSessionFromBinding(options: {
   const { existing, baseUrl, serverToken, binding, safetyCode = '', mobilePublicKey = '', presence } = options;
   const trustState = String(binding.trustState || '').trim() || 'pending';
   const peerState = String(existing?.peerState || '').trim();
-  const transportReady = Boolean(existing?.transportReady) || peerState === 'connected';
+  const relayReady = trustState === 'active' && presence?.status === 'online';
+  const transportReady = peerState === 'connected' || relayReady;
   const mobileName = normalizePairV2MobileName(binding.mobileName) || existing?.mobileName || resolveLocalMobileName();
   const preview = transportReady
-    ? 'P2P 通道已建立，可以开始聊天。'
+    ? peerState === 'connected'
+      ? 'P2P 通道已建立，可以开始聊天。'
+      : '桌面端在线，可通过服务端转发聊天。'
     : isPeerNegotiating(peerState)
-      ? '正在建立 P2P 通道...'
+      ? '正在建立直连通道，失败会自动切换服务端转发...'
       : describeSession(trustState, safetyCode || String(existing?.safetyCode || ''), presence);
   return normalizeSession(existing, {
     id: existing?.id || randomId('sess'),

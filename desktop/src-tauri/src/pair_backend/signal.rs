@@ -646,6 +646,48 @@ impl PairBackendHandle {
             return Ok(());
         }
 
+        if event_type == OPENCLAW_RELAY_APP_SIGNAL_TYPE {
+            let binding_id = read_json_string(&payload, &["bindingId", "binding_id"]);
+            let mobile_id = read_json_string(&payload, &["mobileId", "mobile_id"]);
+            let resolved_mobile_id = if mobile_id.trim().is_empty() {
+                from_id.clone()
+            } else {
+                mobile_id
+            };
+            let channel = self
+                .ensure_channel_for_signal(app, &binding_id, &resolved_mobile_id)
+                .await?;
+            let Some(channel) = channel else {
+                self.append_event(format!(
+                    "relay app ignored without channel: binding={} mobile={}",
+                    value_or_dash(&binding_id),
+                    value_or_dash(&resolved_mobile_id)
+                ))
+                .await;
+                return Ok(());
+            };
+            let Some(message) = payload.get("message") else {
+                return Ok(());
+            };
+            if let Err(error) = self
+                .process_mobile_app_message(
+                    &channel.binding_id,
+                    &channel.mobile_id,
+                    message,
+                    "relay",
+                )
+                .await
+            {
+                self.append_event(format!(
+                    "relay app handling failed: binding={} error={}",
+                    value_or_dash(&channel.binding_id),
+                    error
+                ))
+                .await;
+            }
+            return Ok(());
+        }
+
         if matches!(
             event_type.as_str(),
             "webrtc.offer" | "webrtc.answer" | "webrtc.ice"
@@ -671,11 +713,31 @@ impl PairBackendHandle {
                 return Ok(());
             };
             if event_type == "webrtc.offer" {
-                self.accept_offer(app, &channel, signal_payload).await?;
+                if let Err(error) = self.accept_offer(app, &channel, signal_payload).await {
+                    self.set_channel_peer_state(
+                        &channel.binding_id,
+                        "failed",
+                        &format!("P2P 失败，已切换到服务端转发: {}", error),
+                    )
+                    .await;
+                    self.append_event(format!(
+                        "peer offer handling failed, relay fallback active: binding={} error={}",
+                        value_or_dash(&channel.binding_id),
+                        error
+                    ))
+                    .await;
+                }
                 return Ok(());
             }
             if event_type == "webrtc.ice" {
-                self.handle_remote_ice(&channel, signal_payload).await?;
+                if let Err(error) = self.handle_remote_ice(&channel, signal_payload).await {
+                    self.append_event(format!(
+                        "peer ice handling failed: binding={} error={}",
+                        value_or_dash(&channel.binding_id),
+                        error
+                    ))
+                    .await;
+                }
                 return Ok(());
             }
             return Ok(());

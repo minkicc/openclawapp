@@ -1017,19 +1017,6 @@ impl PairBackendHandle {
         )
         .await;
 
-        let peer = {
-            let state = self.state.lock().await;
-            state.peers.get(binding_id).cloned()
-        };
-        let Some(peer) = peer else {
-            self.append_event(format!(
-                "openclaw error buffered without channel: mobile={}",
-                value_or_dash(mobile_id)
-            ))
-            .await;
-            return;
-        };
-
         let payload = serde_json::json!({
             "type": OPENCLAW_CHAT_MESSAGE_TYPE,
             "payload": {
@@ -1038,10 +1025,16 @@ impl PairBackendHandle {
             "ts": Self::now_ms(),
             "from": "desktop",
         });
-        match self.send_peer_json(&peer, &payload).await {
-            Ok(_) => {
-                self.append_event(format!("openclaw error sent -> mobile={}", mobile_id))
-                    .await;
+        match self
+            .send_app_envelope_to_mobile(binding_id, mobile_id, payload)
+            .await
+        {
+            Ok(delivery) => {
+                self.append_event(format!(
+                    "openclaw error sent -> mobile={} via={}",
+                    mobile_id, delivery
+                ))
+                .await;
             }
             Err(error) => {
                 self.append_event(format!("openclaw error mirror failed: {}", error))
@@ -1060,19 +1053,6 @@ impl PairBackendHandle {
             return;
         }
 
-        let peer = {
-            let state = self.state.lock().await;
-            state.peers.get(&pending.binding_id).cloned()
-        };
-        let Some(peer) = peer else {
-            self.append_event(format!(
-                "openclaw reply skipped without channel: mobile={}",
-                value_or_dash(&pending.mobile_id)
-            ))
-            .await;
-            return;
-        };
-
         let payload = serde_json::json!({
             "type": OPENCLAW_CHAT_MESSAGE_TYPE,
             "payload": {
@@ -1081,8 +1061,11 @@ impl PairBackendHandle {
             "ts": Self::now_ms(),
             "from": "desktop",
         });
-        match self.send_peer_json(&peer, &payload).await {
-            Ok(_) => {
+        match self
+            .send_app_envelope_to_mobile(&pending.binding_id, &pending.mobile_id, payload)
+            .await
+        {
+            Ok(delivery) => {
                 self.append_channel_message(
                     &pending.binding_id,
                     PairBackendMessage {
@@ -1094,8 +1077,8 @@ impl PairBackendHandle {
                 )
                 .await;
                 self.append_event(format!(
-                    "openclaw reply sent -> mobile={}",
-                    pending.mobile_id
+                    "openclaw reply sent -> mobile={} via={}",
+                    pending.mobile_id, delivery
                 ))
                 .await;
             }

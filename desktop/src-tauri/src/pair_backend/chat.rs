@@ -149,6 +149,147 @@ impl PairBackendHandle {
         Ok(())
     }
 
+    pub(super) async fn process_mobile_app_message(
+        &self,
+        binding_id: &str,
+        mobile_id: &str,
+        payload: &Value,
+        source: &str,
+    ) -> Result<(), String> {
+        let event_type = payload
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+
+        if event_type == OPENCLAW_CHAT_MESSAGE_TYPE {
+            let text = payload
+                .get("payload")
+                .and_then(Value::as_object)
+                .and_then(|map| map.get("text"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let ts = payload
+                .get("ts")
+                .and_then(Value::as_u64)
+                .unwrap_or_else(Self::now_ms);
+            self.append_channel_message(
+                binding_id,
+                PairBackendMessage {
+                    id: Self::random_id("msg"),
+                    from: "mobile".to_string(),
+                    text: text.clone(),
+                    ts,
+                },
+            )
+            .await;
+            self.append_event(format!("{} chat from {}: {}", source, mobile_id, text))
+                .await;
+            let app = {
+                let state = self.state.lock().await;
+                state.app.clone()
+            };
+            if let Some(app_handle) = app {
+                let backend = self.clone();
+                let binding_id = binding_id.trim().to_string();
+                let mobile_id = mobile_id.trim().to_string();
+                let forwarded_text = text.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = backend
+                        .forward_mobile_message_to_openclaw(
+                            &app_handle,
+                            &binding_id,
+                            &mobile_id,
+                            &forwarded_text,
+                        )
+                        .await
+                    {
+                        backend
+                            .append_event(format!("openclaw chat.send failed: {}", error))
+                            .await;
+                    }
+                });
+            }
+            return Ok(());
+        }
+
+        self.append_event(format!(
+            "{} app message from {}: {}",
+            source,
+            mobile_id,
+            value_or_dash(&event_type)
+        ))
+        .await;
+        Ok(())
+    }
+
+    async fn relay_app_message_to_mobile(
+        &self,
+        app: &AppHandle,
+        binding_id: &str,
+        mobile_id: &str,
+        payload: &Value,
+    ) -> Result<(), String> {
+        self.send_signal(
+            app,
+            mobile_id,
+            OPENCLAW_RELAY_APP_SIGNAL_TYPE,
+            serde_json::json!({
+                "bindingId": binding_id,
+                "mobileId": mobile_id,
+                "message": payload,
+            }),
+        )
+        .await
+    }
+
+    pub(super) async fn send_app_envelope_to_mobile(
+        &self,
+        binding_id: &str,
+        mobile_id: &str,
+        payload: Value,
+    ) -> Result<&'static str, String> {
+        let (peer, peer_ready) = {
+            let state = self.state.lock().await;
+            let peer = state.peers.get(binding_id).cloned();
+            let peer_ready = state
+                .channels
+                .iter()
+                .find(|item| item.binding_id == binding_id)
+                .map(|item| item.peer_state == "connected")
+                .unwrap_or(false);
+            (peer, peer_ready)
+        };
+
+        if peer_ready {
+            if let Some(peer) = peer {
+                match self.send_peer_json(&peer, &payload).await {
+                    Ok(_) => return Ok("p2p"),
+                    Err(error) => {
+                        self.append_event(format!(
+                            "peer send failed, fallback to relay: binding={} mobile={} error={}",
+                            binding_id,
+                            mobile_id,
+                            error
+                        ))
+                        .await;
+                    }
+                }
+            }
+        }
+
+        let app = {
+            let state = self.state.lock().await;
+            state.app.clone()
+        }
+        .ok_or_else(|| "app handle is unavailable".to_string())?;
+        self.relay_app_message_to_mobile(&app, binding_id, mobile_id, &payload)
+            .await?;
+        Ok("relay")
+    }
+
     pub(super) async fn handle_peer_message(
         &self,
         peer: Arc<DesktopPeer>,
@@ -290,64 +431,8 @@ impl PairBackendHandle {
             return Ok(());
         }
 
-        if event_type == OPENCLAW_CHAT_MESSAGE_TYPE {
-            let text = payload
-                .get("payload")
-                .and_then(Value::as_object)
-                .and_then(|map| map.get("text"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let ts = payload
-                .get("ts")
-                .and_then(Value::as_u64)
-                .unwrap_or_else(Self::now_ms);
-            self.append_channel_message(
-                &peer.binding_id,
-                PairBackendMessage {
-                    id: Self::random_id("msg"),
-                    from: "mobile".to_string(),
-                    text: text.clone(),
-                    ts,
-                },
-            )
-            .await;
-            self.append_event(format!("peer chat from {}: {}", peer.mobile_id, text))
-                .await;
-            let app = {
-                let state = self.state.lock().await;
-                state.app.clone()
-            };
-            if let Some(app_handle) = app {
-                let backend = self.clone();
-                let binding_id = peer.binding_id.clone();
-                let mobile_id = peer.mobile_id.clone();
-                let forwarded_text = text.clone();
-                tokio::spawn(async move {
-                    if let Err(error) = backend
-                        .forward_mobile_message_to_openclaw(
-                            &app_handle,
-                            &binding_id,
-                            &mobile_id,
-                            &forwarded_text,
-                        )
-                        .await
-                    {
-                        backend
-                            .append_event(format!("openclaw chat.send failed: {}", error))
-                            .await;
-                    }
-                });
-            }
-            return Ok(());
-        }
-
-        self.append_event(format!(
-            "peer app message from {}: {}",
-            peer.mobile_id, event_type
-        ))
-        .await;
-        Ok(())
+        self.process_mobile_app_message(&peer.binding_id, &peer.mobile_id, &payload, "peer")
+            .await
     }
 
     pub(super) async fn append_channel_message(
@@ -403,11 +488,15 @@ impl PairBackendHandle {
                 .iter()
                 .find(|item| item.channel_id == channel_id)
                 .ok_or_else(|| "会话不存在".to_string())?;
-            if channel.peer_state != "connected" {
-                return Err("P2P 通道尚未就绪".to_string());
+            if channel.trust_state == "pending" {
+                return Err("请先在移动端完成安全码确认".to_string());
+            }
+            if channel.trust_state == "revoked" {
+                return Err("该绑定已被撤销".to_string());
             }
             if let Some(capabilities) = &channel.peer_capabilities {
-                if !capabilities.supported_messages.is_empty()
+                if channel.peer_state == "connected"
+                    && !capabilities.supported_messages.is_empty()
                     && !capabilities
                         .supported_messages
                         .iter()
@@ -418,24 +507,18 @@ impl PairBackendHandle {
             }
             (channel.binding_id.clone(), channel.mobile_id.clone())
         };
-        let peer = {
-            let state = self.state.lock().await;
-            state
-                .peers
-                .get(&binding_id)
-                .cloned()
-                .ok_or_else(|| "peer channel is not ready".to_string())?
-        };
-        self.send_peer_json(
-            &peer,
-            &serde_json::json!({
+        let delivery = self
+            .send_app_envelope_to_mobile(
+                &binding_id,
+                &mobile_id,
+                serde_json::json!({
                 "type": OPENCLAW_CHAT_MESSAGE_TYPE,
                 "payload": { "text": text },
                 "ts": Self::now_ms(),
                 "from": "desktop"
-            }),
-        )
-        .await?;
+                }),
+            )
+            .await?;
         self.append_channel_message(
             &binding_id,
             PairBackendMessage {
@@ -446,7 +529,7 @@ impl PairBackendHandle {
             },
         )
         .await;
-        self.append_event(format!("peer chat sent -> mobile={}", mobile_id))
+        self.append_event(format!("chat sent -> mobile={} via={}", mobile_id, delivery))
             .await;
         Ok(self.snapshot().await)
     }

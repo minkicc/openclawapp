@@ -68,12 +68,17 @@ export function ConversationScreen({ route, navigation }: Props) {
   }
 
   const activeSession = session;
-  const composerEnabled = Boolean(activeSession.transportReady) || activeSession.peerState === 'connected';
+  const relayReady =
+    String(activeSession.trustState || '').trim() === 'active' && activeSession.status !== 'offline';
+  const composerEnabled =
+    Boolean(activeSession.transportReady) || activeSession.peerState === 'connected' || relayReady;
   const helperText =
     activeSession.trustState === 'pending'
       ? `等待桌面端确认安全码${activeSession.safetyCode ? ` ${activeSession.safetyCode}` : ''}`
-      : activeSession.transportReady
-        ? '通道已就绪，可以开始发送业务消息。'
+      : activeSession.peerState === 'connected'
+        ? 'P2P 通道已就绪，可以开始发送业务消息。'
+        : relayReady
+          ? '桌面端在线，可直接聊天；客户端会优先尝试直连，失败时自动切换服务端转发。'
         : activeSession.peerState === 'failed'
           ? activeSession.peerDetail
             ? `P2P 通道建立失败：${activeSession.peerDetail}`
@@ -81,12 +86,12 @@ export function ConversationScreen({ route, navigation }: Props) {
           : activeSession.status === 'offline'
             ? '桌面端当前离线，正在等待重新联通。'
         : activeSession.peerState === 'connecting' || activeSession.peerState === 'channel-open' || activeSession.peerState === 'verifying'
-          ? '正在建立 P2P 通道...'
+          ? '正在建立直连通道，失败会自动切换服务端转发...'
           : activeSession.peerState === 'connected'
             ? '通道已就绪，可以开始发送业务消息。'
             : activeSession.peerDetail
-              ? `P2P 通道未就绪：${activeSession.peerDetail}`
-              : '已完成配对发现，正在准备安全通道。';
+              ? `直连通道未就绪：${activeSession.peerDetail}`
+              : '已完成配对发现，正在准备可用通道。';
 
   async function handleSend() {
     const text = draft.trim();
@@ -171,7 +176,7 @@ export function ConversationScreen({ route, navigation }: Props) {
             disabled={sending || !composerEnabled}
           >
             <Text style={styles.sendButtonText}>
-              {!composerEnabled ? '通道未就绪' : sending ? '发送中...' : '发送'}
+              {!composerEnabled ? '桌面离线' : sending ? '发送中...' : '发送'}
             </Text>
           </Pressable>
         </View>

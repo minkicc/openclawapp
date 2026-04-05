@@ -44,6 +44,7 @@ const PAIR_HEARTBEAT_SECS: u64 = 30;
 const PAIR_CAPABILITY_HELLO_TYPE: &str = "sys.auth.hello";
 const PAIR_CAPABILITY_CAPS_TYPE: &str = "sys.capabilities";
 const OPENCLAW_CHAT_MESSAGE_TYPE: &str = "app.openclaw.chat.message";
+const OPENCLAW_RELAY_APP_SIGNAL_TYPE: &str = "relay.app";
 const OPENCLAW_GATEWAY_IDENTITY_FILE_NAME: &str = "openclaw-gateway-device-identity.json";
 const OPENCLAW_GATEWAY_CONNECT_TIMEOUT_SECS: u64 = 20;
 const OPENCLAW_GATEWAY_REQUEST_TIMEOUT_SECS: u64 = 90;

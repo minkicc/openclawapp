@@ -121,6 +121,18 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     return sessionsRef.current.find((item) => item.deviceId === target) || null;
   }
 
+  function canUseRelayTransport(session: SessionItem | null | undefined) {
+    if (!session) {
+      return false;
+    }
+    return (
+      String(session.trustState || '').trim() === 'active' &&
+      String(session.status || '').trim() !== 'offline' &&
+      Boolean(String(session.bindingId || '').trim()) &&
+      Boolean(String(session.deviceId || '').trim())
+    );
+  }
+
   function patchSessionById(sessionId: string, patch: Partial<SessionItem>) {
     updateSessions((current) =>
       current.map((item) =>
@@ -182,25 +194,48 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
   }
 
   function updatePeerState(bindingId: string, state: string, detail = '') {
-    patchSessionByBindingId(bindingId, {
-      peerState: state,
-      peerDetail: detail,
-      transportReady: state === 'connected',
-      preview:
-        state === 'connected'
-          ? 'P2P 通道已建立，可以开始聊天。'
-          : isPeerNegotiating(state)
-            ? '正在建立 P2P 通道...'
-            : state === 'failed'
-              ? detail
-                ? `P2P 通道建立失败：${detail}`
-                : 'P2P 通道建立失败'
-              : state === 'disconnected'
-                ? detail
-                  ? `P2P 通道已断开：${detail}`
-                  : 'P2P 通道已断开，等待重连'
-                : undefined,
-    });
+    const target = String(bindingId || '').trim();
+    if (!target) {
+      return;
+    }
+    updateSessions((current) =>
+      current.map((item) => {
+        if (item.bindingId !== target) {
+          return item;
+        }
+        const relayReady = canUseRelayTransport(item);
+        return {
+          ...item,
+          peerState: state,
+          peerDetail: detail,
+          transportReady: state === 'connected' || relayReady,
+          preview:
+            state === 'connected'
+              ? 'P2P 通道已建立，可以开始聊天。'
+              : isPeerNegotiating(state)
+                ? '正在建立直连通道，失败会自动切换服务端转发...'
+                : state === 'failed'
+                  ? detail
+                    ? relayReady
+                      ? `P2P 通道建立失败，已切换服务端转发：${detail}`
+                      : `P2P 通道建立失败：${detail}`
+                    : relayReady
+                      ? 'P2P 通道建立失败，已切换服务端转发。'
+                      : 'P2P 通道建立失败'
+                  : state === 'disconnected'
+                    ? detail
+                      ? relayReady
+                        ? `P2P 通道已断开，已切换服务端转发：${detail}`
+                        : `P2P 通道已断开：${detail}`
+                      : relayReady
+                        ? 'P2P 通道已断开，已切换服务端转发。'
+                        : 'P2P 通道已断开，等待重连'
+                    : relayReady
+                      ? '桌面端在线，可通过服务端转发聊天。'
+                      : item.preview,
+        };
+      })
+    );
   }
 
   function markPeerFailure(session: SessionItem, error: unknown, fallback = 'P2P 通道建立失败') {
@@ -216,8 +251,10 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     patchSessionById(session.id, {
       peerState: 'failed',
       peerDetail: detail,
-      transportReady: false,
-      preview: `P2P 通道建立失败：${detail}`,
+      transportReady: canUseRelayTransport(session),
+      preview: canUseRelayTransport(session)
+        ? `P2P 通道建立失败，已切换服务端转发：${detail}`
+        : `P2P 通道建立失败：${detail}`,
     });
   }
 
@@ -305,6 +342,43 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
         toType: 'desktop',
         toId,
         type,
+        payload,
+      });
+    }
+  }
+
+  async function sendRelayAppMessage(
+    session: SessionItem,
+    message: PairV2PeerAppMessage
+  ) {
+    let auth = await ensureMobileAuthV2(session.serverBaseUrl);
+    const bindingId = String(session.bindingId || '').trim();
+    const deviceId = String(session.deviceId || '').trim();
+    if (!bindingId || !deviceId) {
+      throw new Error('绑定信息不完整，无法使用服务端转发');
+    }
+    const payload = {
+      bindingId,
+      deviceId,
+      message,
+    };
+    try {
+      await sendPairV2Signal(session.serverBaseUrl, auth.token, {
+        fromType: 'mobile',
+        fromId: auth.mobileId,
+        toType: 'desktop',
+        toId: deviceId,
+        type: 'relay.app',
+        payload,
+      });
+    } catch {
+      auth = await ensureMobileAuthV2(session.serverBaseUrl, true);
+      await sendPairV2Signal(session.serverBaseUrl, auth.token, {
+        fromType: 'mobile',
+        fromId: auth.mobileId,
+        toType: 'desktop',
+        toId: deviceId,
+        type: 'relay.app',
         payload,
       });
     }
@@ -488,7 +562,8 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
             trustState: String(payload.trustState || payload.trust_state || 'active'),
             approvedAt: Number(payload.approvedAt || payload.approved_at || Date.now()),
             status: 'connected',
-            preview: '桌面端已批准配对，正在建立 P2P 通道...',
+            transportReady: true,
+            preview: '桌面端已批准配对，正在尝试直连；失败会自动切换服务端转发。',
           };
         })
       );
@@ -520,6 +595,45 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
           };
         })
       );
+      return;
+    }
+
+    if (type === 'relay.app') {
+      const bindingId = String(payload.bindingId || payload.binding_id || '').trim();
+      const deviceId = String(payload.deviceId || payload.device_id || fromId || '').trim();
+      const session = getSessionByBindingIdSnapshot(bindingId) || getSessionByDeviceIdSnapshot(deviceId);
+      if (!session) {
+        void refreshSessions();
+        return;
+      }
+      const message =
+        payload.message && typeof payload.message === 'object'
+          ? (payload.message as PairV2PeerAppMessage)
+          : null;
+      if (!message) {
+        return;
+      }
+      patchSessionById(session.id, {
+        transportReady: true,
+        preview:
+          session.peerState === 'connected'
+            ? session.preview
+            : '已切换到服务端转发，可继续聊天。',
+      });
+      if (String(message.type || '').trim() === openClawPairChatMessageType) {
+        const text =
+          message.payload && typeof message.payload === 'object'
+            ? String(message.payload.text || '').trim()
+            : '';
+        if (!text) {
+          return;
+        }
+        appendMessageLocal(session.id, {
+          from: 'host',
+          text,
+          createdAt: formatMessageTime(new Date(Number(message.ts || Date.now()))),
+        });
+      }
       return;
     }
 
@@ -789,14 +903,44 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       throw new Error('信令连接未建立');
     }
 
-    const peerReady = await ensureSessionPeerConnected(session);
-    if (!peerReady) {
-      throw new Error('P2P 通道尚未建立');
+    const message: PairV2PeerAppMessage = {
+      type: openClawPairChatMessageType,
+      payload: buildOpenClawPairChatPayload(normalizedText),
+      ts: Date.now(),
+      from: 'mobile',
+    };
+
+    let deliveredVia: 'p2p' | 'relay' = 'relay';
+    const latestSession = getSessionByIdSnapshot(session.id) || session;
+    const currentPeerState = String(latestSession.peerState || '').trim();
+    const shouldAttemptPeer = currentPeerState !== 'failed' && currentPeerState !== 'disconnected';
+
+    if (shouldAttemptPeer) {
+      try {
+        const peerReady = await ensureSessionPeerConnected(latestSession, 3500, 0);
+        if (peerReady) {
+          const peer = await ensureSessionPeer(latestSession);
+          console.log(`[pair-mobile] send chat binding=${latestSession.bindingId} text=${normalizedText} via=p2p`);
+          await peer.sendAppMessage(openClawPairChatMessageType, buildOpenClawPairChatPayload(normalizedText));
+          deliveredVia = 'p2p';
+        }
+      } catch (error) {
+        markPeerFailure(latestSession, error);
+      }
     }
 
-    const peer = await ensureSessionPeer(session);
-    console.log(`[pair-mobile] send chat binding=${session.bindingId} text=${normalizedText}`);
-    await peer.sendAppMessage(openClawPairChatMessageType, buildOpenClawPairChatPayload(normalizedText));
+    if (deliveredVia !== 'p2p') {
+      if (!canUseRelayTransport(latestSession)) {
+        throw new Error('桌面端当前离线，无法使用服务端转发');
+      }
+      console.log(`[pair-mobile] send chat binding=${latestSession.bindingId} text=${normalizedText} via=relay`);
+      await sendRelayAppMessage(latestSession, message);
+      patchSessionById(latestSession.id, {
+        transportReady: true,
+        preview: '已切换到服务端转发，可继续聊天。',
+      });
+    }
+
     appendMessageLocal(session.id, {
       from: 'self',
       text: normalizedText,
