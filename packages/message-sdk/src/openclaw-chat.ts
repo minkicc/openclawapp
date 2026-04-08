@@ -3,6 +3,7 @@ import type { PairV2EntityType, PairV2PeerAppMessage, PairV2PeerCapabilities, Pa
 export const openClawPairChatMessageType = 'app.openclaw.chat.message';
 export const openClawPairChatAckType = 'app.openclaw.chat.ack';
 export const openClawPairChatSyncRequestType = 'app.openclaw.chat.sync-request';
+export const openClawPairChatSyncStateType = 'app.openclaw.chat.sync-state';
 export const openClawPairChatFeature = 'chat';
 
 export type OpenClawPairChatEvent = {
@@ -11,6 +12,8 @@ export type OpenClawPairChatEvent = {
   text: string;
   ts: number;
   from: PairV2EntityType;
+  origin: 'host' | 'mobile';
+  originSeq: number;
 };
 
 export type OpenClawPairChatSyncRequest = {
@@ -25,10 +28,20 @@ export type OpenClawPairChatAck = {
   from: PairV2EntityType;
 };
 
+export type OpenClawPairChatSyncState = {
+  hostSeq: number;
+  mobileSeq: number;
+  leafIds: string[];
+  ts: number;
+  from: PairV2EntityType;
+};
+
 export type OpenClawPairChatMessageLike = {
   id: string;
   after?: string[];
   ts?: number;
+  origin?: 'host' | 'mobile' | string;
+  originSeq?: number;
 };
 
 export function supportsOpenClawPairChat(
@@ -159,22 +172,20 @@ export function buildOpenClawPairChatPayload(
   options: {
     id?: string;
     after?: string[];
+    origin?: 'host' | 'mobile';
+    originSeq?: number;
   } = {}
 ) {
   return {
     id: String(options.id || '').trim() || createOpenClawPairChatMessageId(),
     after: normalizeOpenClawPairChatAfterIds(options.after),
-    text: String(text || '')
+    text: String(text || ''),
+    origin: options.origin === 'mobile' ? 'mobile' : 'host',
+    originSeq: Math.max(0, Math.trunc(Number(options.originSeq || 0))),
   };
 }
 
-export function parseOpenClawPairChatMessage(message: PairV2PeerAppMessage): {
-  id: string;
-  after: string[];
-  text: string;
-  ts: number;
-  from: PairV2EntityType;
-} | null {
+export function parseOpenClawPairChatMessage(message: PairV2PeerAppMessage): OpenClawPairChatEvent | null {
   if (String(message?.type || '').trim() !== openClawPairChatMessageType) {
     return null;
   }
@@ -186,7 +197,9 @@ export function parseOpenClawPairChatMessage(message: PairV2PeerAppMessage): {
     after: normalizeOpenClawPairChatAfterIds(payload.after),
     text: String(payload.text || ''),
     ts: Number(message.ts || Date.now()),
-    from: message.from === 'desktop' ? 'desktop' : 'mobile'
+    from: message.from === 'desktop' ? 'desktop' : 'mobile',
+    origin: payload.origin === 'mobile' ? 'mobile' : payload.origin === 'host' ? 'host' : message.from === 'desktop' ? 'host' : 'mobile',
+    originSeq: Math.max(0, Math.trunc(Number(payload.originSeq || 0))),
   };
 }
 
@@ -199,6 +212,18 @@ export function buildOpenClawPairChatSyncRequestPayload(messageIds: string[]) {
 export function buildOpenClawPairChatAckPayload(messageIds: string[]) {
   return {
     messageIds: normalizeOpenClawPairChatAfterIds(messageIds),
+  };
+}
+
+export function buildOpenClawPairChatSyncStatePayload(options: {
+  hostSeq?: number;
+  mobileSeq?: number;
+  leafIds?: string[];
+}) {
+  return {
+    hostSeq: Math.max(0, Math.trunc(Number(options.hostSeq || 0))),
+    mobileSeq: Math.max(0, Math.trunc(Number(options.mobileSeq || 0))),
+    leafIds: normalizeOpenClawPairChatAfterIds(options.leafIds),
   };
 }
 
@@ -230,13 +255,34 @@ export function parseOpenClawPairChatSyncRequest(message: PairV2PeerAppMessage):
   };
 }
 
+export function parseOpenClawPairChatSyncState(message: PairV2PeerAppMessage): OpenClawPairChatSyncState | null {
+  if (String(message?.type || '').trim() !== openClawPairChatSyncStateType) {
+    return null;
+  }
+  const payload = message.payload && typeof message.payload === 'object'
+    ? message.payload
+    : {};
+  return {
+    hostSeq: Math.max(0, Math.trunc(Number(payload.hostSeq || 0))),
+    mobileSeq: Math.max(0, Math.trunc(Number(payload.mobileSeq || 0))),
+    leafIds: normalizeOpenClawPairChatAfterIds(payload.leafIds),
+    ts: Number(message.ts || Date.now()),
+    from: message.from === 'desktop' ? 'desktop' : 'mobile',
+  };
+}
+
 export function createOpenClawPairChatModule<TContext>(options: {
   onChatMessage: (message: OpenClawPairChatEvent, context: TContext) => void | Promise<void>;
 }): PairV2AppModule<TContext> {
   return {
     id: 'openclaw.chat',
     feature: openClawPairChatFeature,
-    supportedMessages: [openClawPairChatMessageType, openClawPairChatAckType, openClawPairChatSyncRequestType],
+    supportedMessages: [
+      openClawPairChatMessageType,
+      openClawPairChatAckType,
+      openClawPairChatSyncRequestType,
+      openClawPairChatSyncStateType,
+    ],
     async onMessage(message, context) {
       const chat = parseOpenClawPairChatMessage(message);
       if (!chat) {

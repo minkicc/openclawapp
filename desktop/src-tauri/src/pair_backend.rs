@@ -38,14 +38,17 @@ const PAIR_EVENT_NAME: &str = "pair-backend://state";
 const PAIR_LOG_PREFIX: &str = "Pair Log: ready";
 const PAIR_LOG_FILE_NAME: &str = "pair-backend.log";
 const PAIR_IDENTITY_FILE_NAME: &str = "pair-v2-desktop-identity.json";
+const PAIR_RUNTIME_STATE_FILE_NAME: &str = "pair-runtime-state.json";
 const PAIR_RECONNECT_MAX_MS: u64 = 15_000;
 const PAIR_RECONNECT_BASE_MS: u64 = 1_000;
-const PAIR_HEARTBEAT_SECS: u64 = 30;
+const PAIR_HEARTBEAT_SECS: u64 = 60;
 const PAIR_CAPABILITY_HELLO_TYPE: &str = "sys.auth.hello";
 const PAIR_CAPABILITY_CAPS_TYPE: &str = "sys.capabilities";
 const OPENCLAW_CHAT_MESSAGE_TYPE: &str = "app.openclaw.chat.message";
 const OPENCLAW_CHAT_ACK_TYPE: &str = "app.openclaw.chat.ack";
 const OPENCLAW_CHAT_SYNC_REQUEST_TYPE: &str = "app.openclaw.chat.sync-request";
+const OPENCLAW_CHAT_SYNC_STATE_TYPE: &str = "app.openclaw.chat.sync-state";
+const OPENCLAW_CHANNEL_REVOKE_TYPE: &str = "app.openclaw.channel.revoke";
 const OPENCLAW_RELAY_APP_SIGNAL_TYPE: &str = "relay.app";
 const OPENCLAW_GATEWAY_IDENTITY_FILE_NAME: &str = "openclaw-gateway-device-identity.json";
 const OPENCLAW_GATEWAY_CONNECT_TIMEOUT_SECS: u64 = 20;
@@ -56,6 +59,7 @@ const OPENCLAW_GATEWAY_CLIENT_MODE: &str = "backend";
 const OPENCLAW_GATEWAY_ROLE: &str = "operator";
 const OPENCLAW_GATEWAY_VERSION: &str = "desktop-shell";
 const OPENCLAW_GATEWAY_PROTOCOL_VERSION: i64 = 3;
+const PAIR_CHANNEL_MESSAGE_LIMIT: usize = 1000;
 const OPENCLAW_GATEWAY_SCOPES: &[&str] = &[
     "operator.admin",
     "operator.read",
@@ -74,6 +78,10 @@ pub struct PairBackendMessage {
     pub ts: u64,
     #[serde(default)]
     pub kind: String,
+    #[serde(default)]
+    pub origin: String,
+    #[serde(default)]
+    pub origin_seq: u64,
     #[serde(default)]
     pub after: Vec<String>,
     #[serde(default)]
@@ -292,6 +300,17 @@ struct GatewayDeviceIdentityRecord {
     private_key: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PairBackendRuntimeState {
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    saved_at: u64,
+    #[serde(default)]
+    channels: Vec<PairBackendChannel>,
+}
+
 #[derive(Debug, Clone)]
 struct PendingOpenClawRun {
     run_id: String,
@@ -358,6 +377,8 @@ struct PairBackendState {
     gateway_pending_runs: HashMap<String, PendingOpenClawRun>,
     gateway_pending_run_aliases: HashMap<String, String>,
     pending_mobile_acks: HashMap<String, PendingMobileAck>,
+    persisted_runtime_loaded: bool,
+    persisted_runtime_state_signature: String,
 }
 
 impl Default for PairBackendState {
@@ -395,6 +416,8 @@ impl Default for PairBackendState {
             gateway_pending_runs: HashMap::new(),
             gateway_pending_run_aliases: HashMap::new(),
             pending_mobile_acks: HashMap::new(),
+            persisted_runtime_loaded: false,
+            persisted_runtime_state_signature: String::new(),
         }
     }
 }
@@ -427,17 +450,76 @@ impl PairBackendHandle {
     }
 
     async fn set_app_handle(&self, app: AppHandle) {
-        let mut state = self.state.lock().await;
-        state.app = Some(app);
+        let should_restore = {
+            let mut state = self.state.lock().await;
+            state.app = Some(app.clone());
+            if state.persisted_runtime_loaded {
+                false
+            } else {
+                state.persisted_runtime_loaded = true;
+                true
+            }
+        };
+        if !should_restore {
+            return;
+        }
+        match Self::read_runtime_state_from_disk(&app) {
+            Ok(Some(runtime_state)) => {
+                let mut restored_channels = runtime_state.channels;
+                Self::sanitize_loaded_channels(&mut restored_channels);
+                let runtime_signature =
+                    Self::serialize_runtime_state_signature(&restored_channels);
+                {
+                    let mut state = self.state.lock().await;
+                    if state.channels.is_empty() {
+                        state.channels = restored_channels.clone();
+                    }
+                    state.persisted_runtime_state_signature = runtime_signature;
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("pair runtime restore failed: {}", error);
+            }
+        }
     }
 
     async fn emit_snapshot(&self) {
-        let (app, snapshot) = {
+        let (app, snapshot, runtime_json_to_persist, runtime_signature_to_persist) = {
             let state = self.state.lock().await;
-            (state.app.clone(), self.snapshot_from_state(&state))
+            let runtime_signature = Self::serialize_runtime_state_signature(&state.channels);
+            let should_persist = !runtime_signature.is_empty()
+                && runtime_signature != state.persisted_runtime_state_signature;
+            (
+                state.app.clone(),
+                self.snapshot_from_state(&state),
+                if should_persist {
+                    Some(Self::serialize_runtime_state_json(&state.channels))
+                } else {
+                    None
+                },
+                if should_persist {
+                    Some(runtime_signature)
+                } else {
+                    None
+                },
+            )
         };
         if let Some(app_handle) = app {
             let _ = app_handle.emit_all(PAIR_EVENT_NAME, snapshot);
+            if let (Some(runtime_json), Some(runtime_signature)) =
+                (runtime_json_to_persist, runtime_signature_to_persist)
+            {
+                match Self::write_runtime_state_to_disk(&app_handle, &runtime_json) {
+                    Ok(()) => {
+                        let mut state = self.state.lock().await;
+                        state.persisted_runtime_state_signature = runtime_signature;
+                    }
+                    Err(error) => {
+                        eprintln!("pair runtime persist failed: {}", error);
+                    }
+                }
+            }
         }
     }
 
@@ -539,6 +621,79 @@ impl PairBackendHandle {
         let dir = super::app_config_dir(app)?.join("pairing");
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建配对目录失败: {}", e))?;
         Ok(dir.join(PAIR_IDENTITY_FILE_NAME))
+    }
+
+    fn runtime_state_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+        let dir = super::app_config_dir(app)?.join("pairing");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("创建配对目录失败: {}", e))?;
+        Ok(dir.join(PAIR_RUNTIME_STATE_FILE_NAME))
+    }
+
+    fn build_runtime_state(
+        channels: &[PairBackendChannel],
+        saved_at: u64,
+    ) -> PairBackendRuntimeState {
+        let mut persisted_channels = channels.to_vec();
+        Self::sanitize_channels_for_persistence(&mut persisted_channels);
+        PairBackendRuntimeState {
+            version: 1,
+            saved_at,
+            channels: persisted_channels,
+        }
+    }
+
+    fn serialize_runtime_state_json(channels: &[PairBackendChannel]) -> String {
+        serde_json::to_string(&Self::build_runtime_state(channels, Self::now_ms()))
+            .unwrap_or_else(|_| String::new())
+    }
+
+    fn serialize_runtime_state_signature(channels: &[PairBackendChannel]) -> String {
+        serde_json::to_string(&Self::build_runtime_state(channels, 0))
+            .unwrap_or_else(|_| String::new())
+    }
+
+    fn write_runtime_state_to_disk(app: &AppHandle, runtime_json: &str) -> Result<(), String> {
+        let path = Self::runtime_state_path(app)?;
+        std::fs::write(&path, runtime_json)
+            .map_err(|e| format!("写入通信运行时状态失败 ({}): {}", path.display(), e))
+    }
+
+    fn read_runtime_state_from_disk(
+        app: &AppHandle,
+    ) -> Result<Option<PairBackendRuntimeState>, String> {
+        let path = Self::runtime_state_path(app)?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|e| format!("读取通信运行时状态失败 ({}): {}", path.display(), e))?;
+        if raw.trim().is_empty() {
+            return Ok(None);
+        }
+        let parsed: PairBackendRuntimeState = serde_json::from_str(&raw)
+            .map_err(|e| format!("解析通信运行时状态失败 ({}): {}", path.display(), e))?;
+        Ok(Some(parsed))
+    }
+
+    fn sanitize_channels_for_persistence(channels: &mut Vec<PairBackendChannel>) {
+        for channel in channels.iter_mut() {
+            channel.status = if channel.trust_state == "pending" {
+                "pending".to_string()
+            } else {
+                "offline".to_string()
+            };
+            channel.peer_state.clear();
+            channel.peer_detail.clear();
+            channel.peer_capabilities = None;
+        }
+    }
+
+    fn sanitize_loaded_channels(channels: &mut Vec<PairBackendChannel>) {
+        Self::sanitize_channels_for_persistence(channels);
+        for channel in channels.iter_mut() {
+            Self::reconcile_channel_messages_locked(channel);
+        }
+        channels.sort_by(|left, right| left.created_at.cmp(&right.created_at));
     }
 }
 

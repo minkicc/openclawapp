@@ -8,11 +8,11 @@ import {
   type ReactNode,
 } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { AppState, type AppStateStatus } from 'react-native';
 import {
   createPairV2AppRegistry,
   openPairV2SignalStream,
   PairV2PeerChannel,
-  revokePairV2Binding,
   sendPairV2Signal,
   type PairV2PeerAppMessage,
   type PairV2PeerCapabilities,
@@ -20,22 +20,29 @@ import {
   type PairV2SignalStreamLike,
 } from '@openclaw/pair-sdk';
 import {
+  buildOpenClawPairChannelRevokePayload,
   buildOpenClawPairChatAckPayload,
   buildOpenClawPairChatSyncRequestPayload,
+  buildOpenClawPairChatSyncStatePayload,
   buildOpenClawPairChatPayload,
   createOpenClawPairChatMessageId,
   createOpenClawPairChatModule,
+  openClawPairChannelRevokeType,
   openClawPairChatAckType,
   openClawPairChatMessageType,
   openClawPairChatSyncRequestType,
+  openClawPairChatSyncStateType,
+  parseOpenClawPairChannelRevoke,
   parseOpenClawPairChatAck,
+  parseOpenClawPairChatSyncState,
   parseOpenClawPairChatSyncRequest,
   supportsOpenClawPairChat,
 } from '@openclaw/message-sdk';
 import type { ChatMessage, SessionItem } from '../types/session';
-import { collectSessionLeafIds, upsertSessionMessage } from '../utils/chatGraph';
+import { collectSessionLeafIds, describeSessionChatState, upsertSessionMessage } from '../utils/chatGraph';
 import {
   ensureMobileAuthV2,
+  heartbeatMobilePresenceV2,
   loadStoredSessions,
   pairByScanV2,
   refreshSessionsV2,
@@ -63,6 +70,10 @@ type SignalStreamEntry = {
 };
 
 const DEBUG_AUTO_MESSAGE_KEY = 'openclaw.mobile.debug.auto-message';
+const MAX_SESSION_MESSAGES = 1000;
+const PRESENCE_HEARTBEAT_INTERVAL_MS = 60_000;
+const MESSAGE_SYNC_INTERVAL_MS = 60_000;
+const MESSAGE_SYNC_RESUME_THROTTLE_MS = 10_000;
 
 const SessionsContext = createContext<SessionsContextValue | null>(null);
 
@@ -87,6 +98,14 @@ function isPeerNegotiating(state: string) {
   return state === 'connecting' || state === 'channel-open' || state === 'verifying';
 }
 
+function nextOriginSeq(messages: ChatMessage[], origin: 'host' | 'mobile') {
+  return (
+    messages
+      .filter((message) => message.kind !== 'system' && (message.origin === origin || (!message.origin && (origin === 'mobile' ? message.from === 'self' : message.from === 'host'))))
+      .reduce((maxSeq, message) => Math.max(maxSeq, Math.trunc(Number(message.originSeq || 0))), 0) + 1
+  );
+}
+
 export function SessionsProvider({ children }: { children: ReactNode }) {
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const sessionsRef = useRef<SessionItem[]>([]);
@@ -97,6 +116,10 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
   const peerConnectingRef = useRef(new Map<string, Promise<boolean>>());
   const debugAutoMessageTriggeredRef = useRef(new Set<string>());
   const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const messageSyncTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastPresenceHeartbeatAtRef = useRef(new Map<string, number>());
+  const lastMessageSyncAtRef = useRef(new Map<string, number>());
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
 
   function commitSessions(nextSessions: SessionItem[]) {
     sessionsRef.current = nextSessions;
@@ -171,6 +194,30 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     );
   }
 
+  function removeSessionLocal(match: {
+    id?: string;
+    bindingId?: string;
+    deviceId?: string;
+  }) {
+    const targetId = String(match.id || '').trim();
+    const targetBindingId = String(match.bindingId || '').trim();
+    const targetDeviceId = String(match.deviceId || '').trim();
+    updateSessions((current) =>
+      current.filter((item) => {
+        if (targetId && item.id === targetId) {
+          return false;
+        }
+        if (targetBindingId && item.bindingId === targetBindingId) {
+          return false;
+        }
+        if (targetDeviceId && item.deviceId === targetDeviceId) {
+          return false;
+        }
+        return true;
+      })
+    );
+  }
+
   function appendMessageLocal(
     sessionId: string,
     message: {
@@ -180,6 +227,8 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       createdAt?: string;
       ts?: number;
       kind?: ChatMessage['kind'];
+      origin?: ChatMessage['origin'];
+      originSeq?: ChatMessage['originSeq'];
       after?: string[];
     }
   ) {
@@ -196,6 +245,16 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       createdAt: message.createdAt || formatMessageTime(new Date(ts)),
       ts,
       kind: message.kind === 'system' ? 'system' : 'chat',
+      origin:
+        message.kind === 'system'
+          ? undefined
+          : message.from === 'self'
+            ? 'mobile'
+            : 'host',
+      originSeq:
+        message.kind === 'system'
+          ? undefined
+          : Math.max(0, Math.trunc(Number(message.originSeq || 0))),
       after: Array.isArray(message.after) ? [...message.after] : [],
       missingAfter: [],
     };
@@ -210,7 +269,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
           ...item,
           preview: text,
           isReplying: false,
-          messages: reconciled.messages.slice(-300),
+          messages: reconciled.messages.slice(-MAX_SESSION_MESSAGES),
           missingMessageIds: reconciled.missingMessageIds,
         };
       })
@@ -224,6 +283,8 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       from: ChatMessage['from'];
       text: string;
       ts: number;
+      origin?: 'host' | 'mobile';
+      originSeq?: number;
       after?: string[];
     }
   ) {
@@ -254,6 +315,8 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
           createdAt: formatMessageTime(new Date(Number(message.ts || Date.now()))),
           ts: Number(message.ts || Date.now()),
           kind: 'chat',
+          origin: message.origin === 'mobile' ? 'mobile' : 'host',
+          originSeq: Math.max(0, Math.trunc(Number(message.originSeq || 0))),
           after: Array.isArray(message.after) ? [...message.after] : [],
           missingAfter: [],
         });
@@ -266,7 +329,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
           ...item,
           preview: String(message.text || '').trim() || item.preview,
           isReplying: false,
-          messages: reconciled.messages.slice(-300),
+          messages: reconciled.messages.slice(-MAX_SESSION_MESSAGES),
           missingMessageIds: reconciled.missingMessageIds,
         };
       })
@@ -400,6 +463,32 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  function pruneMessageSyncTimestamps(nextSessions: SessionItem[]) {
+    const activeBindings = new Set(
+      nextSessions
+        .map((session) => String(session.bindingId || '').trim())
+        .filter(Boolean)
+    );
+    for (const bindingId of [...lastMessageSyncAtRef.current.keys()]) {
+      if (!activeBindings.has(bindingId)) {
+        lastMessageSyncAtRef.current.delete(bindingId);
+      }
+    }
+  }
+
+  function prunePresenceHeartbeatTimestamps(nextSessions: SessionItem[]) {
+    const activeBaseUrls = new Set(
+      nextSessions
+        .map((session) => String(session.serverBaseUrl || '').trim())
+        .filter(Boolean)
+    );
+    for (const baseUrl of [...lastPresenceHeartbeatAtRef.current.keys()]) {
+      if (!activeBaseUrls.has(baseUrl)) {
+        lastPresenceHeartbeatAtRef.current.delete(baseUrl);
+      }
+    }
+  }
+
   async function sendPeerSignal(
     baseUrl: string,
     toId: string,
@@ -510,6 +599,137 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     return 'relay' as const;
   }
 
+  async function sendChannelRevoke(session: SessionItem) {
+    const latestSession = getSessionByIdSnapshot(session.id) || session;
+    if (!String(latestSession.deviceId || '').trim()) {
+      return;
+    }
+    await deliverAppMessage(
+      latestSession,
+      {
+        type: openClawPairChannelRevokeType,
+        payload: buildOpenClawPairChannelRevokePayload({
+          channelId: latestSession.id,
+          bindingId: latestSession.bindingId,
+          sessionId: latestSession.pairSessionId,
+          revokedBy: 'mobile',
+          revokedAt: Date.now(),
+        }),
+        ts: Date.now(),
+        from: 'mobile',
+      },
+      {
+        preferRelay: true,
+        peerTimeoutMs: 1200,
+        peerRetries: 0,
+      }
+    );
+  }
+
+  async function requestMessageStateSync(
+    session: SessionItem,
+    reason: string,
+    options: {
+      minIntervalMs?: number;
+      preferRelay?: boolean;
+    } = {}
+  ) {
+    const latestSession = getSessionByIdSnapshot(session.id) || session;
+    if (!canUseRelayTransport(latestSession)) {
+      return false;
+    }
+
+    const bindingId = String(latestSession.bindingId || '').trim();
+    if (!bindingId) {
+      return false;
+    }
+
+    const now = Date.now();
+    const minIntervalMs = Math.max(0, Math.trunc(Number(options.minIntervalMs || 0)));
+    const lastSyncedAt = lastMessageSyncAtRef.current.get(bindingId) || 0;
+    if (minIntervalMs > 0 && now - lastSyncedAt < minIntervalMs) {
+      return false;
+    }
+
+    const stateSummary = describeSessionChatState(latestSession.messages || []);
+    try {
+      await deliverAppMessage(
+        latestSession,
+        {
+          type: openClawPairChatSyncStateType,
+          payload: buildOpenClawPairChatSyncStatePayload({
+            hostSeq: stateSummary.hostSeq,
+            mobileSeq: stateSummary.mobileSeq,
+            leafIds: stateSummary.leafIds,
+          }),
+          ts: now,
+          from: 'mobile',
+        },
+        {
+          preferRelay: options.preferRelay ?? true,
+          peerTimeoutMs: 1200,
+          peerRetries: 0,
+        }
+      );
+      lastMessageSyncAtRef.current.set(bindingId, now);
+      console.log(
+        `[pair-mobile] sync state binding=${bindingId} reason=${reason} hostSeq=${stateSummary.hostSeq} mobileSeq=${stateSummary.mobileSeq} leaves=${stateSummary.leafIds.length}`
+      );
+      return true;
+    } catch (error) {
+      console.log(
+        `[pair-mobile] sync state failed binding=${bindingId} reason=${reason} error=${
+          error instanceof Error ? error.message : String(error || '')
+        }`
+      );
+      return false;
+    }
+  }
+
+  async function syncSessionsWithDesktopState(
+    targetSessions: SessionItem[],
+    reason: string,
+    minIntervalMs = 0
+  ) {
+    for (const session of targetSessions) {
+      const latestSession = getSessionByIdSnapshot(session.id) || session;
+      await requestMessageStateSync(latestSession, reason, {
+        minIntervalMs,
+        preferRelay: true,
+      });
+    }
+  }
+
+  async function heartbeatSessionsPresence(
+    targetSessions: SessionItem[],
+    reason: string,
+    minIntervalMs = 0
+  ) {
+    const baseUrls = uniqueBaseUrls(targetSessions);
+    const now = Date.now();
+    for (const baseUrl of baseUrls) {
+      const normalizedBaseUrl = String(baseUrl || '').trim();
+      if (!normalizedBaseUrl) {
+        continue;
+      }
+      const lastHeartbeatAt = lastPresenceHeartbeatAtRef.current.get(normalizedBaseUrl) || 0;
+      if (minIntervalMs > 0 && now - lastHeartbeatAt < minIntervalMs) {
+        continue;
+      }
+      try {
+        await heartbeatMobilePresenceV2(normalizedBaseUrl);
+        lastPresenceHeartbeatAtRef.current.set(normalizedBaseUrl, now);
+        console.log(`[pair-mobile] presence heartbeat base=${normalizedBaseUrl} reason=${reason}`);
+      } catch (error) {
+        console.log(
+          `[pair-mobile] presence heartbeat failed base=${normalizedBaseUrl} reason=${reason} error=${
+            error instanceof Error ? error.message : String(error || '')
+          }`
+        );
+      }
+    }
+  }
+
   async function requestMissingMessages(
     session: SessionItem,
     messageIds: string[],
@@ -599,6 +819,8 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
             payload: buildOpenClawPairChatPayload(message.text, {
               id: message.id,
               after: message.after || [],
+              origin: message.origin === 'mobile' ? 'mobile' : 'host',
+              originSeq: Math.max(0, Math.trunc(Number(message.originSeq || 0))),
             }),
             ts: Number(message.ts || Date.now()),
             from: 'mobile',
@@ -616,6 +838,61 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
           }`
         );
       }
+    }
+  }
+
+  async function handleDesktopSyncState(
+    session: SessionItem,
+    syncState: {
+      hostSeq: number;
+      mobileSeq: number;
+      leafIds: string[];
+    },
+    preferRelay = false
+  ) {
+    const current = getSessionByIdSnapshot(session.id) || session;
+    const localState = describeSessionChatState(current.messages || []);
+
+    const missingMobileMessages = (current.messages || [])
+      .filter((message) => message.kind !== 'system' && message.from === 'self')
+      .filter((message) => Math.trunc(Number(message.originSeq || 0)) > Math.max(0, Math.trunc(Number(syncState.mobileSeq || 0))))
+      .sort((left, right) => Number(left.originSeq || 0) - Number(right.originSeq || 0));
+
+    for (const message of missingMobileMessages) {
+      try {
+        await deliverAppMessage(
+          current,
+          {
+            type: openClawPairChatMessageType,
+            payload: buildOpenClawPairChatPayload(message.text, {
+              id: message.id,
+              after: message.after || [],
+              origin: 'mobile',
+              originSeq: Math.max(0, Math.trunc(Number(message.originSeq || 0))),
+            }),
+            ts: Number(message.ts || Date.now()),
+            from: 'mobile',
+          },
+          {
+            preferRelay,
+            peerTimeoutMs: 1200,
+            peerRetries: 0,
+          }
+        );
+      } catch (error) {
+        console.log(
+          `[pair-mobile] sync resend failed binding=${current.bindingId} id=${message.id} error=${
+            error instanceof Error ? error.message : String(error || '')
+          }`
+        );
+      }
+    }
+
+    if (Math.max(0, Math.trunc(Number(syncState.hostSeq || 0))) > localState.hostSeq) {
+      void requestMessageStateSync(current, 'desktop-sync-gap', {
+        minIntervalMs: MESSAGE_SYNC_RESUME_THROTTLE_MS,
+        preferRelay,
+      });
     }
   }
 
@@ -648,6 +925,8 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
             from: 'host',
             text: chat.text,
             ts: chat.ts,
+            origin: chat.origin,
+            originSeq: chat.originSeq,
             after: chat.after,
           });
           if (result.newlyMissingMessageIds.length > 0) {
@@ -669,6 +948,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       iceServers: await resolveSessionIceServersV2(session.serverBaseUrl, auth.token),
       capabilities: appRegistry.buildCapabilities({
         protocolVersion: 'openclaw-pair-v2',
+        supportedMessages: [openClawPairChannelRevokeType],
         appId: 'openclaw',
         appVersion: 'mobile',
       }),
@@ -691,8 +971,27 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
         });
       },
       onAppMessage: async (message: PairV2PeerAppMessage) => {
+        const revoke = parseOpenClawPairChannelRevoke(message);
+        if (revoke) {
+          closePeer(key, 'channel revoked by desktop');
+          removeSessionLocal({
+            id: revoke.channelId,
+            bindingId: revoke.bindingId || key,
+            deviceId: trustedPeerId,
+          });
+          return;
+        }
         const ack = parseOpenClawPairChatAck(message);
         if (ack) {
+          return;
+        }
+        const syncState = parseOpenClawPairChatSyncState(message);
+        if (syncState) {
+          const current = getSessionByBindingIdSnapshot(key);
+          if (!current) {
+            return;
+          }
+          await handleDesktopSyncState(current, syncState, false);
           return;
         }
         const syncRequest = parseOpenClawPairChatSyncRequest(message);
@@ -866,6 +1165,18 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       if (!message) {
         return;
       }
+      const revoke = parseOpenClawPairChannelRevoke(message);
+      if (revoke) {
+        if (bindingId) {
+          closePeer(bindingId, 'channel revoked by desktop');
+        }
+        removeSessionLocal({
+          id: revoke.channelId,
+          bindingId: revoke.bindingId || bindingId,
+          deviceId,
+        });
+        return;
+      }
       patchSessionById(session.id, {
         transportReady: true,
         preview:
@@ -882,6 +1193,11 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       if (ack) {
         return;
       }
+      const syncState = parseOpenClawPairChatSyncState(message);
+      if (syncState) {
+        void handleDesktopSyncState(session, syncState, true);
+        return;
+      }
       if (String(message.type || '').trim() === openClawPairChatMessageType) {
         const payload =
           message.payload && typeof message.payload === 'object'
@@ -896,6 +1212,8 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
           from: 'host',
           text,
           ts: Number(message.ts || Date.now()),
+          origin: payload.origin === 'mobile' ? 'mobile' : 'host',
+          originSeq: Math.max(0, Math.trunc(Number(payload.originSeq || 0))),
           after: Array.isArray(payload.after) ? payload.after.map((value) => String(value || '')) : [],
         });
         void acknowledgeMessages(session, [String(payload.id || '').trim()], true);
@@ -968,7 +1286,13 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       stream.onopen = () => {
         globalThis.clearTimeout(timer);
         finish(true);
-        void refreshSessions();
+        void refreshSessions().then(() => {
+          const scopedSessions = sessionsRef.current.filter(
+            (session) => String(session.serverBaseUrl || '').trim() === normalizedBaseUrl
+          );
+          void heartbeatSessionsPresence(scopedSessions, 'signal-open', MESSAGE_SYNC_RESUME_THROTTLE_MS);
+          void syncSessionsWithDesktopState(scopedSessions, 'signal-open');
+        });
         void connectReadyPeers(normalizedBaseUrl);
       };
 
@@ -1003,6 +1327,8 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
 
   async function reconcileRealtime(nextSessions: SessionItem[]) {
     closeStalePeers(nextSessions);
+    pruneMessageSyncTimestamps(nextSessions);
+    prunePresenceHeartbeatTimestamps(nextSessions);
 
     const nextBaseUrls = new Set(uniqueBaseUrls(nextSessions));
     for (const baseUrl of [...signalStreamsRef.current.keys()]) {
@@ -1054,6 +1380,8 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       }
       commitSessions(refreshed);
       await reconcileRealtime(refreshed);
+      await heartbeatSessionsPresence(refreshed, 'bootstrap');
+      await syncSessionsWithDesktopState(refreshed, 'bootstrap');
     }
 
     void bootstrap();
@@ -1065,12 +1393,44 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
         clearInterval(refreshTimerRef.current);
         refreshTimerRef.current = null;
       }
+      if (messageSyncTimerRef.current) {
+        clearInterval(messageSyncTimerRef.current);
+        messageSyncTimerRef.current = null;
+      }
       for (const bindingId of [...peersRef.current.keys()]) {
         closePeer(bindingId, 'app closed');
       }
       for (const baseUrl of [...signalStreamsRef.current.keys()]) {
         closeSignal(baseUrl);
       }
+    };
+  }, []);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      const previousState = appStateRef.current;
+      appStateRef.current = nextState;
+      const becameActive =
+        (previousState === 'inactive' || previousState === 'background') &&
+        nextState === 'active';
+      if (!becameActive) {
+        return;
+      }
+      void refreshSessions().then(() => {
+        void heartbeatSessionsPresence(
+          sessionsRef.current,
+          'app-active',
+          MESSAGE_SYNC_RESUME_THROTTLE_MS
+        );
+        void syncSessionsWithDesktopState(
+          sessionsRef.current,
+          'app-active',
+          MESSAGE_SYNC_RESUME_THROTTLE_MS
+        );
+      });
+    });
+    return () => {
+      subscription.remove();
     };
   }, []);
 
@@ -1116,6 +1476,17 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       refreshTimerRef.current = null;
     }
 
+    if (sessions.length > 0 && !messageSyncTimerRef.current) {
+      messageSyncTimerRef.current = setInterval(() => {
+        void heartbeatSessionsPresence(sessionsRef.current, 'interval', PRESENCE_HEARTBEAT_INTERVAL_MS);
+        void syncSessionsWithDesktopState(sessionsRef.current, 'interval', MESSAGE_SYNC_INTERVAL_MS);
+      }, MESSAGE_SYNC_INTERVAL_MS);
+    }
+    if (sessions.length === 0 && messageSyncTimerRef.current) {
+      clearInterval(messageSyncTimerRef.current);
+      messageSyncTimerRef.current = null;
+    }
+
     void reconcileRealtime(sessions);
   }, [sessions]);
 
@@ -1127,19 +1498,20 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     const session = getSessionByIdSnapshot(sessionId);
     if (session?.bindingId) {
       closePeer(session.bindingId, 'session removed');
-      void ensureMobileAuthV2(session.serverBaseUrl)
-        .then((auth) => revokePairV2Binding(session.serverBaseUrl, auth.token, session.bindingId))
-        .catch(() => {
-          // ignore revoke failures during local removal
+      if (String(session.trustState || '').trim() === 'active') {
+        void sendChannelRevoke(session).catch(() => {
+          // ignore delivery failures during local removal
         });
+      }
     }
-    updateSessions((current) => current.filter((item) => item.id !== sessionId));
+    removeSessionLocal({ id: sessionId });
   }
 
   async function pairByScan(raw: string) {
     const result = await pairByScanV2(raw, sessionsRef.current);
     commitSessions(result.sessions);
     await reconcileRealtime(result.sessions);
+    await heartbeatSessionsPresence(result.sessions, 'pair-scan');
     return {
       session: result.session,
       created: result.created,
@@ -1181,9 +1553,12 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     const latestSession = getSessionByIdSnapshot(session.id) || session;
     const messageId = createOpenClawPairChatMessageId(message.ts);
     const after = collectSessionLeafIds(latestSession.messages || []);
+    const originSeq = nextOriginSeq(latestSession.messages || [], 'mobile');
     message.payload = buildOpenClawPairChatPayload(normalizedText, {
       id: messageId,
       after,
+      origin: 'mobile',
+      originSeq,
     });
 
     const deliveredVia = await deliverAppMessage(latestSession, message, {
@@ -1201,6 +1576,8 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       text: normalizedText,
       ts: message.ts,
       kind: 'chat',
+      origin: 'mobile',
+      originSeq,
       after,
     });
   }

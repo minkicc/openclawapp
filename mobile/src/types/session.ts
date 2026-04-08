@@ -9,6 +9,8 @@ export type ChatMessage = {
   createdAt: string;
   ts: number;
   kind?: 'chat' | 'system';
+  origin?: 'host' | 'mobile';
+  originSeq?: number;
   after?: string[];
   missingAfter?: string[];
 };

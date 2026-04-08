@@ -150,7 +150,6 @@ sequenceDiagram
 
     Mobile->>Server: POST /v2/auth/challenge
     Mobile->>Server: POST /v2/auth/login (signed challenge)
-    Mobile->>Server: GET /v2/bindings
     Mobile->>Server: POST /v2/presence/query
     Server-->>Mobile: online/offline + last_seen_at
 ```
@@ -235,10 +234,6 @@ sequenceDiagram
 - `POST /v2/pair/approvals`
   - desktop only
   - moves binding from `pending` to `active`
-- `POST /v2/pair/revoke`
-  - desktop or mobile peer
-- `GET /v2/bindings`
-  - returns bindings visible to caller
 
 ### Signaling
 

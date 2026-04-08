@@ -142,21 +142,6 @@ func TestV2AuthPresencePairingFlow(t *testing.T) {
 		t.Fatalf("expected mobile name to round-trip, got %q", claimResp.Binding.MobileName)
 	}
 
-	bindingsRec := doJSONRequest(t, app, http.MethodGet, "/v2/bindings", nil, desktopSession.Token)
-	if bindingsRec.Code != http.StatusOK {
-		t.Fatalf("bindings failed: status=%d body=%s", bindingsRec.Code, bindingsRec.Body.String())
-	}
-	var bindingsResp struct {
-		Bindings []v2Binding `json:"bindings"`
-	}
-	decodeResponseBody(t, bindingsRec, &bindingsResp)
-	if len(bindingsResp.Bindings) != 1 {
-		t.Fatalf("expected 1 binding, got %d", len(bindingsResp.Bindings))
-	}
-	if bindingsResp.Bindings[0].MobileName != "测试手机" {
-		t.Fatalf("expected binding mobile name, got %q", bindingsResp.Bindings[0].MobileName)
-	}
-
 	approveRec := doJSONRequest(t, app, http.MethodPost, "/v2/pair/approvals", map[string]any{
 		"bindingId": claimResp.Binding.BindingID,
 	}, desktopSession.Token)

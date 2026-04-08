@@ -452,59 +452,6 @@ impl PairBackendHandle {
         Ok(())
     }
 
-    pub(super) async fn list_bindings(&self, app: &AppHandle) -> Result<Vec<PairBinding>, String> {
-        let (base_url, _device_id, _identity, session) = self.ensure_auth_session(app).await?;
-        let response: Value = self
-            .request_json(
-                &base_url,
-                "/v2/bindings",
-                reqwest::Method::GET,
-                None,
-                Some(&session.token),
-            )
-            .await?;
-        let bindings_value = response
-            .get("bindings")
-            .cloned()
-            .unwrap_or_else(|| Value::Array(Vec::new()));
-        serde_json::from_value(bindings_value).map_err(|e| format!("解析 bindings 失败: {}", e))
-    }
-
-    pub(super) async fn refresh_bindings(&self, app: &AppHandle) -> Result<(), String> {
-        let bindings = self.list_bindings(app).await?;
-        {
-            let mut state = self.state.lock().await;
-            let channel_open = state.channel_open;
-            for binding in bindings
-                .into_iter()
-                .filter(|item| item.trust_state == "active")
-            {
-                let channel = find_or_create_channel_mut(
-                    &mut state.channels,
-                    Some(&binding.pair_session_id),
-                    Some(&binding.binding_id),
-                    Some(&binding.mobile_id),
-                    binding.created_at,
-                );
-                channel.session_id = binding.pair_session_id.clone();
-                channel.binding_id = binding.binding_id.clone();
-                channel.mobile_id = binding.mobile_id.clone();
-                channel.mobile_name = binding.mobile_name.clone();
-                channel.device_public_key = Some(binding.device_public_key.clone());
-                channel.mobile_public_key = Some(binding.mobile_public_key.clone());
-                channel.trust_state = binding.trust_state.clone();
-                channel.status = if channel_open {
-                    "active".to_string()
-                } else {
-                    "offline".to_string()
-                };
-                channel.approved_at = binding.approved_at;
-            }
-        }
-        self.emit_snapshot().await;
-        Ok(())
-    }
-
     pub(super) async fn resolve_ice_servers(
         &self,
         app: &AppHandle,
@@ -721,39 +668,117 @@ impl PairBackendHandle {
         app: &AppHandle,
         channel_id: &str,
     ) -> Result<PairBackendSnapshot, String> {
-        let binding_id = {
+        let channel = {
             let state = self.state.lock().await;
             state
                 .channels
                 .iter()
                 .find(|item| item.channel_id == channel_id)
-                .and_then(|item| {
-                    if item.binding_id.is_empty() {
-                        None
-                    } else {
-                        Some(item.binding_id.clone())
-                    }
-                })
-                .ok_or_else(|| "bindingId missing".to_string())?
+                .cloned()
+                .ok_or_else(|| "channel missing".to_string())?
         };
-        let (base_url, _device_id, _identity, session) = self.ensure_auth_session(app).await?;
-        let _response: Value = self
-            .request_json(
-                &base_url,
-                "/v2/pair/revoke",
-                reqwest::Method::POST,
-                Some(serde_json::json!({ "bindingId": binding_id })),
-                Some(&session.token),
-            )
-            .await?;
-        self.dispose_peer(&binding_id, "binding revoked", "disconnected")
-            .await;
+        let binding_id = channel.binding_id.trim().to_string();
+        let session_id = channel.session_id.trim().to_string();
+        if binding_id.is_empty() && session_id.is_empty() {
+            let mut state = self.state.lock().await;
+            state.channels.retain(|item| item.channel_id != channel_id);
+            drop(state);
+            self.append_event(format!("channel deleted locally: {}", channel_id))
+                .await;
+            return Ok(self.snapshot().await);
+        }
+
+        let mut deleted_on_server = false;
+        let mobile_id = channel.mobile_id.trim().to_string();
+
+        if !binding_id.is_empty() {
+            if !mobile_id.is_empty() {
+                let payload = serde_json::json!({
+                    "type": OPENCLAW_CHANNEL_REVOKE_TYPE,
+                    "channelId": channel.channel_id,
+                    "bindingId": binding_id,
+                    "sessionId": session_id,
+                    "revokedAt": Self::now_ms(),
+                });
+                match self
+                    .send_app_envelope_to_mobile_with_delivery(
+                        &binding_id,
+                        &mobile_id,
+                        payload,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(delivery) => {
+                        self.append_event(format!(
+                            "channel revoke sent to mobile: {} via={}",
+                            channel_id, delivery
+                        ))
+                        .await;
+                    }
+                    Err(error) => {
+                        self.append_event(format!(
+                            "channel revoke delivery failed, deleting locally: {} error={}",
+                            channel_id, error
+                        ))
+                        .await;
+                    }
+                }
+            }
+            self.dispose_peer(&binding_id, "channel deleted", "disconnected")
+                .await;
+        } else {
+            let (base_url, _device_id, _identity, session) = self.ensure_auth_session(app).await?;
+            let delete_response: Result<Value, String> = self
+                .request_json(
+                    &base_url,
+                    "/v2/pair/sessions/delete",
+                    reqwest::Method::POST,
+                    Some(serde_json::json!({ "pairSessionId": session_id.clone() })),
+                    Some(&session.token),
+                )
+                .await;
+            match delete_response {
+                Ok(_) => {
+                    deleted_on_server = true;
+                }
+                Err(error) => {
+                    let normalized = error.to_lowercase();
+                    if normalized.contains("can no longer be deleted") {
+                        self.append_event(format!(
+                            "pending session already claimed, deleting locally: {}",
+                            channel_id
+                        ))
+                        .await;
+                    } else if normalized.contains("route not found") {
+                        self.append_event(format!(
+                            "pending channel deleted locally only, server delete unsupported: {}",
+                            channel_id
+                        ))
+                        .await;
+                    } else if !normalized.contains("not found") {
+                        return Err(error);
+                    } else {
+                        self.append_event(format!(
+                            "pending channel already missing on server: {}",
+                            channel_id
+                        ))
+                        .await;
+                    }
+                }
+            }
+        }
         {
             let mut state = self.state.lock().await;
             state.channels.retain(|item| item.channel_id != channel_id);
         }
-        self.append_event(format!("channel deleted: {}", channel_id))
-            .await;
+        if deleted_on_server {
+            self.append_event(format!("channel deleted: {}", channel_id))
+                .await;
+        } else {
+            self.append_event(format!("channel deleted locally: {}", channel_id))
+                .await;
+        }
         Ok(self.snapshot().await)
     }
 

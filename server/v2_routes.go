@@ -24,7 +24,9 @@ func requestBaseURL(r *http.Request) string {
 func (a *app) cleanupV2Expired() {
 	a.v2.mu.Lock()
 	defer a.v2.mu.Unlock()
-	a.v2.pruneExpiredLocked(nowMillis())
+	if a.v2.pruneExpiredLocked(nowMillis()) {
+		a.onMutation()
+	}
 }
 
 func (a *app) authenticateV2Request(r *http.Request) (v2Principal, error) {
@@ -83,6 +85,7 @@ func (a *app) serveV2(w http.ResponseWriter, r *http.Request) bool {
 			writeError(w, err)
 			return true
 		}
+		a.onMutation()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session": session})
 		return true
 	}
@@ -111,12 +114,20 @@ func (a *app) serveV2(w http.ResponseWriter, r *http.Request) bool {
 			writeError(w, err)
 			return true
 		}
-		desktop, err := a.v2.announceDesktop(principal, req)
+		desktop, mobile, err := a.v2.announcePresence(principal, req)
 		if err != nil {
 			writeError(w, err)
 			return true
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "desktop": desktop})
+		a.onMutation()
+		response := map[string]any{"ok": true}
+		if desktop != nil {
+			response["desktop"] = desktop
+		}
+		if mobile != nil {
+			response["mobile"] = mobile
+		}
+		writeJSON(w, http.StatusOK, response)
 		return true
 	}
 
@@ -131,12 +142,20 @@ func (a *app) serveV2(w http.ResponseWriter, r *http.Request) bool {
 			writeError(w, err)
 			return true
 		}
-		desktop, err := a.v2.heartbeatDesktop(principal, req)
+		desktop, mobile, err := a.v2.heartbeatPresence(principal, req)
 		if err != nil {
 			writeError(w, err)
 			return true
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "desktop": desktop})
+		a.onMutation()
+		response := map[string]any{"ok": true}
+		if desktop != nil {
+			response["desktop"] = desktop
+		}
+		if mobile != nil {
+			response["mobile"] = mobile
+		}
+		writeJSON(w, http.StatusOK, response)
 		return true
 	}
 
@@ -176,6 +195,7 @@ func (a *app) serveV2(w http.ResponseWriter, r *http.Request) bool {
 			writeError(w, err)
 			return true
 		}
+		a.onMutation()
 		qrPayload := map[string]any{
 			"version":       "openclaw-pair-v2",
 			"serverBaseUrl": requestBaseURL(r),
@@ -187,6 +207,27 @@ func (a *app) serveV2(w http.ResponseWriter, r *http.Request) bool {
 			"expiresAt":     session.ExpiresAt,
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session": session, "qrPayload": qrPayload})
+		return true
+	}
+
+	if method == http.MethodPost && path == "/v2/pair/sessions/delete" {
+		principal, err := a.authenticateV2Request(r)
+		if err != nil {
+			writeError(w, err)
+			return true
+		}
+		var req v2PairSessionDeleteRequest
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, err)
+			return true
+		}
+		session, err := a.v2.deletePairSession(principal, req)
+		if err != nil {
+			writeError(w, err)
+			return true
+		}
+		a.onMutation()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session": session})
 		return true
 	}
 
@@ -206,6 +247,7 @@ func (a *app) serveV2(w http.ResponseWriter, r *http.Request) bool {
 			writeError(w, err)
 			return true
 		}
+		a.onMutation()
 		event := SignalEvent{
 			ID:   fmt.Sprintf("v2_pair_claim_%d", nowMillis()),
 			Type: "pair.claimed",
@@ -243,6 +285,7 @@ func (a *app) serveV2(w http.ResponseWriter, r *http.Request) bool {
 			writeError(w, err)
 			return true
 		}
+		a.onMutation()
 		event := SignalEvent{
 			ID:   fmt.Sprintf("v2_pair_approved_%d", nowMillis()),
 			Type: "pair.approved",
@@ -258,53 +301,6 @@ func (a *app) serveV2(w http.ResponseWriter, r *http.Request) bool {
 		}
 		a.emitV2Signal(string(v2EntityMobile), binding.MobileID, event)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "binding": binding})
-		return true
-	}
-
-	if method == http.MethodPost && path == "/v2/pair/revoke" {
-		principal, err := a.authenticateV2Request(r)
-		if err != nil {
-			writeError(w, err)
-			return true
-		}
-		var req v2PairRevokeRequest
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, err)
-			return true
-		}
-		binding, err := a.v2.revokeBinding(principal, req)
-		if err != nil {
-			writeError(w, err)
-			return true
-		}
-		event := SignalEvent{
-			ID:   fmt.Sprintf("v2_pair_revoked_%d", nowMillis()),
-			Type: "pair.revoked",
-			Ts:   nowMillis(),
-			Payload: map[string]any{
-				"bindingId":  binding.BindingID,
-				"deviceId":   binding.DeviceID,
-				"mobileId":   binding.MobileID,
-				"mobileName": binding.MobileName,
-				"trustState": binding.TrustState,
-				"revokedAt":  binding.RevokedAt,
-			},
-		}
-		a.emitV2Signal(string(v2EntityDesktop), binding.DeviceID, event)
-		a.emitV2Signal(string(v2EntityMobile), binding.MobileID, event)
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "binding": binding})
-		return true
-	}
-
-	if method == http.MethodGet && path == "/v2/bindings" {
-		principal, err := a.authenticateV2Request(r)
-		if err != nil {
-			writeError(w, err)
-			return true
-		}
-		includeRevoked := strings.TrimSpace(r.URL.Query().Get("includeRevoked")) == "true"
-		bindings := a.v2.listBindings(principal, includeRevoked)
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bindings": bindings})
 		return true
 	}
 

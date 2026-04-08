@@ -160,7 +160,18 @@ impl PairBackendHandle {
     }
 
     fn build_openclaw_mobile_error_text(error_message: &str) -> String {
+        let normalized = error_message.trim().to_lowercase();
         let request_id = Self::extract_openclaw_request_id(error_message);
+        if normalized.contains("403") {
+            if !request_id.is_empty() {
+                return format!(
+                    "OpenClaw 上游返回 403，请检查桌面端 OpenClaw 配置（API Key / Base URL / 模型权限）。request id: {}",
+                    request_id
+                );
+            }
+            return "OpenClaw 上游返回 403，请检查桌面端 OpenClaw 配置（API Key / Base URL / 模型权限）。"
+                .to_string();
+        }
         if !request_id.is_empty() {
             return format!("OpenClaw 处理失败，请重试。request id: {}", request_id);
         }

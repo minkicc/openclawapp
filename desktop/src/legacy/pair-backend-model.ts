@@ -36,6 +36,8 @@ export function normalizeBackendChannel(channel) {
           text: String(message?.text || ''),
           ts: Number(message?.ts || Date.now()),
           kind: String(message?.kind || 'chat'),
+          origin: String(message?.origin || ''),
+          originSeq: Number(message?.originSeq || 0),
           after: Array.isArray(message?.after) ? message.after.map((value) => String(value || '').trim()).filter(Boolean) : [],
           missingAfter: Array.isArray(message?.missingAfter)
             ? message.missingAfter.map((value) => String(value || '').trim()).filter(Boolean)

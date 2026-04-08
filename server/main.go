@@ -1178,6 +1178,7 @@ type redisSignalEnvelope struct {
 
 type redisPersistence struct {
 	store      *Store
+	v2         *v2Store
 	client     *redis.Client
 	keyPrefix  string
 	instanceID string
@@ -1188,9 +1189,10 @@ type redisPersistence struct {
 	persistMu  sync.Mutex
 }
 
-func newRedisPersistence(store *Store, client *redis.Client, keyPrefix string, instanceID string) *redisPersistence {
+func newRedisPersistence(store *Store, v2 *v2Store, client *redis.Client, keyPrefix string, instanceID string) *redisPersistence {
 	return &redisPersistence{
 		store:      store,
+		v2:         v2,
 		client:     client,
 		keyPrefix:  strings.TrimSuffix(keyPrefix, ":"),
 		instanceID: instanceID,
@@ -1217,6 +1219,34 @@ func (r *redisPersistence) keyPairSessions() string {
 
 func (r *redisPersistence) keyBindings() string {
 	return r.keyPrefix + ":pair:bindings"
+}
+
+func (r *redisPersistence) keyV2Desktops() string {
+	return r.keyPrefix + ":v2:desktops"
+}
+
+func (r *redisPersistence) keyV2Mobiles() string {
+	return r.keyPrefix + ":v2:mobiles"
+}
+
+func (r *redisPersistence) keyV2AuthSessions() string {
+	return r.keyPrefix + ":v2:auth:sessions"
+}
+
+func (r *redisPersistence) keyV2PairSessions() string {
+	return r.keyPrefix + ":v2:pair:sessions"
+}
+
+func (r *redisPersistence) keyV2Bindings() string {
+	return r.keyPrefix + ":v2:bindings"
+}
+
+func (r *redisPersistence) keyV2EntityLeasePrefix() string {
+	return r.keyPrefix + ":v2:entity:lease:"
+}
+
+func (r *redisPersistence) keyV2EntityLease(entityType string, entityID string) string {
+	return r.keyV2EntityLeasePrefix() + clientKey(entityType, entityID)
 }
 
 func (r *redisPersistence) keyPairToken(token string) string {
@@ -1284,6 +1314,26 @@ func (r *redisPersistence) hydrateFromRedis() error {
 		return err
 	}
 	bindingsRaw, err := r.client.HGetAll(ctx, r.keyBindings()).Result()
+	if err != nil {
+		return err
+	}
+	v2DesktopsRaw, err := r.client.HGetAll(ctx, r.keyV2Desktops()).Result()
+	if err != nil {
+		return err
+	}
+	v2MobilesRaw, err := r.client.HGetAll(ctx, r.keyV2Mobiles()).Result()
+	if err != nil {
+		return err
+	}
+	v2AuthSessionsRaw, err := r.client.HGetAll(ctx, r.keyV2AuthSessions()).Result()
+	if err != nil {
+		return err
+	}
+	v2PairSessionsRaw, err := r.client.HGetAll(ctx, r.keyV2PairSessions()).Result()
+	if err != nil {
+		return err
+	}
+	v2BindingsRaw, err := r.client.HGetAll(ctx, r.keyV2Bindings()).Result()
 	if err != nil {
 		return err
 	}
@@ -1396,6 +1446,102 @@ func (r *redisPersistence) hydrateFromRedis() error {
 	}
 
 	r.store.applySnapshot(snapshot)
+
+	decodedV2Desktops := decodeStructMap[v2Desktop](v2DesktopsRaw)
+	decodedV2Mobiles := decodeStructMap[v2Mobile](v2MobilesRaw)
+	decodedV2AuthSessions := decodeStructMap[v2AuthSession](v2AuthSessionsRaw)
+	decodedV2PairSessions := decodeStructMap[v2PairSession](v2PairSessionsRaw)
+	decodedV2Bindings := decodeStructMap[v2Binding](v2BindingsRaw)
+
+	activeV2Desktops := map[string]v2Desktop{}
+	if len(decodedV2Desktops) > 0 {
+		entityIDs := make([]string, 0, len(decodedV2Desktops))
+		leaseKeys := make([]string, 0, len(decodedV2Desktops))
+		for entityID := range decodedV2Desktops {
+			entityIDs = append(entityIDs, entityID)
+			leaseKeys = append(leaseKeys, r.keyV2EntityLease(string(v2EntityDesktop), entityID))
+		}
+		leaseValues, leaseErr := r.client.MGet(ctx, leaseKeys...).Result()
+		if leaseErr != nil {
+			log.Printf("[openclaw-server] failed to read redis v2 desktop leases, fallback to lastSeen cutoff: %v", leaseErr)
+		}
+		cutoff := v2EntityInactiveCutoff(now)
+		for idx, entityID := range entityIDs {
+			desktop := decodedV2Desktops[entityID]
+			activeByLease := leaseErr == nil && idx < len(leaseValues) && leaseValues[idx] != nil
+			activeByLastSeen := v2EntityLastActiveAt(desktop.LastSeenAt, desktop.UpdatedAt) > cutoff
+			if activeByLease || activeByLastSeen {
+				activeV2Desktops[entityID] = desktop
+			}
+		}
+	}
+
+	activeV2Mobiles := map[string]v2Mobile{}
+	if len(decodedV2Mobiles) > 0 {
+		entityIDs := make([]string, 0, len(decodedV2Mobiles))
+		leaseKeys := make([]string, 0, len(decodedV2Mobiles))
+		for entityID := range decodedV2Mobiles {
+			entityIDs = append(entityIDs, entityID)
+			leaseKeys = append(leaseKeys, r.keyV2EntityLease(string(v2EntityMobile), entityID))
+		}
+		leaseValues, leaseErr := r.client.MGet(ctx, leaseKeys...).Result()
+		if leaseErr != nil {
+			log.Printf("[openclaw-server] failed to read redis v2 mobile leases, fallback to lastSeen cutoff: %v", leaseErr)
+		}
+		cutoff := v2EntityInactiveCutoff(now)
+		for idx, entityID := range entityIDs {
+			mobile := decodedV2Mobiles[entityID]
+			activeByLease := leaseErr == nil && idx < len(leaseValues) && leaseValues[idx] != nil
+			activeByLastSeen := v2EntityLastActiveAt(mobile.LastSeenAt, mobile.UpdatedAt) > cutoff
+			if activeByLease || activeByLastSeen {
+				activeV2Mobiles[entityID] = mobile
+			}
+		}
+	}
+
+	filteredV2AuthSessions := map[string]v2AuthSession{}
+	for token, session := range decodedV2AuthSessions {
+		if session.ExpiresAt <= now {
+			continue
+		}
+		switch session.EntityType {
+		case v2EntityDesktop:
+			if _, exists := activeV2Desktops[session.EntityID]; exists {
+				filteredV2AuthSessions[token] = session
+			}
+		case v2EntityMobile:
+			if _, exists := activeV2Mobiles[session.EntityID]; exists {
+				filteredV2AuthSessions[token] = session
+			}
+		}
+	}
+
+	filteredV2PairSessions := map[string]v2PairSession{}
+	pairClaimTokenIndex := map[string]string{}
+	for pairSessionID, session := range decodedV2PairSessions {
+		if session.ExpiresAt <= now {
+			continue
+		}
+		if _, exists := activeV2Desktops[session.DeviceID]; !exists {
+			continue
+		}
+		filteredV2PairSessions[pairSessionID] = session
+		if session.ClaimToken != "" && (session.Status == "pending" || session.Status == "claimed") {
+			pairClaimTokenIndex[session.ClaimToken] = pairSessionID
+		}
+	}
+
+	r.v2.applySnapshot(v2StoreSnapshot{
+		Version:             1,
+		SavedAt:             now,
+		Desktops:            activeV2Desktops,
+		Mobiles:             activeV2Mobiles,
+		AuthSessions:        filteredV2AuthSessions,
+		PairSessions:        filteredV2PairSessions,
+		PairClaimTokenIndex: pairClaimTokenIndex,
+		Bindings:            decodedV2Bindings,
+		SignalQueues:        map[string][]SignalEvent{},
+	})
 	return nil
 }
 
@@ -1407,6 +1553,7 @@ func (r *redisPersistence) persistWithTimeout(timeout time.Duration) {
 	defer r.persistMu.Unlock()
 
 	snapshot := r.store.snapshot()
+	v2Snapshot := r.v2.snapshot()
 	pipe := r.client.TxPipeline()
 	now := nowMillis()
 	cutoff := deviceInactiveCutoff(now)
@@ -1446,7 +1593,62 @@ func (r *redisPersistence) persistWithTimeout(timeout time.Duration) {
 		filteredQueues[key] = queue
 	}
 
-	pipe.Del(ctx, r.keyDevices(), r.keyPairSessions(), r.keyBindings())
+	activeV2Desktops := map[string]v2Desktop{}
+	v2Cutoff := v2EntityInactiveCutoff(now)
+	for deviceID, desktop := range v2Snapshot.Desktops {
+		if v2EntityLastActiveAt(desktop.LastSeenAt, desktop.UpdatedAt) <= v2Cutoff {
+			continue
+		}
+		activeV2Desktops[deviceID] = desktop
+	}
+
+	activeV2Mobiles := map[string]v2Mobile{}
+	for mobileID, mobile := range v2Snapshot.Mobiles {
+		if v2EntityLastActiveAt(mobile.LastSeenAt, mobile.UpdatedAt) <= v2Cutoff {
+			continue
+		}
+		activeV2Mobiles[mobileID] = mobile
+	}
+
+	filteredV2AuthSessions := map[string]v2AuthSession{}
+	for token, session := range v2Snapshot.AuthSessions {
+		if session.ExpiresAt <= now {
+			continue
+		}
+		switch session.EntityType {
+		case v2EntityDesktop:
+			if _, exists := activeV2Desktops[session.EntityID]; exists {
+				filteredV2AuthSessions[token] = session
+			}
+		case v2EntityMobile:
+			if _, exists := activeV2Mobiles[session.EntityID]; exists {
+				filteredV2AuthSessions[token] = session
+			}
+		}
+	}
+
+	filteredV2PairSessions := map[string]v2PairSession{}
+	for pairSessionID, session := range v2Snapshot.PairSessions {
+		if session.ExpiresAt <= now {
+			continue
+		}
+		if _, exists := activeV2Desktops[session.DeviceID]; !exists {
+			continue
+		}
+		filteredV2PairSessions[pairSessionID] = session
+	}
+
+	pipe.Del(
+		ctx,
+		r.keyDevices(),
+		r.keyPairSessions(),
+		r.keyBindings(),
+		r.keyV2Desktops(),
+		r.keyV2Mobiles(),
+		r.keyV2AuthSessions(),
+		r.keyV2PairSessions(),
+		r.keyV2Bindings(),
+	)
 
 	deviceHash := marshalStructMap(activeDevices)
 	if len(deviceHash) > 0 {
@@ -1461,6 +1663,31 @@ func (r *redisPersistence) persistWithTimeout(timeout time.Duration) {
 	bindingHash := marshalStructMap(filteredBindings)
 	if len(bindingHash) > 0 {
 		pipe.HSet(ctx, r.keyBindings(), bindingHash)
+	}
+
+	v2DesktopHash := marshalStructMap(activeV2Desktops)
+	if len(v2DesktopHash) > 0 {
+		pipe.HSet(ctx, r.keyV2Desktops(), v2DesktopHash)
+	}
+
+	v2MobileHash := marshalStructMap(activeV2Mobiles)
+	if len(v2MobileHash) > 0 {
+		pipe.HSet(ctx, r.keyV2Mobiles(), v2MobileHash)
+	}
+
+	v2AuthSessionHash := marshalStructMap(filteredV2AuthSessions)
+	if len(v2AuthSessionHash) > 0 {
+		pipe.HSet(ctx, r.keyV2AuthSessions(), v2AuthSessionHash)
+	}
+
+	v2PairSessionHash := marshalStructMap(filteredV2PairSessions)
+	if len(v2PairSessionHash) > 0 {
+		pipe.HSet(ctx, r.keyV2PairSessions(), v2PairSessionHash)
+	}
+
+	v2BindingHash := marshalStructMap(v2Snapshot.Bindings)
+	if len(v2BindingHash) > 0 {
+		pipe.HSet(ctx, r.keyV2Bindings(), v2BindingHash)
 	}
 
 	for _, session := range filteredPairSessions {
@@ -1498,6 +1725,40 @@ func (r *redisPersistence) persistWithTimeout(timeout time.Duration) {
 			ttl = time.Second
 		}
 		pipe.Set(ctx, r.keyDeviceLease(deviceID), "1", ttl)
+	}
+
+	existingV2LeaseKeys, v2LeaseErr := r.client.Keys(ctx, r.keyV2EntityLeasePrefix()+"*").Result()
+	if v2LeaseErr == nil && len(existingV2LeaseKeys) > 0 {
+		pipe.Del(ctx, existingV2LeaseKeys...)
+	}
+	if v2LeaseErr != nil {
+		log.Printf("[openclaw-server] failed to list existing v2 entity leases: %v", v2LeaseErr)
+	}
+
+	for deviceID, desktop := range activeV2Desktops {
+		expiresAt := v2EntityLastActiveAt(desktop.LastSeenAt, desktop.UpdatedAt) + v2ActiveEntityTTL.Milliseconds()
+		ttlMillis := expiresAt - now
+		if ttlMillis <= 0 {
+			continue
+		}
+		ttl := time.Duration(ttlMillis) * time.Millisecond
+		if ttl < time.Second {
+			ttl = time.Second
+		}
+		pipe.Set(ctx, r.keyV2EntityLease(string(v2EntityDesktop), deviceID), "1", ttl)
+	}
+
+	for mobileID, mobile := range activeV2Mobiles {
+		expiresAt := v2EntityLastActiveAt(mobile.LastSeenAt, mobile.UpdatedAt) + v2ActiveEntityTTL.Milliseconds()
+		ttlMillis := expiresAt - now
+		if ttlMillis <= 0 {
+			continue
+		}
+		ttl := time.Duration(ttlMillis) * time.Millisecond
+		if ttl < time.Second {
+			ttl = time.Second
+		}
+		pipe.Set(ctx, r.keyV2EntityLease(string(v2EntityMobile), mobileID), "1", ttl)
 	}
 
 	existingQueueKeys, err := r.client.Keys(ctx, r.keySignalQueuePrefix()+"*").Result()
@@ -1691,7 +1952,7 @@ func (r *redisPersistence) SubscribeSignals(clientType string, clientID string) 
 	return channel, closeFn, nil
 }
 
-func newPersistenceFromEnv(store *Store) persistence {
+func newPersistenceFromEnv(store *Store, v2 *v2Store) persistence {
 	storeBackend := strings.ToLower(strings.TrimSpace(os.Getenv("STORE_BACKEND")))
 	if storeBackend == "" || storeBackend == "memory" {
 		log.Printf("[openclaw-server] persistence backend: memory")
@@ -1737,7 +1998,7 @@ func newPersistenceFromEnv(store *Store) persistence {
 		instanceID = fmt.Sprintf("instance_%d", time.Now().UnixNano())
 	}
 
-	redisBackend := newRedisPersistence(store, client, redisKeyPrefix, instanceID)
+	redisBackend := newRedisPersistence(store, v2, client, redisKeyPrefix, instanceID)
 	if err := redisBackend.hydrateFromRedis(); err != nil {
 		log.Printf("[openclaw-server] failed to restore redis state, start fresh: %v", err)
 	} else {
@@ -2734,7 +2995,7 @@ func main() {
 
 	store := newStore()
 	v2 := newV2Store()
-	persist := newPersistenceFromEnv(store)
+	persist := newPersistenceFromEnv(store, v2)
 	app := &app{store: store, v2: v2, v2ICEConfig: loadV2ICEConfigFromEnv(), persistence: persist}
 
 	server := &http.Server{

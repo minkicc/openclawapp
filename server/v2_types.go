@@ -4,8 +4,9 @@ import "time"
 
 const (
 	v2ChallengeTTL          = 5 * time.Minute
-	v2AuthSessionTTL        = 24 * time.Hour
-	v2PresenceOnlineWindow  = 90 * time.Second
+	v2AuthSessionTTL        = 15 * time.Minute
+	v2ActiveEntityTTL       = 15 * time.Minute
+	v2PresenceOnlineWindow  = 3 * time.Minute
 	v2PairSessionMinTTL     = 60
 	v2PairSessionMaxTTL     = 600
 	v2PairSessionDefaultTTL = 180
@@ -39,11 +40,16 @@ type v2Desktop struct {
 }
 
 type v2Mobile struct {
-	MobileID   string `json:"mobileId"`
-	MobileName string `json:"mobileName,omitempty"`
-	PublicKey  string `json:"publicKey"`
-	CreatedAt  int64  `json:"createdAt"`
-	UpdatedAt  int64  `json:"updatedAt"`
+	MobileID      string         `json:"mobileId"`
+	MobileName    string         `json:"mobileName,omitempty"`
+	PublicKey     string         `json:"publicKey"`
+	Platform      string         `json:"platform,omitempty"`
+	AppVersion    string         `json:"appVersion,omitempty"`
+	Capabilities  map[string]any `json:"capabilities,omitempty"`
+	CreatedAt     int64          `json:"createdAt"`
+	UpdatedAt     int64          `json:"updatedAt"`
+	LastSeenAt    int64          `json:"lastSeenAt"`
+	PresenceState string         `json:"presenceState"`
 }
 
 type v2AuthChallenge struct {
@@ -169,6 +175,6 @@ type v2PairApproveRequest struct {
 	BindingID string `json:"bindingId"`
 }
 
-type v2PairRevokeRequest struct {
-	BindingID string `json:"bindingId"`
+type v2PairSessionDeleteRequest struct {
+	PairSessionID string `json:"pairSessionId"`
 }

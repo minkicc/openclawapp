@@ -30,8 +30,31 @@ type v2Store struct {
 	subscribers         map[string]map[chan SignalEvent]struct{}
 }
 
+type v2StoreSnapshot struct {
+	Version             int                      `json:"version"`
+	SavedAt             int64                    `json:"savedAt"`
+	Desktops            map[string]v2Desktop     `json:"desktops"`
+	Mobiles             map[string]v2Mobile      `json:"mobiles"`
+	AuthSessions        map[string]v2AuthSession `json:"authSessions"`
+	PairSessions        map[string]v2PairSession `json:"pairSessions"`
+	PairClaimTokenIndex map[string]string        `json:"pairClaimTokenIndex"`
+	Bindings            map[string]v2Binding     `json:"bindings"`
+	SignalQueues        map[string][]SignalEvent `json:"signalQueues"`
+}
+
 func normalizeV2DisplayName(value string) string {
 	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+}
+
+func v2EntityLastActiveAt(lastSeenAt int64, updatedAt int64) int64 {
+	if lastSeenAt > updatedAt {
+		return lastSeenAt
+	}
+	return updatedAt
+}
+
+func v2EntityInactiveCutoff(now int64) int64 {
+	return now - v2ActiveEntityTTL.Milliseconds()
 }
 
 func newV2Store() *v2Store {
@@ -46,6 +69,109 @@ func newV2Store() *v2Store {
 		signalQueues:        map[string][]SignalEvent{},
 		subscribers:         map[string]map[chan SignalEvent]struct{}{},
 	}
+}
+
+func (s *v2Store) snapshot() v2StoreSnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	snap := v2StoreSnapshot{
+		Version:             1,
+		SavedAt:             nowMillis(),
+		Desktops:            map[string]v2Desktop{},
+		Mobiles:             map[string]v2Mobile{},
+		AuthSessions:        map[string]v2AuthSession{},
+		PairSessions:        map[string]v2PairSession{},
+		PairClaimTokenIndex: map[string]string{},
+		Bindings:            map[string]v2Binding{},
+		SignalQueues:        map[string][]SignalEvent{},
+	}
+
+	for key, value := range s.desktops {
+		snap.Desktops[key] = value
+	}
+	for key, value := range s.mobiles {
+		snap.Mobiles[key] = value
+	}
+	for key, value := range s.authSessions {
+		snap.AuthSessions[key] = value
+	}
+	for key, value := range s.pairSessions {
+		snap.PairSessions[key] = value
+	}
+	for key, value := range s.pairClaimTokenIndex {
+		snap.PairClaimTokenIndex[key] = value
+	}
+	for key, value := range s.bindings {
+		snap.Bindings[key] = value
+	}
+	for key, queue := range s.signalQueues {
+		copied := make([]SignalEvent, 0, len(queue))
+		for _, event := range queue {
+			copied = append(copied, copySignalEvent(event))
+		}
+		snap.SignalQueues[key] = copied
+	}
+
+	return snap
+}
+
+func (s *v2Store) applySnapshot(snap v2StoreSnapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.desktops = map[string]v2Desktop{}
+	for key, value := range snap.Desktops {
+		s.desktops[key] = value
+	}
+
+	s.mobiles = map[string]v2Mobile{}
+	for key, value := range snap.Mobiles {
+		s.mobiles[key] = value
+	}
+
+	s.authSessions = map[string]v2AuthSession{}
+	for key, value := range snap.AuthSessions {
+		s.authSessions[key] = value
+	}
+
+	s.pairSessions = map[string]v2PairSession{}
+	for key, value := range snap.PairSessions {
+		s.pairSessions[key] = value
+	}
+
+	s.pairClaimTokenIndex = map[string]string{}
+	for claimToken, pairSessionID := range snap.PairClaimTokenIndex {
+		s.pairClaimTokenIndex[claimToken] = pairSessionID
+	}
+	if len(s.pairClaimTokenIndex) == 0 {
+		for pairSessionID, session := range s.pairSessions {
+			if session.ClaimToken == "" {
+				continue
+			}
+			if session.Status != "pending" && session.Status != "claimed" {
+				continue
+			}
+			s.pairClaimTokenIndex[session.ClaimToken] = pairSessionID
+		}
+	}
+
+	s.bindings = map[string]v2Binding{}
+	for key, value := range snap.Bindings {
+		s.bindings[key] = value
+	}
+
+	s.signalQueues = map[string][]SignalEvent{}
+	for key, queue := range snap.SignalQueues {
+		copied := make([]SignalEvent, 0, len(queue))
+		for _, event := range queue {
+			copied = append(copied, copySignalEvent(event))
+		}
+		s.signalQueues[key] = copied
+	}
+
+	s.challenges = map[string]v2AuthChallenge{}
+	s.subscribers = map[string]map[chan SignalEvent]struct{}{}
 }
 
 func parseV2EntityType(value string) (v2EntityType, error) {
@@ -125,16 +251,20 @@ func buildV2LoginMessage(challenge v2AuthChallenge) []byte {
 	))
 }
 
-func (s *v2Store) pruneExpiredLocked(now int64) {
+func (s *v2Store) pruneExpiredLocked(now int64) bool {
+	changed := false
+
 	for challengeID, challenge := range s.challenges {
 		if challenge.ExpiresAt <= now {
 			delete(s.challenges, challengeID)
+			changed = true
 		}
 	}
 
 	for token, session := range s.authSessions {
 		if session.ExpiresAt <= now {
 			delete(s.authSessions, token)
+			changed = true
 		}
 	}
 
@@ -147,8 +277,47 @@ func (s *v2Store) pruneExpiredLocked(now int64) {
 			session.UpdatedAt = now
 			s.pairSessions[pairSessionID] = session
 			delete(s.pairClaimTokenIndex, session.ClaimToken)
+			changed = true
 		}
 	}
+
+	cutoff := v2EntityInactiveCutoff(now)
+	removedEntityKeys := map[string]struct{}{}
+
+	for deviceID, desktop := range s.desktops {
+		if v2EntityLastActiveAt(desktop.LastSeenAt, desktop.UpdatedAt) > cutoff {
+			continue
+		}
+		delete(s.desktops, deviceID)
+		removedEntityKeys[clientKey(string(v2EntityDesktop), deviceID)] = struct{}{}
+		changed = true
+	}
+
+	for mobileID, mobile := range s.mobiles {
+		if v2EntityLastActiveAt(mobile.LastSeenAt, mobile.UpdatedAt) > cutoff {
+			continue
+		}
+		delete(s.mobiles, mobileID)
+		removedEntityKeys[clientKey(string(v2EntityMobile), mobileID)] = struct{}{}
+		changed = true
+	}
+
+	for token, session := range s.authSessions {
+		entityKey := clientKey(string(session.EntityType), session.EntityID)
+		if _, removed := removedEntityKeys[entityKey]; removed {
+			delete(s.authSessions, token)
+			changed = true
+		}
+	}
+
+	for queueKey := range s.signalQueues {
+		if _, removed := removedEntityKeys[queueKey]; removed {
+			delete(s.signalQueues, queueKey)
+			changed = true
+		}
+	}
+
+	return changed
 }
 
 func (s *v2Store) stats() v2Stats {
@@ -262,11 +431,14 @@ func (s *v2Store) login(req v2LoginRequest) (v2AuthSession, error) {
 				Capabilities:  map[string]any{},
 				CreatedAt:     now,
 				UpdatedAt:     now,
-				LastSeenAt:    0,
+				LastSeenAt:    now,
 				PresenceState: "offline",
 			}
 		} else {
 			desktop.UpdatedAt = now
+			if desktop.LastSeenAt <= 0 {
+				desktop.LastSeenAt = now
+			}
 		}
 		s.desktops[entityID] = desktop
 	case v2EntityMobile:
@@ -276,13 +448,18 @@ func (s *v2Store) login(req v2LoginRequest) (v2AuthSession, error) {
 		}
 		if !exists {
 			mobile = v2Mobile{
-				MobileID:  entityID,
-				PublicKey: normalizedKey,
-				CreatedAt: now,
-				UpdatedAt: now,
+				MobileID:      entityID,
+				PublicKey:     normalizedKey,
+				Capabilities:  map[string]any{},
+				CreatedAt:     now,
+				UpdatedAt:     now,
+				LastSeenAt:    now,
+				PresenceState: "online",
 			}
 		} else {
 			mobile.UpdatedAt = now
+			mobile.LastSeenAt = now
+			mobile.PresenceState = "online"
 		}
 		s.mobiles[entityID] = mobile
 	}
@@ -332,6 +509,7 @@ func (s *v2Store) authenticate(token string) (v2Principal, error) {
 		return v2Principal{}, newError("UNAUTHORIZED", "session expired")
 	}
 	session.UpdatedAt = now
+	session.ExpiresAt = now + v2AuthSessionTTL.Milliseconds()
 	s.authSessions[normalized] = session
 
 	principal := v2Principal{Session: session}
@@ -339,13 +517,31 @@ func (s *v2Store) authenticate(token string) (v2Principal, error) {
 	case v2EntityDesktop:
 		desktop, exists := s.desktops[session.EntityID]
 		if !exists {
-			return v2Principal{}, newError("UNAUTHORIZED", "desktop identity missing")
+			desktop = v2Desktop{
+				DeviceID:      session.EntityID,
+				PublicKey:     session.PublicKey,
+				Capabilities:  map[string]any{},
+				CreatedAt:     session.CreatedAt,
+				UpdatedAt:     now,
+				LastSeenAt:    now,
+				PresenceState: "offline",
+			}
+			s.desktops[session.EntityID] = desktop
 		}
 		principal.Desktop = &desktop
 	case v2EntityMobile:
 		mobile, exists := s.mobiles[session.EntityID]
 		if !exists {
-			return v2Principal{}, newError("UNAUTHORIZED", "mobile identity missing")
+			mobile = v2Mobile{
+				MobileID:      session.EntityID,
+				PublicKey:     session.PublicKey,
+				Capabilities:  map[string]any{},
+				CreatedAt:     session.CreatedAt,
+				UpdatedAt:     now,
+				LastSeenAt:    now,
+				PresenceState: "online",
+			}
+			s.mobiles[session.EntityID] = mobile
 		}
 		principal.Mobile = &mobile
 	default:
@@ -354,64 +550,106 @@ func (s *v2Store) authenticate(token string) (v2Principal, error) {
 	return principal, nil
 }
 
-func (s *v2Store) announceDesktop(principal v2Principal, req v2PresenceAnnounceRequest) (v2Desktop, error) {
-	if principal.Session.EntityType != v2EntityDesktop {
-		return v2Desktop{}, newError("FORBIDDEN", "only desktop can announce presence")
-	}
-
+func (s *v2Store) announcePresence(principal v2Principal, req v2PresenceAnnounceRequest) (*v2Desktop, *v2Mobile, error) {
 	now := nowMillis()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneExpiredLocked(now)
 
-	desktop, exists := s.desktops[principal.Session.EntityID]
-	if !exists {
-		return v2Desktop{}, newError("NOT_FOUND", "desktop not found")
+	switch principal.Session.EntityType {
+	case v2EntityDesktop:
+		desktop, exists := s.desktops[principal.Session.EntityID]
+		if !exists {
+			return nil, nil, newError("NOT_FOUND", "desktop not found")
+		}
+		desktop.Platform = strings.TrimSpace(req.Platform)
+		desktop.AppVersion = strings.TrimSpace(req.AppVersion)
+		if req.Capabilities != nil {
+			desktop.Capabilities = req.Capabilities
+		} else if desktop.Capabilities == nil {
+			desktop.Capabilities = map[string]any{}
+		}
+		desktop.LastSeenAt = now
+		desktop.UpdatedAt = now
+		desktop.PresenceState = "online"
+		s.desktops[desktop.DeviceID] = desktop
+		return &desktop, nil, nil
+	case v2EntityMobile:
+		mobile, exists := s.mobiles[principal.Session.EntityID]
+		if !exists {
+			return nil, nil, newError("NOT_FOUND", "mobile not found")
+		}
+		if platform := strings.TrimSpace(req.Platform); platform != "" {
+			mobile.Platform = platform
+		}
+		if appVersion := strings.TrimSpace(req.AppVersion); appVersion != "" {
+			mobile.AppVersion = appVersion
+		}
+		if req.Capabilities != nil {
+			mobile.Capabilities = req.Capabilities
+		} else if mobile.Capabilities == nil {
+			mobile.Capabilities = map[string]any{}
+		}
+		mobile.LastSeenAt = now
+		mobile.UpdatedAt = now
+		mobile.PresenceState = "online"
+		s.mobiles[mobile.MobileID] = mobile
+		return nil, &mobile, nil
+	default:
+		return nil, nil, newError("FORBIDDEN", "unsupported presence principal")
 	}
-	desktop.Platform = strings.TrimSpace(req.Platform)
-	desktop.AppVersion = strings.TrimSpace(req.AppVersion)
-	if req.Capabilities != nil {
-		desktop.Capabilities = req.Capabilities
-	} else if desktop.Capabilities == nil {
-		desktop.Capabilities = map[string]any{}
-	}
-	desktop.LastSeenAt = now
-	desktop.UpdatedAt = now
-	desktop.PresenceState = "online"
-	s.desktops[desktop.DeviceID] = desktop
-	return desktop, nil
 }
 
-func (s *v2Store) heartbeatDesktop(principal v2Principal, req v2PresenceHeartbeatRequest) (v2Desktop, error) {
-	if principal.Session.EntityType != v2EntityDesktop {
-		return v2Desktop{}, newError("FORBIDDEN", "only desktop can heartbeat")
-	}
-
+func (s *v2Store) heartbeatPresence(principal v2Principal, req v2PresenceHeartbeatRequest) (*v2Desktop, *v2Mobile, error) {
 	now := nowMillis()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneExpiredLocked(now)
 
-	desktop, exists := s.desktops[principal.Session.EntityID]
-	if !exists {
-		return v2Desktop{}, newError("NOT_FOUND", "desktop not found")
+	switch principal.Session.EntityType {
+	case v2EntityDesktop:
+		desktop, exists := s.desktops[principal.Session.EntityID]
+		if !exists {
+			return nil, nil, newError("NOT_FOUND", "desktop not found")
+		}
+		if platform := strings.TrimSpace(req.Platform); platform != "" {
+			desktop.Platform = platform
+		}
+		if appVersion := strings.TrimSpace(req.AppVersion); appVersion != "" {
+			desktop.AppVersion = appVersion
+		}
+		if req.Capabilities != nil {
+			desktop.Capabilities = req.Capabilities
+		}
+		desktop.LastSeenAt = now
+		desktop.UpdatedAt = now
+		desktop.PresenceState = "online"
+		s.desktops[desktop.DeviceID] = desktop
+		return &desktop, nil, nil
+	case v2EntityMobile:
+		mobile, exists := s.mobiles[principal.Session.EntityID]
+		if !exists {
+			return nil, nil, newError("NOT_FOUND", "mobile not found")
+		}
+		if platform := strings.TrimSpace(req.Platform); platform != "" {
+			mobile.Platform = platform
+		}
+		if appVersion := strings.TrimSpace(req.AppVersion); appVersion != "" {
+			mobile.AppVersion = appVersion
+		}
+		if req.Capabilities != nil {
+			mobile.Capabilities = req.Capabilities
+		}
+		mobile.LastSeenAt = now
+		mobile.UpdatedAt = now
+		mobile.PresenceState = "online"
+		s.mobiles[mobile.MobileID] = mobile
+		return nil, &mobile, nil
+	default:
+		return nil, nil, newError("FORBIDDEN", "unsupported heartbeat principal")
 	}
-	if platform := strings.TrimSpace(req.Platform); platform != "" {
-		desktop.Platform = platform
-	}
-	if appVersion := strings.TrimSpace(req.AppVersion); appVersion != "" {
-		desktop.AppVersion = appVersion
-	}
-	if req.Capabilities != nil {
-		desktop.Capabilities = req.Capabilities
-	}
-	desktop.LastSeenAt = now
-	desktop.UpdatedAt = now
-	desktop.PresenceState = "online"
-	s.desktops[desktop.DeviceID] = desktop
-	return desktop, nil
 }
 
 func (s *v2Store) createPairSession(principal v2Principal, req v2CreatePairSessionRequest) (v2PairSession, error) {
@@ -461,6 +699,37 @@ func (s *v2Store) createPairSession(principal v2Principal, req v2CreatePairSessi
 	}
 	s.pairSessions[session.PairSessionID] = session
 	s.pairClaimTokenIndex[session.ClaimToken] = session.PairSessionID
+	return session, nil
+}
+
+func (s *v2Store) deletePairSession(principal v2Principal, req v2PairSessionDeleteRequest) (v2PairSession, error) {
+	if principal.Session.EntityType != v2EntityDesktop {
+		return v2PairSession{}, newError("FORBIDDEN", "only desktop can delete pair sessions")
+	}
+	pairSessionID, err := trimRequired(req.PairSessionID, "pairSessionId")
+	if err != nil {
+		return v2PairSession{}, err
+	}
+
+	now := nowMillis()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneExpiredLocked(now)
+
+	session, exists := s.pairSessions[pairSessionID]
+	if !exists {
+		return v2PairSession{}, newError("NOT_FOUND", "pair session not found")
+	}
+	if session.DeviceID != principal.Session.EntityID {
+		return v2PairSession{}, newError("FORBIDDEN", "desktop cannot delete another device pair session")
+	}
+	if session.BindingID != nil || session.Status != "pending" {
+		return v2PairSession{}, newError("INVALID_STATE", "pair session can no longer be deleted")
+	}
+
+	delete(s.pairSessions, pairSessionID)
+	delete(s.pairClaimTokenIndex, session.ClaimToken)
 	return session, nil
 }
 
@@ -607,44 +876,6 @@ func (s *v2Store) approveBinding(principal v2Principal, req v2PairApproveRequest
 	return binding, nil
 }
 
-func (s *v2Store) revokeBinding(principal v2Principal, req v2PairRevokeRequest) (v2Binding, error) {
-	bindingID, err := trimRequired(req.BindingID, "bindingId")
-	if err != nil {
-		return v2Binding{}, err
-	}
-
-	now := nowMillis()
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.pruneExpiredLocked(now)
-
-	binding, exists := s.bindings[bindingID]
-	if !exists {
-		return v2Binding{}, newError("NOT_FOUND", "binding not found")
-	}
-
-	switch principal.Session.EntityType {
-	case v2EntityDesktop:
-		if binding.DeviceID != principal.Session.EntityID {
-			return v2Binding{}, newError("FORBIDDEN", "desktop cannot revoke another device binding")
-		}
-	case v2EntityMobile:
-		if binding.MobileID != principal.Session.EntityID {
-			return v2Binding{}, newError("FORBIDDEN", "mobile cannot revoke another mobile binding")
-		}
-	default:
-		return v2Binding{}, newError("UNAUTHORIZED", "unauthorized principal")
-	}
-
-	revokedAt := now
-	binding.TrustState = v2TrustStateRevoked
-	binding.RevokedAt = &revokedAt
-	binding.UpdatedAt = now
-	s.bindings[binding.BindingID] = binding
-	return binding, nil
-}
-
 func buildV2PresenceStatus(desktop v2Desktop) v2PresenceStatus {
 	status := "offline"
 	if nowMillis()-desktop.LastSeenAt <= v2PresenceOnlineWindow.Milliseconds() {
@@ -726,29 +957,6 @@ func (s *v2Store) queryPresence(principal v2Principal, req v2PresenceQueryReques
 	default:
 		return nil, newError("UNAUTHORIZED", "unauthorized principal")
 	}
-}
-
-func (s *v2Store) listBindings(principal v2Principal, includeRevoked bool) []v2Binding {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	result := make([]v2Binding, 0)
-	for _, binding := range s.bindings {
-		if !includeRevoked && binding.TrustState == v2TrustStateRevoked {
-			continue
-		}
-		switch principal.Session.EntityType {
-		case v2EntityDesktop:
-			if binding.DeviceID == principal.Session.EntityID {
-				result = append(result, binding)
-			}
-		case v2EntityMobile:
-			if binding.MobileID == principal.Session.EntityID {
-				result = append(result, binding)
-			}
-		}
-	}
-	return result
 }
 
 func (s *v2Store) authorizeSignalClient(principal v2Principal, clientType string, clientID string) error {

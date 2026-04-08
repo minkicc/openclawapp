@@ -430,6 +430,18 @@ export async function heartbeatPairV2Desktop(
     capabilities?: Record<string, unknown>;
   }
 ) {
+  return await heartbeatPairV2Entity(baseUrl, token, payload);
+}
+
+export async function heartbeatPairV2Entity(
+  baseUrl: string,
+  token: string,
+  payload: {
+    platform?: string;
+    appVersion?: string;
+    capabilities?: Record<string, unknown>;
+  }
+) {
   return await pairV2RequestJson<{ ok: boolean; desktop: Record<string, unknown> }>(
     baseUrl,
     '/v2/presence/heartbeat',
@@ -482,33 +494,6 @@ export async function approvePairV2Binding(baseUrl: string, token: string, bindi
     {
       method: 'POST',
       body: JSON.stringify({ bindingId })
-    },
-    token
-  );
-}
-
-export async function revokePairV2Binding(baseUrl: string, token: string, bindingId: string) {
-  return await pairV2RequestJson<{ ok: boolean; binding: PairV2Binding }>(
-    baseUrl,
-    '/v2/pair/revoke',
-    {
-      method: 'POST',
-      body: JSON.stringify({ bindingId })
-    },
-    token
-  );
-}
-
-export async function listPairV2Bindings(baseUrl: string, token: string, includeRevoked = false) {
-  const query = new URLSearchParams();
-  if (includeRevoked) {
-    query.set('includeRevoked', 'true');
-  }
-  return await pairV2RequestJson<{ ok: boolean; bindings: PairV2Binding[] }>(
-    baseUrl,
-    `/v2/bindings${query.size ? `?${query.toString()}` : ''}`,
-    {
-      method: 'GET'
     },
     token
   );

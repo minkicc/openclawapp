@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
+import { Platform } from 'react-native';
 import {
   claimPairV2Session,
   computePairV2SafetyCode,
@@ -7,8 +8,8 @@ import {
   formatPairV2ConnectionName,
   getOrCreatePairV2Identity,
   getPairV2ICEServers,
+  heartbeatPairV2Entity,
   isGeneratedPairV2ConnectionName,
-  listPairV2Bindings,
   loginPairV2Entity,
   normalizePairV2MobileName,
   normalizePairV2IceServers,
@@ -25,6 +26,7 @@ import { configureReactNativePairRuntime } from './reactNativePairRuntime';
 
 const MOBILE_ID_KEY = 'openclaw.mobile.mobile-id.v2';
 const SESSIONS_KEY = 'openclaw.mobile.sessions.v2';
+const MAX_SESSION_MESSAGES = 1000;
 
 type MobileAuthState = {
   baseUrl: string;
@@ -68,6 +70,14 @@ function resolveLocalMobileName() {
     normalizePairV2MobileName(Constants.deviceName) ||
     normalizePairV2MobileName(Constants.expoConfig?.name) ||
     '手机'
+  );
+}
+
+function resolveMobileAppVersion() {
+  return (
+    String(Constants.nativeAppVersion || '').trim() ||
+    String(Constants.expoConfig?.version || '').trim() ||
+    'mobile'
   );
 }
 
@@ -190,10 +200,11 @@ function compactPeer(seed: string) {
 
 function buildInfoMessage(text: string): ChatMessage {
   const ts = Date.now();
+  const normalizedText = String(text || '').trim();
   return {
-    id: randomId('msg'),
+    id: `system:${normalizedText || 'status'}`,
     from: 'host',
-    text,
+    text: normalizedText,
     createdAt: formatMessageTime(new Date(ts)),
     ts,
     kind: 'system',
@@ -203,7 +214,7 @@ function buildInfoMessage(text: string): ChatMessage {
 }
 
 function mergeMessages(current: ChatMessage[], incoming: ChatMessage[]) {
-  return reconcileSessionMessages([...(current || []), ...(incoming || [])]).messages.slice(-300);
+  return reconcileSessionMessages([...(current || []), ...(incoming || [])]).messages.slice(-MAX_SESSION_MESSAGES);
 }
 
 function normalizePendingMessages(existing: SessionItem | null, preview: string) {
@@ -302,6 +313,19 @@ export async function ensureMobileAuthV2(baseUrl: string, forceRefresh = false) 
   };
   mobileAuthCache.set(normalizedBaseUrl, nextState);
   return nextState;
+}
+
+export async function heartbeatMobilePresenceV2(baseUrl: string) {
+  const auth = await ensureMobileAuthV2(baseUrl);
+  await heartbeatPairV2Entity(auth.baseUrl, auth.token, {
+    platform: Platform.OS,
+    appVersion: resolveMobileAppVersion(),
+    capabilities: {
+      signaling: ['sse'],
+      pairing: ['qr', 'safety-code'],
+      chat: true,
+    },
+  });
 }
 
 export async function resolveSessionIceServersV2(baseUrl: string, token: string, forceRefresh = false) {
@@ -512,15 +536,11 @@ export async function refreshSessionsV2(currentSessions: SessionItem[]) {
   for (const [baseUrl, scopedSessions] of grouped) {
     try {
       const auth = await ensureMobileAuthV2(baseUrl);
-      const bindingsResult = await listPairV2Bindings(baseUrl, auth.token, true);
-      const bindingMap = new Map(
-        (Array.isArray(bindingsResult.bindings) ? bindingsResult.bindings : []).map((binding) => [binding.bindingId, binding])
-      );
       const activeDeviceIds = Array.from(
         new Set(
-          (Array.isArray(bindingsResult.bindings) ? bindingsResult.bindings : [])
-            .filter((binding) => String(binding.trustState || '').trim() === 'active')
-            .map((binding) => String(binding.deviceId || '').trim())
+          scopedSessions
+            .filter((session) => String(session.trustState || '').trim() === 'active')
+            .map((session) => String(session.deviceId || '').trim())
             .filter(Boolean)
         )
       );
@@ -533,35 +553,44 @@ export async function refreshSessionsV2(currentSessions: SessionItem[]) {
       );
 
       for (const scopedSession of scopedSessions) {
-        const binding =
-          bindingMap.get(scopedSession.bindingId) ||
-          (Array.isArray(bindingsResult.bindings)
-            ? bindingsResult.bindings.find((item) => item.deviceId === scopedSession.deviceId)
-            : null);
-        if (!binding) {
-          nextSessions = nextSessions.map((item) =>
-            item.id === scopedSession.id
-              ? {
-                  ...item,
-                  status: 'offline',
-                  preview: '未在服务端找到对应绑定',
-                  serverToken: auth.token,
-                }
-              : item
-          );
-          continue;
-        }
-
-        const updated = buildSessionFromBinding({
-          existing: scopedSession,
-          baseUrl,
-          serverToken: auth.token,
-          binding,
-          safetyCode: scopedSession.safetyCode,
-          mobilePublicKey: auth.publicKey,
-          presence: presenceMap.get(binding.deviceId) || null,
-        });
-        nextSessions = upsertSessions(nextSessions, updated);
+        const localTrustState = String(scopedSession.trustState || '').trim() || 'pending';
+        const presence =
+          localTrustState === 'active'
+            ? presenceMap.get(String(scopedSession.deviceId || '').trim()) || null
+            : null;
+        const relayReady = localTrustState === 'active' && presence?.status === 'online';
+        const nextStatus =
+          localTrustState === 'pending'
+            ? 'waiting'
+            : localTrustState === 'revoked'
+              ? 'offline'
+              : relayReady
+                ? 'connected'
+                : 'offline';
+        const peerState = String(scopedSession.peerState || '').trim();
+        const nextPreview =
+          localTrustState === 'pending'
+            ? describeSession(localTrustState, String(scopedSession.safetyCode || ''), presence)
+            : localTrustState === 'revoked'
+              ? '绑定已撤销'
+              : peerState === 'connected'
+                ? 'P2P 通道已建立，可以开始聊天。'
+                : relayReady
+                  ? '桌面端在线，可通过服务端转发聊天。'
+                  : '已配对，宿主机当前离线';
+        nextSessions = nextSessions.map((item) =>
+          item.id === scopedSession.id
+            ? normalizeSession(item, {
+                ...scopedSession,
+                serverBaseUrl: baseUrl,
+                serverToken: auth.token,
+                status: nextStatus,
+                preview: nextPreview,
+                transportReady: peerState === 'connected' || relayReady,
+                lastSeenAt: Number(presence?.lastSeenAt || scopedSession.lastSeenAt || 0),
+              })
+            : item
+        );
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : '同步失败';

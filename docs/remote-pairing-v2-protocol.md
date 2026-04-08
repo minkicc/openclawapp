@@ -171,8 +171,6 @@ Current system message set:
 | `POST` | `/v2/pair/sessions` | Desktop | Create QR claim session |
 | `POST` | `/v2/pair/claims` | Mobile | Claim QR session and create pending binding |
 | `POST` | `/v2/pair/approvals` | Desktop | Confirm safety code and activate binding |
-| `POST` | `/v2/pair/revoke` | Desktop/Mobile | Revoke an existing binding |
-| `GET` | `/v2/bindings` | Desktop/Mobile | List visible bindings |
 | `POST` | `/v2/signal/send` | Desktop/Mobile | Relay `pair.*` / `webrtc.*` / app control events |
 | `GET` | `/v2/signal/stream` | Desktop/Mobile | SSE signal stream |
 | `GET` | `/v2/ice-servers` | Desktop/Mobile | Fetch current ICE/TURN config and cache TTL |
@@ -295,7 +293,6 @@ sequenceDiagram
 
     Mobile->>Server: POST /v2/auth/challenge
     Mobile->>Server: POST /v2/auth/login
-    Mobile->>Server: GET /v2/bindings
     Mobile->>Server: POST /v2/presence/query
 ```
 

@@ -20,19 +20,10 @@ impl PairBackendHandle {
 
     async fn ensure_channel_for_signal(
         &self,
-        app: &AppHandle,
+        _app: &AppHandle,
         binding_id: &str,
         mobile_id: &str,
     ) -> Result<Option<PairBackendChannel>, String> {
-        if let Some(channel) = self.find_channel_for_signal(binding_id, mobile_id).await {
-            return Ok(Some(channel));
-        }
-
-        if let Err(error) = self.refresh_bindings(app).await {
-            self.append_event(format!("refresh bindings before signal failed: {}", error))
-                .await;
-        }
-
         if let Some(channel) = self.find_channel_for_signal(binding_id, mobile_id).await {
             return Ok(Some(channel));
         }
@@ -305,7 +296,6 @@ impl PairBackendHandle {
             }
         }
         self.append_event("v2 signal stream connected").await;
-        let _ = self.refresh_bindings(&app).await;
         self.emit_snapshot().await;
 
         let byte_stream = response.bytes_stream().map(|item| {

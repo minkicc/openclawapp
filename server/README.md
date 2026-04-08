@@ -46,8 +46,6 @@ The server now also exposes a small protocol landing page:
 - `POST /v2/pair/sessions`
 - `POST /v2/pair/claims`
 - `POST /v2/pair/approvals`
-- `POST /v2/pair/revoke`
-- `GET /v2/bindings`
 - `GET /v2/ice-servers`
 - `POST /v2/signal/send`
 - `GET /v2/signal/stream` (SSE)

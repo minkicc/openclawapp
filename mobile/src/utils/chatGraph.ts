@@ -9,6 +9,14 @@ function normalizeMessageTs(message: ChatMessage) {
   return Number(message?.ts || 0);
 }
 
+function normalizeOrigin(message: ChatMessage) {
+  return message.origin === 'mobile' ? 'mobile' : 'host';
+}
+
+function normalizeOriginSeq(message: ChatMessage) {
+  return Math.max(0, Math.trunc(Number(message?.originSeq || 0)));
+}
+
 function compareFallbackOrder(left: ChatMessage, right: ChatMessage) {
   const leftTs = normalizeMessageTs(left);
   const rightTs = normalizeMessageTs(right);
@@ -27,6 +35,8 @@ export function normalizeChatMessage(message: ChatMessage): ChatMessage {
     createdAt: String(message.createdAt || ''),
     ts: normalizeMessageTs(message),
     kind,
+    origin: kind === 'system' ? undefined : normalizeOrigin(message),
+    originSeq: kind === 'system' ? undefined : normalizeOriginSeq(message),
     after: kind === 'chat' ? normalizeOpenClawPairChatAfterIds(message.after) : [],
     missingAfter: kind === 'chat' ? normalizeOpenClawPairChatAfterIds(message.missingAfter) : [],
   };
@@ -46,6 +56,45 @@ export function collectSessionLeafIds(messages: ChatMessage[]) {
       ts: message.ts,
     }))
   );
+}
+
+export function describeSessionChatState(messages: ChatMessage[]) {
+  const chatMessages = extractChatMessages(messages);
+  const byOrigin = new Map<'host' | 'mobile', Set<number>>([
+    ['host', new Set<number>()],
+    ['mobile', new Set<number>()],
+  ]);
+  for (const message of chatMessages) {
+    const origin = normalizeOrigin(message);
+    const originSeq = normalizeOriginSeq(message);
+    if (originSeq > 0) {
+      byOrigin.get(origin)?.add(originSeq);
+    }
+  }
+
+  const contiguousSeq = (origin: 'host' | 'mobile') => {
+    const values = Array.from(byOrigin.get(origin) || []).sort((left, right) => left - right);
+    let expected = 1;
+    for (const value of values) {
+      if (value !== expected) {
+        break;
+      }
+      expected += 1;
+    }
+    return expected - 1;
+  };
+
+  return {
+    hostSeq: contiguousSeq('host'),
+    mobileSeq: contiguousSeq('mobile'),
+    leafIds: collectOpenClawPairChatLeafIds(
+      chatMessages.map((message) => ({
+        id: message.id,
+        after: message.after || [],
+        ts: message.ts,
+      }))
+    ),
+  };
 }
 
 export function reconcileSessionMessages(messages: ChatMessage[]) {
