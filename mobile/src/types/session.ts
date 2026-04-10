@@ -13,6 +13,8 @@ export type ChatMessage = {
   originSeq?: number;
   after?: string[];
   missingAfter?: string[];
+  deliveryStatus?: 'sending' | 'sent' | 'failed';
+  deliveryError?: string;
 };
 
 export type SessionItem = {
@@ -40,4 +42,8 @@ export type SessionItem = {
   peerDetail?: string;
   peerCapabilities?: PairV2PeerCapabilities;
   missingMessageIds?: string[];
+  linkTransport?: 'p2p' | 'relay' | '';
+  linkRttMs?: number;
+  linkRttAt?: number;
+  linkProbePending?: boolean;
 };

@@ -257,11 +257,19 @@ function isPeerNegotiating(state: string) {
   return state === 'connecting' || state === 'channel-open' || state === 'verifying';
 }
 
+function normalizeLinkTransport(value: unknown): SessionItem['linkTransport'] {
+  return value === 'p2p' || value === 'relay' ? value : '';
+}
+
 function normalizeSession(existing: SessionItem | null, next: SessionItem): SessionItem {
   if (!existing) {
     const reconciled = reconcileSessionMessages(next.messages || []);
     return {
       ...next,
+      linkTransport: normalizeLinkTransport(next.linkTransport),
+      linkRttMs: Math.max(0, Math.trunc(Number(next.linkRttMs || 0))),
+      linkRttAt: Math.max(0, Math.trunc(Number(next.linkRttAt || 0))),
+      linkProbePending: Boolean(next.linkProbePending),
       messages: reconciled.messages,
       missingMessageIds: reconciled.missingMessageIds,
     };
@@ -363,7 +371,7 @@ export async function loadStoredSessions() {
   try {
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed)
-      ? (parsed as SessionItem[]).map((item) => {
+      ? (parsed as SessionItem[]).map((item): SessionItem => {
           const reconciledMessages = reconcileSessionMessages(
             Array.isArray(item?.messages) ? item.messages : []
           );
@@ -373,6 +381,10 @@ export async function loadStoredSessions() {
             peerState: '',
             peerDetail: '',
             peerCapabilities: undefined,
+            linkTransport: '',
+            linkRttMs: 0,
+            linkRttAt: 0,
+            linkProbePending: false,
             messages: reconciledMessages.messages,
             missingMessageIds: reconciledMessages.missingMessageIds,
           };
@@ -451,6 +463,10 @@ function buildSessionFromBinding(options: {
     devicePublicKey: binding.devicePublicKey || existing?.devicePublicKey || '',
     transportReady,
     lastSeenAt: Number(presence?.lastSeenAt || existing?.lastSeenAt || 0),
+    linkTransport: normalizeLinkTransport(existing?.linkTransport),
+    linkRttMs: Math.max(0, Math.trunc(Number(existing?.linkRttMs || 0))),
+    linkRttAt: Math.max(0, Math.trunc(Number(existing?.linkRttAt || 0))),
+    linkProbePending: false,
   });
 }
 
@@ -588,6 +604,10 @@ export async function refreshSessionsV2(currentSessions: SessionItem[]) {
                 preview: nextPreview,
                 transportReady: peerState === 'connected' || relayReady,
                 lastSeenAt: Number(presence?.lastSeenAt || scopedSession.lastSeenAt || 0),
+                linkTransport: nextStatus === 'offline' ? '' : normalizeLinkTransport(scopedSession.linkTransport),
+                linkRttMs: nextStatus === 'offline' ? 0 : Math.max(0, Math.trunc(Number(scopedSession.linkRttMs || 0))),
+                linkRttAt: nextStatus === 'offline' ? 0 : Math.max(0, Math.trunc(Number(scopedSession.linkRttAt || 0))),
+                linkProbePending: nextStatus === 'offline' ? false : Boolean(scopedSession.linkProbePending),
               })
             : item
         );
@@ -600,6 +620,10 @@ export async function refreshSessionsV2(currentSessions: SessionItem[]) {
               ...item,
               status: 'offline',
               preview: `同步失败：${message}`,
+              linkTransport: '',
+              linkRttMs: 0,
+              linkRttAt: 0,
+              linkProbePending: false,
             }
           : item
       );

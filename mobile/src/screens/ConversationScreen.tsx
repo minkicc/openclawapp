@@ -2,6 +2,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useHeaderHeight } from '@react-navigation/elements';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Keyboard,
   KeyboardAvoidingView,
@@ -14,21 +15,88 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { createOpenClawPairChatMessageId } from '@openclaw/message-sdk';
 import type { RootStackParamList } from '../navigation/AppNavigator';
 import { MarkdownText } from '../components/MarkdownText';
 import { useSessions } from '../state/SessionsContext';
 import { appColors } from '../theme/colors';
+import type { ChatMessage, SessionItem } from '../types/session';
+import { reconcileSessionMessages } from '../utils/chatGraph';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Conversation'>;
 
+function describeLinkTransport(session: SessionItem, relayReady: boolean) {
+  if (session.status === 'offline') {
+    return '链路：离线';
+  }
+  if (session.linkTransport === 'p2p') {
+    return '链路：P2P';
+  }
+  if (session.linkTransport === 'relay') {
+    return '链路：服务端转发';
+  }
+  if (session.peerState === 'connected') {
+    return '链路：P2P（待探测）';
+  }
+  if (relayReady) {
+    return '链路：服务端转发（待探测）';
+  }
+  if (
+    session.peerState === 'connecting' ||
+    session.peerState === 'channel-open' ||
+    session.peerState === 'verifying'
+  ) {
+    return '链路：探测中';
+  }
+  return '链路：待建立';
+}
+
+function describeLinkQuality(session: SessionItem) {
+  if (session.status === 'offline') {
+    return '质量：不可用';
+  }
+  if (session.linkProbePending && !session.linkRttMs) {
+    return '质量：探测中';
+  }
+  const rttAt = Math.max(0, Math.trunc(Number(session.linkRttAt || 0)));
+  if (rttAt > 0 && Date.now() - rttAt > 20_000) {
+    return session.linkProbePending ? '质量：探测中' : '质量：待探测';
+  }
+  const rttMs = Math.max(0, Math.trunc(Number(session.linkRttMs || 0)));
+  if (rttMs <= 0) {
+    return session.linkProbePending ? '质量：探测中' : '质量：待探测';
+  }
+  const quality =
+    rttMs <= 120 ? '优秀' : rttMs <= 260 ? '良好' : rttMs <= 600 ? '一般' : '较慢';
+  return `质量：${quality} · ${rttMs}ms`;
+}
+
 export function ConversationScreen({ route, navigation }: Props) {
-  const { getSessionById, refreshSessions, sendMessage } = useSessions();
+  const { getSessionById, refreshSessions, retryMessage, sendMessage } = useSessions();
   const [draft, setDraft] = useState('');
-  const [sending, setSending] = useState(false);
+  const [optimisticMessages, setOptimisticMessages] = useState<ChatMessage[]>([]);
   const scrollViewRef = useRef<ScrollView | null>(null);
   const headerHeight = useHeaderHeight();
   const insets = useSafeAreaInsets();
   const session = getSessionById(route.params.sessionId);
+
+  function formatLocalMessageTime(date = new Date()) {
+    return new Intl.DateTimeFormat('zh-CN', {
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(date);
+  }
+
+  function mergeDisplayedMessages(
+    sessionMessages: ChatMessage[],
+    localMessages: ChatMessage[]
+  ) {
+    const localIds = new Set(localMessages.map((message) => String(message.id || '').trim()).filter(Boolean));
+    const baseMessages = sessionMessages.filter(
+      (message) => !localIds.has(String(message.id || '').trim())
+    );
+    return reconcileSessionMessages([...baseMessages, ...localMessages]).messages;
+  }
 
   function scrollToBottom(animated = true) {
     requestAnimationFrame(() => {
@@ -56,6 +124,10 @@ export function ConversationScreen({ route, navigation }: Props) {
     void refreshSessions();
   }, [route.params.sessionId]);
 
+  useEffect(() => {
+    setOptimisticMessages([]);
+  }, [route.params.sessionId]);
+
   if (!session) {
     return (
       <SafeAreaView edges={['bottom']} style={styles.safeArea}>
@@ -68,49 +140,112 @@ export function ConversationScreen({ route, navigation }: Props) {
   }
 
   const activeSession = session;
+  const displayedMessages = mergeDisplayedMessages(
+    activeSession.messages || [],
+    optimisticMessages
+  );
   const relayReady =
     String(activeSession.trustState || '').trim() === 'active' && activeSession.status !== 'offline';
   const composerEnabled =
     Boolean(activeSession.transportReady) || activeSession.peerState === 'connected' || relayReady;
-  const helperText =
-    activeSession.trustState === 'pending'
-      ? `等待桌面端确认安全码${activeSession.safetyCode ? ` ${activeSession.safetyCode}` : ''}`
-      : activeSession.peerState === 'connected'
-        ? 'P2P 通道已就绪，可以开始发送业务消息。'
-        : relayReady
-          ? '桌面端在线，可直接聊天；客户端会优先尝试直连，失败时自动切换服务端转发。'
-        : activeSession.peerState === 'failed'
-          ? activeSession.peerDetail
-            ? `P2P 通道建立失败：${activeSession.peerDetail}`
-            : 'P2P 通道建立失败，请稍后重试。'
-          : activeSession.status === 'offline'
-            ? '桌面端当前离线，正在等待重新联通。'
-        : activeSession.peerState === 'connecting' || activeSession.peerState === 'channel-open' || activeSession.peerState === 'verifying'
-          ? '正在建立直连通道，失败会自动切换服务端转发...'
-          : activeSession.peerState === 'connected'
-            ? '通道已就绪，可以开始发送业务消息。'
-            : activeSession.peerDetail
-              ? `直连通道未就绪：${activeSession.peerDetail}`
-              : '已完成配对发现，正在准备可用通道。';
+  const linkTransportText = describeLinkTransport(activeSession, relayReady);
+  const linkQualityText = describeLinkQuality(activeSession);
 
-  async function handleSend() {
+  function handleSend() {
     const text = draft.trim();
     if (!text) {
       Alert.alert('无法发送', '请输入消息内容。');
       return;
     }
 
-    try {
-      setSending(true);
-      setDraft('');
-      await sendMessage(activeSession.id, text);
-      setDraft('');
-    } catch (error) {
-      setDraft((current) => (current.trim() ? current : text));
-      Alert.alert('发送失败', error instanceof Error ? error.message : '消息发送失败。');
-    } finally {
-      setSending(false);
+    const ts = Date.now();
+    const messageId = createOpenClawPairChatMessageId(ts);
+    const localMessage: ChatMessage = {
+      id: messageId,
+      from: 'self',
+      text,
+      createdAt: formatLocalMessageTime(new Date(ts)),
+      ts,
+      kind: 'chat',
+      origin: 'mobile',
+      originSeq: 0,
+      after: [],
+      missingAfter: [],
+      deliveryStatus: 'sending',
+      deliveryError: '',
+    };
+    setOptimisticMessages((current) => {
+      const next = current.filter((message) => message.id !== messageId);
+      next.push(localMessage);
+      return next;
+    });
+    setDraft('');
+    void sendMessage(activeSession.id, text, {
+      messageId,
+      ts,
+    })
+      .then(() => {
+        setOptimisticMessages((current) =>
+          current.map((message) =>
+            message.id === messageId
+              ? {
+                  ...message,
+                  deliveryStatus: 'sent',
+                  deliveryError: '',
+                }
+              : message
+          )
+        );
+      })
+      .catch((error) => {
+        setOptimisticMessages((current) =>
+          current.map((message) =>
+            message.id === messageId
+              ? {
+                  ...message,
+                  deliveryStatus: 'failed',
+                  deliveryError:
+                    error instanceof Error ? error.message : '消息发送失败',
+                }
+              : message
+          )
+        );
+        Alert.alert('发送失败', error instanceof Error ? error.message : '消息发送失败。');
+      });
+  }
+
+  function handleRetry(messageId: string) {
+    const optimistic = optimisticMessages.find((message) => message.id === messageId);
+    if (optimistic) {
+      setOptimisticMessages((current) =>
+        current.map((message) =>
+          message.id === messageId
+            ? {
+                ...message,
+                deliveryStatus: 'sending',
+                deliveryError: '',
+              }
+            : message
+        )
+      );
     }
+    void retryMessage(activeSession.id, messageId).catch((error) => {
+      if (optimistic) {
+        setOptimisticMessages((current) =>
+          current.map((message) =>
+            message.id === messageId
+              ? {
+                  ...message,
+                  deliveryStatus: 'failed',
+                  deliveryError:
+                    error instanceof Error ? error.message : '消息重发失败',
+                }
+              : message
+          )
+        );
+      }
+      Alert.alert('重发失败', error instanceof Error ? error.message : '消息重发失败。');
+    });
   }
 
   return (
@@ -123,7 +258,14 @@ export function ConversationScreen({ route, navigation }: Props) {
         <View style={styles.headerStrip}>
           <Text style={styles.headerLabel}>{activeSession.peerLabel}</Text>
           <Text style={styles.headerMeta}>创建于 {activeSession.createdAt}</Text>
-          <Text style={styles.headerHint}>{helperText}</Text>
+          <View style={styles.linkStatusRow}>
+            <View style={styles.linkStatusChip}>
+              <Text style={styles.linkStatusText}>{linkTransportText}</Text>
+            </View>
+            <View style={styles.linkStatusChip}>
+              <Text style={styles.linkStatusText}>{linkQualityText}</Text>
+            </View>
+          </View>
           {activeSession.isReplying ? (
             <View style={styles.replyingBanner}>
               <Text style={styles.replyingBannerText}>Agent 正在回复...</Text>
@@ -141,18 +283,56 @@ export function ConversationScreen({ route, navigation }: Props) {
             scrollToBottom(true);
           }}
         >
-          {activeSession.messages.map((message) => {
+          {displayedMessages.map((message) => {
             const isSelf = message.from === 'self';
+            const showDeliveryState = isSelf && message.kind !== 'system';
+            const retryable = showDeliveryState && message.deliveryStatus === 'failed';
+            const bubble = (
+              <View
+                style={[
+                  styles.bubble,
+                  isSelf ? styles.bubbleSelf : styles.bubblePeer,
+                  showDeliveryState ? styles.bubbleSelfWithStatus : null,
+                ]}
+              >
+                {showDeliveryState ? (
+                  <View
+                    style={[
+                      styles.deliveryBadge,
+                      message.deliveryStatus === 'failed'
+                        ? styles.deliveryBadgeFailed
+                        : message.deliveryStatus === 'sending'
+                          ? styles.deliveryBadgeSending
+                          : styles.deliveryBadgeSent,
+                    ]}
+                  >
+                    {message.deliveryStatus === 'sending' ? (
+                      <ActivityIndicator size="small" color={appColors.accent} />
+                    ) : (
+                      <Text style={styles.deliveryBadgeText}>
+                        {message.deliveryStatus === 'failed' ? '!' : '✓'}
+                      </Text>
+                    )}
+                  </View>
+                ) : null}
+                <MarkdownText
+                  text={message.text}
+                  style={styles.messageText}
+                  variant={isSelf ? 'self' : 'peer'}
+                />
+              </View>
+            );
             return (
               <View key={message.id} style={[styles.messageRow, isSelf ? styles.messageRowSelf : null]}>
-                <View style={[styles.bubble, isSelf ? styles.bubbleSelf : styles.bubblePeer]}>
-                  <MarkdownText
-                    text={message.text}
-                    style={styles.messageText}
-                    variant={isSelf ? 'self' : 'peer'}
-                  />
-                </View>
+                {retryable ? (
+                  <Pressable onPress={() => handleRetry(message.id)}>{bubble}</Pressable>
+                ) : (
+                  bubble
+                )}
                 <Text style={styles.messageTs}>{message.createdAt}</Text>
+                {retryable ? (
+                  <Text style={styles.retryHint}>发送失败，点击气泡重发</Text>
+                ) : null}
               </View>
             );
           })}
@@ -166,23 +346,21 @@ export function ConversationScreen({ route, navigation }: Props) {
             multiline
             value={draft}
             onChangeText={setDraft}
-            editable={!sending && composerEnabled}
+            editable={composerEnabled}
           />
           <Pressable
-            style={[styles.sendButton, !draft.trim() || sending || !composerEnabled ? styles.sendButtonDisabled : null]}
+            style={[styles.sendButton, !draft.trim() || !composerEnabled ? styles.sendButtonDisabled : null]}
             onPress={() => {
-              void handleSend();
+              handleSend();
             }}
-            disabled={sending || !composerEnabled}
+            disabled={!draft.trim() || !composerEnabled}
           >
             <Text style={styles.sendButtonText}>
               {activeSession.trustState === 'pending'
                 ? '等待确认'
                 : !composerEnabled
                   ? '桌面离线'
-                  : sending
-                    ? '发送中...'
-                    : '发送'}
+                  : '发送'}
             </Text>
           </Pressable>
         </View>
@@ -235,11 +413,24 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: appColors.inkMuted,
   },
-  headerHint: {
+  linkStatusRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
     marginTop: 8,
-    fontSize: 12,
-    lineHeight: 18,
-    color: appColors.accent,
+  },
+  linkStatusChip: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: appColors.line,
+  },
+  linkStatusText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: appColors.ink,
   },
   replyingBanner: {
     alignSelf: 'flex-start',
@@ -273,6 +464,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderWidth: 1,
     borderColor: appColors.line,
+    position: 'relative',
   },
   bubblePeer: {
     backgroundColor: appColors.bubblePeer,
@@ -282,15 +474,55 @@ const styles = StyleSheet.create({
     backgroundColor: appColors.bubbleSelf,
     borderTopRightRadius: 8,
   },
+  bubbleSelfWithStatus: {
+    paddingTop: 16,
+    paddingRight: 40,
+  },
   messageText: {
     fontSize: 16,
     lineHeight: 22,
     color: appColors.ink,
   },
+  deliveryBadge: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 3,
+    shadowColor: 'rgba(24, 32, 40, 0.18)',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 1,
+    shadowRadius: 2,
+  },
+  deliveryBadgeSending: {
+    backgroundColor: 'transparent',
+    borderWidth: 0,
+  },
+  deliveryBadgeSent: {
+    backgroundColor: '#23b26d',
+  },
+  deliveryBadgeFailed: {
+    backgroundColor: '#d94d4d',
+  },
+  deliveryBadgeText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '800',
+    lineHeight: 12,
+  },
   messageTs: {
     marginTop: 6,
     fontSize: 11,
     color: appColors.inkMuted,
+  },
+  retryHint: {
+    marginTop: 4,
+    fontSize: 11,
+    color: '#d94d4d',
   },
   composerShell: {
     flexDirection: 'row',

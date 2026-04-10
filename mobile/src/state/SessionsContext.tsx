@@ -22,6 +22,8 @@ import {
 import {
   buildOpenClawPairChannelRevokePayload,
   buildOpenClawPairChatAckPayload,
+  buildOpenClawPairChatPingPayload,
+  buildOpenClawPairChatPongPayload,
   buildOpenClawPairChatSyncRequestPayload,
   buildOpenClawPairChatSyncStatePayload,
   buildOpenClawPairChatPayload,
@@ -30,16 +32,25 @@ import {
   openClawPairChannelRevokeType,
   openClawPairChatAckType,
   openClawPairChatMessageType,
+  openClawPairChatPingType,
+  openClawPairChatPongType,
   openClawPairChatSyncRequestType,
   openClawPairChatSyncStateType,
   parseOpenClawPairChannelRevoke,
   parseOpenClawPairChatAck,
+  parseOpenClawPairChatPing,
+  parseOpenClawPairChatPong,
   parseOpenClawPairChatSyncState,
   parseOpenClawPairChatSyncRequest,
   supportsOpenClawPairChat,
 } from '@openclaw/message-sdk';
 import type { ChatMessage, SessionItem } from '../types/session';
-import { collectSessionLeafIds, describeSessionChatState, upsertSessionMessage } from '../utils/chatGraph';
+import {
+  collectSessionLeafIds,
+  describeSessionChatState,
+  reconcileSessionMessages,
+  upsertSessionMessage,
+} from '../utils/chatGraph';
 import {
   ensureMobileAuthV2,
   heartbeatMobilePresenceV2,
@@ -60,7 +71,15 @@ type SessionsContextValue = {
   getSessionById: (sessionId: string) => SessionItem | null;
   removeSession: (sessionId: string) => void;
   pairByScan: (raw: string) => Promise<CreateSessionResult>;
-  sendMessage: (sessionId: string, text: string) => Promise<void>;
+  sendMessage: (
+    sessionId: string,
+    text: string,
+    options?: {
+      messageId?: string;
+      ts?: number;
+    }
+  ) => Promise<{ messageId: string; ts: number }>;
+  retryMessage: (sessionId: string, messageId: string) => Promise<void>;
   refreshSessions: () => Promise<void>;
 };
 
@@ -74,6 +93,8 @@ const MAX_SESSION_MESSAGES = 1000;
 const PRESENCE_HEARTBEAT_INTERVAL_MS = 60_000;
 const MESSAGE_SYNC_INTERVAL_MS = 60_000;
 const MESSAGE_SYNC_RESUME_THROTTLE_MS = 10_000;
+const LINK_PING_INTERVAL_MS = 60_000;
+const LINK_PING_TIMEOUT_MS = 10_000;
 
 const SessionsContext = createContext<SessionsContextValue | null>(null);
 
@@ -106,6 +127,70 @@ function nextOriginSeq(messages: ChatMessage[], origin: 'host' | 'mobile') {
   );
 }
 
+function sessionsMatch(left: SessionItem, right: SessionItem) {
+  if (left.id && right.id && left.id === right.id) {
+    return true;
+  }
+  if (left.bindingId && right.bindingId && left.bindingId === right.bindingId) {
+    return true;
+  }
+  if (left.deviceId && right.deviceId && left.deviceId === right.deviceId) {
+    return true;
+  }
+  return false;
+}
+
+function mergeRefreshedSessions(latestSessions: SessionItem[], refreshedSessions: SessionItem[]) {
+  const merged = refreshedSessions.map((refreshed) => {
+    const latest = latestSessions.find((item) => sessionsMatch(item, refreshed));
+    if (!latest) {
+      return refreshed;
+    }
+    const reconciledMessages = reconcileSessionMessages([
+      ...(latest.messages || []),
+      ...(refreshed.messages || []),
+    ]);
+    return {
+      ...latest,
+      ...refreshed,
+      messages: reconciledMessages.messages,
+      missingMessageIds: reconciledMessages.missingMessageIds,
+      linkTransport:
+        refreshed.status === 'offline'
+          ? ''
+          : refreshed.linkTransport === 'p2p' || refreshed.linkTransport === 'relay'
+            ? refreshed.linkTransport
+            : latest.linkTransport || '',
+      linkRttMs:
+        refreshed.status === 'offline'
+          ? 0
+          : Math.max(
+              0,
+              Math.trunc(Number(refreshed.linkRttMs || latest.linkRttMs || 0))
+            ),
+      linkRttAt:
+        refreshed.status === 'offline'
+          ? 0
+          : Math.max(
+              0,
+              Math.trunc(Number(refreshed.linkRttAt || latest.linkRttAt || 0))
+            ),
+      linkProbePending:
+        refreshed.status === 'offline'
+          ? false
+          : Boolean(refreshed.linkProbePending ?? latest.linkProbePending),
+    } satisfies SessionItem;
+  });
+
+  for (const latest of latestSessions) {
+    if (!merged.some((item) => sessionsMatch(item, latest))) {
+      merged.push(latest);
+    }
+  }
+
+  return merged;
+}
+
 export function SessionsProvider({ children }: { children: ReactNode }) {
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const sessionsRef = useRef<SessionItem[]>([]);
@@ -119,6 +204,10 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
   const messageSyncTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastPresenceHeartbeatAtRef = useRef(new Map<string, number>());
   const lastMessageSyncAtRef = useRef(new Map<string, number>());
+  const lastLinkPingAtRef = useRef(new Map<string, number>());
+  const pendingLinkPingsRef = useRef(
+    new Map<string, { id: string; sentAt: number; transport: 'p2p' | 'relay'; sessionId: string }>()
+  );
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
 
   function commitSessions(nextSessions: SessionItem[]) {
@@ -162,6 +251,46 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       Boolean(String(session.bindingId || '').trim()) &&
       Boolean(String(session.deviceId || '').trim())
     );
+  }
+
+  function clearPendingLinkPing(session: SessionItem | null | undefined) {
+    const bindingId = String(session?.bindingId || '').trim();
+    if (!bindingId) {
+      return;
+    }
+    pendingLinkPingsRef.current.delete(bindingId);
+    lastLinkPingAtRef.current.delete(bindingId);
+  }
+
+  function markSessionTransport(sessionId: string, transport: 'p2p' | 'relay') {
+    patchSessionById(sessionId, {
+      linkTransport: transport,
+    });
+  }
+
+  function applyLinkPong(
+    session: SessionItem,
+    pong: {
+      id: string;
+      sentAt: number;
+    },
+    transport: 'p2p' | 'relay'
+  ) {
+    const bindingId = String(session.bindingId || '').trim();
+    const sessionId = String(session.id || '').trim();
+    const now = Date.now();
+    const pending = bindingId ? pendingLinkPingsRef.current.get(bindingId) : undefined;
+    if (pending && pending.id === String(pong.id || '').trim()) {
+      pendingLinkPingsRef.current.delete(bindingId);
+    }
+    const sentAt = Math.max(0, Math.trunc(Number(pong.sentAt || pending?.sentAt || 0)));
+    const rttMs = sentAt > 0 ? Math.max(0, now - sentAt) : 0;
+    patchSessionById(sessionId, {
+      linkTransport: transport,
+      linkRttMs: rttMs,
+      linkRttAt: now,
+      linkProbePending: false,
+    });
   }
 
   function patchSessionById(sessionId: string, patch: Partial<SessionItem>) {
@@ -230,6 +359,8 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       origin?: ChatMessage['origin'];
       originSeq?: ChatMessage['originSeq'];
       after?: string[];
+      deliveryStatus?: ChatMessage['deliveryStatus'];
+      deliveryError?: string;
     }
   ) {
     const text = String(message.text || '').trim();
@@ -257,6 +388,16 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
           : Math.max(0, Math.trunc(Number(message.originSeq || 0))),
       after: Array.isArray(message.after) ? [...message.after] : [],
       missingAfter: [],
+      deliveryStatus:
+        message.kind === 'system'
+          ? undefined
+          : message.from === 'self'
+            ? message.deliveryStatus || 'sent'
+            : undefined,
+      deliveryError:
+        message.kind === 'system' || message.from !== 'self'
+          ? ''
+          : String(message.deliveryError || '').trim(),
     };
 
     updateSessions((current) =>
@@ -274,6 +415,99 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
         };
       })
     );
+  }
+
+  function updateMessageDeliveryState(
+    sessionId: string,
+    messageId: string,
+    deliveryStatus: NonNullable<ChatMessage['deliveryStatus']>,
+    deliveryError = ''
+  ) {
+    const targetSessionId = String(sessionId || '').trim();
+    const targetMessageId = String(messageId || '').trim();
+    if (!targetSessionId || !targetMessageId) {
+      return;
+    }
+
+    updateSessions((current) =>
+      current.map((item) => {
+        if (item.id !== targetSessionId) {
+          return item;
+        }
+
+        let updated = false;
+        const messages = (item.messages || []).map((message) => {
+          if (String(message.id || '').trim() !== targetMessageId) {
+            return message;
+          }
+          updated = true;
+          return {
+            ...message,
+            deliveryStatus,
+            deliveryError: deliveryStatus === 'failed' ? String(deliveryError || '').trim() : '',
+          };
+        });
+
+        if (!updated) {
+          return item;
+        }
+
+        return {
+          ...item,
+          messages,
+        };
+      })
+    );
+  }
+
+  async function deliverLocalChatMessage(
+    session: SessionItem,
+    message: {
+      id: string;
+      text: string;
+      ts: number;
+      after: string[];
+      originSeq: number;
+    }
+  ) {
+    const latestSession = getSessionByIdSnapshot(session.id) || session;
+    if (
+      !supportsOpenClawPairChat(
+        latestSession.peerCapabilities as Pick<PairV2PeerCapabilities, 'supportedMessages'> | undefined
+      )
+    ) {
+      throw new Error('当前桌面端未声明聊天能力');
+    }
+
+    const connected = await ensureSignalConnected(latestSession.serverBaseUrl);
+    if (!connected) {
+      throw new Error('信令连接未建立');
+    }
+
+    const payloadMessage: PairV2PeerAppMessage = {
+      type: openClawPairChatMessageType,
+      ts: message.ts,
+      from: 'mobile',
+      payload: buildOpenClawPairChatPayload(message.text, {
+        id: message.id,
+        after: message.after,
+        origin: 'mobile',
+        originSeq: message.originSeq,
+      }),
+    };
+
+    const deliveredVia = await deliverAppMessage(latestSession, payloadMessage, {
+      preferRelay: false,
+      peerTimeoutMs: 3500,
+      peerRetries: 0,
+    });
+    console.log(
+      `[pair-mobile] send chat binding=${latestSession.bindingId} text=${message.text} via=${deliveredVia} id=${message.id}`
+    );
+    patchSessionById(latestSession.id, {
+      linkTransport: deliveredVia,
+    });
+    updateMessageDeliveryState(latestSession.id, message.id, 'sent');
   }
 
   function upsertRemoteChatMessage(
@@ -431,6 +665,8 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     }
     console.log(`[pair-mobile] closePeer binding=${key} detail=${detail}`);
     peerConnectingRef.current.delete(key);
+    pendingLinkPingsRef.current.delete(key);
+    lastLinkPingAtRef.current.delete(key);
     const peer = peersRef.current.get(key);
     if (!peer) {
       return;
@@ -485,6 +721,24 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     for (const baseUrl of [...lastPresenceHeartbeatAtRef.current.keys()]) {
       if (!activeBaseUrls.has(baseUrl)) {
         lastPresenceHeartbeatAtRef.current.delete(baseUrl);
+      }
+    }
+  }
+
+  function pruneLinkProbeState(nextSessions: SessionItem[]) {
+    const activeBindings = new Set(
+      nextSessions
+        .map((session) => String(session.bindingId || '').trim())
+        .filter(Boolean)
+    );
+    for (const bindingId of [...lastLinkPingAtRef.current.keys()]) {
+      if (!activeBindings.has(bindingId)) {
+        lastLinkPingAtRef.current.delete(bindingId);
+      }
+    }
+    for (const bindingId of [...pendingLinkPingsRef.current.keys()]) {
+      if (!activeBindings.has(bindingId)) {
+        pendingLinkPingsRef.current.delete(bindingId);
       }
     }
   }
@@ -594,9 +848,131 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     await sendRelayAppMessage(latestSession, message);
     patchSessionById(latestSession.id, {
       transportReady: true,
+      linkTransport: 'relay',
       preview: '已切换到服务端转发，可继续聊天。',
     });
     return 'relay' as const;
+  }
+
+  async function respondToLinkPing(
+    session: SessionItem,
+    ping: {
+      id: string;
+      sentAt: number;
+    },
+    preferRelay = false
+  ) {
+    if (!String(ping.id || '').trim()) {
+      return;
+    }
+    await deliverAppMessage(
+      session,
+      {
+        type: openClawPairChatPongType,
+        payload: buildOpenClawPairChatPongPayload({
+          id: ping.id,
+          sentAt: ping.sentAt,
+          respondedAt: Date.now(),
+        }),
+        ts: Date.now(),
+        from: 'mobile',
+      },
+      {
+        preferRelay,
+        peerTimeoutMs: 1200,
+        peerRetries: 0,
+      }
+    );
+  }
+
+  async function probeSessionLink(
+    session: SessionItem,
+    reason: string,
+    options: {
+      minIntervalMs?: number;
+      preferRelay?: boolean;
+    } = {}
+  ) {
+    const latestSession = getSessionByIdSnapshot(session.id) || session;
+    if (String(latestSession.trustState || '').trim() !== 'active') {
+      return false;
+    }
+    const bindingId = String(latestSession.bindingId || '').trim();
+    if (!bindingId) {
+      return false;
+    }
+
+    const now = Date.now();
+    const minIntervalMs = Math.max(0, Math.trunc(Number(options.minIntervalMs || 0)));
+    const lastPingAt = lastLinkPingAtRef.current.get(bindingId) || 0;
+    if (minIntervalMs > 0 && now - lastPingAt < minIntervalMs) {
+      return false;
+    }
+
+    const pingId = randomId('chatping');
+    patchSessionById(latestSession.id, {
+      linkProbePending: true,
+    });
+
+    try {
+      const transport = await deliverAppMessage(
+        latestSession,
+        {
+          type: openClawPairChatPingType,
+          payload: buildOpenClawPairChatPingPayload({
+            id: pingId,
+            sentAt: now,
+          }),
+          ts: now,
+          from: 'mobile',
+        },
+        {
+          preferRelay: options.preferRelay ?? false,
+          peerTimeoutMs: 1200,
+          peerRetries: 0,
+        }
+      );
+      pendingLinkPingsRef.current.set(bindingId, {
+        id: pingId,
+        sentAt: now,
+        transport,
+        sessionId: latestSession.id,
+      });
+      lastLinkPingAtRef.current.set(bindingId, now);
+      patchSessionById(latestSession.id, {
+        linkTransport: transport,
+        linkProbePending: true,
+      });
+      globalThis.setTimeout(() => {
+        const pending = pendingLinkPingsRef.current.get(bindingId);
+        if (!pending || pending.id !== pingId) {
+          return;
+        }
+        pendingLinkPingsRef.current.delete(bindingId);
+        patchSessionById(pending.sessionId, {
+          linkProbePending: false,
+          linkRttMs: 0,
+          linkRttAt: 0,
+        });
+      }, LINK_PING_TIMEOUT_MS);
+      console.log(
+        `[pair-mobile] link ping binding=${bindingId} reason=${reason} via=${transport} id=${pingId}`
+      );
+      return true;
+    } catch (error) {
+      pendingLinkPingsRef.current.delete(bindingId);
+      patchSessionById(latestSession.id, {
+        linkProbePending: false,
+        linkRttMs: 0,
+        linkRttAt: 0,
+      });
+      console.log(
+        `[pair-mobile] link ping failed binding=${bindingId} reason=${reason} error=${
+          error instanceof Error ? error.message : String(error || '')
+        }`
+      );
+      return false;
+    }
   }
 
   async function sendChannelRevoke(session: SessionItem) {
@@ -920,6 +1296,9 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
           if (!current) {
             return;
           }
+          patchSessionById(current.id, {
+            linkTransport: 'p2p',
+          });
           const result = upsertRemoteChatMessage(current.id, {
             id: chat.id,
             from: 'host',
@@ -958,6 +1337,14 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       onStateChange: (state, detail) => {
         console.log(`[pair-mobile] state binding=${key} state=${state} detail=${detail || ''}`);
         updatePeerState(key, state, detail || '');
+        if (state === 'connected') {
+          const current = getSessionByBindingIdSnapshot(key);
+          if (current) {
+            void probeSessionLink(current, 'peer-connected', {
+              minIntervalMs: 0,
+            });
+          }
+        }
       },
       onLog: (line) => {
         console.log(`[pair-mobile] binding=${key} ${line}`);
@@ -983,6 +1370,24 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
         }
         const ack = parseOpenClawPairChatAck(message);
         if (ack) {
+          return;
+        }
+        const pong = parseOpenClawPairChatPong(message);
+        if (pong) {
+          const current = getSessionByBindingIdSnapshot(key);
+          if (!current) {
+            return;
+          }
+          applyLinkPong(current, pong, 'p2p');
+          return;
+        }
+        const ping = parseOpenClawPairChatPing(message);
+        if (ping) {
+          const current = getSessionByBindingIdSnapshot(key);
+          if (!current) {
+            return;
+          }
+          await respondToLinkPing(current, ping, false);
           return;
         }
         const syncState = parseOpenClawPairChatSyncState(message);
@@ -1179,6 +1584,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       }
       patchSessionById(session.id, {
         transportReady: true,
+        linkTransport: 'relay',
         preview:
           session.peerState === 'connected'
             ? session.preview
@@ -1191,6 +1597,16 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       }
       const ack = parseOpenClawPairChatAck(message);
       if (ack) {
+        return;
+      }
+      const pong = parseOpenClawPairChatPong(message);
+      if (pong) {
+        applyLinkPong(session, pong, 'relay');
+        return;
+      }
+      const ping = parseOpenClawPairChatPing(message);
+      if (ping) {
+        void respondToLinkPing(session, ping, true);
         return;
       }
       const syncState = parseOpenClawPairChatSyncState(message);
@@ -1292,6 +1708,11 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
           );
           void heartbeatSessionsPresence(scopedSessions, 'signal-open', MESSAGE_SYNC_RESUME_THROTTLE_MS);
           void syncSessionsWithDesktopState(scopedSessions, 'signal-open');
+          for (const session of scopedSessions) {
+            void probeSessionLink(session, 'signal-open', {
+              minIntervalMs: MESSAGE_SYNC_RESUME_THROTTLE_MS,
+            });
+          }
         });
         void connectReadyPeers(normalizedBaseUrl);
       };
@@ -1329,6 +1750,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     closeStalePeers(nextSessions);
     pruneMessageSyncTimestamps(nextSessions);
     prunePresenceHeartbeatTimestamps(nextSessions);
+    pruneLinkProbeState(nextSessions);
 
     const nextBaseUrls = new Set(uniqueBaseUrls(nextSessions));
     for (const baseUrl of [...signalStreamsRef.current.keys()]) {
@@ -1344,19 +1766,21 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
   }
 
   async function refreshSessions() {
+    const requestBase = sessionsRef.current;
     console.log(
-      `[pair-mobile] refreshSessions start count=${sessionsRef.current.length} bindings=${sessionsRef.current
+      `[pair-mobile] refreshSessions start count=${requestBase.length} bindings=${requestBase
         .map((item) => `${item.bindingId || '-'}:${item.trustState || '-'}`)
         .join(',')}`
     );
-    const refreshed = await refreshSessionsV2(sessionsRef.current);
+    const refreshed = await refreshSessionsV2(requestBase);
+    const merged = mergeRefreshedSessions(sessionsRef.current, refreshed);
     console.log(
-      `[pair-mobile] refreshSessions done count=${refreshed.length} bindings=${refreshed
+      `[pair-mobile] refreshSessions done count=${merged.length} bindings=${merged
         .map((item) => `${item.bindingId || '-'}:${item.trustState || '-'}`)
         .join(',')}`
     );
-    commitSessions(refreshed);
-    await reconcileRealtime(refreshed);
+    commitSessions(merged);
+    await reconcileRealtime(merged);
   }
 
   useEffect(() => {
@@ -1378,10 +1802,14 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       if (cancelled) {
         return;
       }
-      commitSessions(refreshed);
-      await reconcileRealtime(refreshed);
-      await heartbeatSessionsPresence(refreshed, 'bootstrap');
-      await syncSessionsWithDesktopState(refreshed, 'bootstrap');
+      const merged = mergeRefreshedSessions(sessionsRef.current, refreshed);
+      commitSessions(merged);
+      await reconcileRealtime(merged);
+      await heartbeatSessionsPresence(merged, 'bootstrap');
+      await syncSessionsWithDesktopState(merged, 'bootstrap');
+      for (const session of merged) {
+        await probeSessionLink(session, 'bootstrap');
+      }
     }
 
     void bootstrap();
@@ -1427,6 +1855,11 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
           'app-active',
           MESSAGE_SYNC_RESUME_THROTTLE_MS
         );
+        for (const session of sessionsRef.current) {
+          void probeSessionLink(session, 'app-active', {
+            minIntervalMs: MESSAGE_SYNC_RESUME_THROTTLE_MS,
+          });
+        }
       });
     });
     return () => {
@@ -1480,6 +1913,11 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       messageSyncTimerRef.current = setInterval(() => {
         void heartbeatSessionsPresence(sessionsRef.current, 'interval', PRESENCE_HEARTBEAT_INTERVAL_MS);
         void syncSessionsWithDesktopState(sessionsRef.current, 'interval', MESSAGE_SYNC_INTERVAL_MS);
+        for (const session of sessionsRef.current) {
+          void probeSessionLink(session, 'interval', {
+            minIntervalMs: LINK_PING_INTERVAL_MS,
+          });
+        }
       }, MESSAGE_SYNC_INTERVAL_MS);
     }
     if (sessions.length === 0 && messageSyncTimerRef.current) {
@@ -1512,13 +1950,23 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     commitSessions(result.sessions);
     await reconcileRealtime(result.sessions);
     await heartbeatSessionsPresence(result.sessions, 'pair-scan');
+    for (const session of result.sessions) {
+      await probeSessionLink(session, 'pair-scan');
+    }
     return {
       session: result.session,
       created: result.created,
     };
   }
 
-  async function sendMessage(sessionId: string, text: string) {
+  async function sendMessage(
+    sessionId: string,
+    text: string,
+    options: {
+      messageId?: string;
+      ts?: number;
+    } = {}
+  ) {
     const session = getSessionByIdSnapshot(sessionId);
     if (!session) {
       throw new Error('会话不存在');
@@ -1535,51 +1983,80 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     if (String(session.trustState || '').trim() === 'revoked') {
       throw new Error('该绑定已被撤销，无法发送消息');
     }
-    if (!supportsOpenClawPairChat(session.peerCapabilities as Pick<PairV2PeerCapabilities, 'supportedMessages'> | undefined)) {
-      throw new Error('当前桌面端未声明聊天能力');
-    }
+    const draftSession = getSessionByIdSnapshot(session.id) || session;
+    const messageTs = Math.max(0, Math.trunc(Number(options.ts || Date.now())));
+    const messageId =
+      String(options.messageId || '').trim() ||
+      createOpenClawPairChatMessageId(messageTs);
+    const after = collectSessionLeafIds(draftSession.messages || []);
+    const originSeq = nextOriginSeq(draftSession.messages || [], 'mobile');
 
-    const connected = await ensureSignalConnected(session.serverBaseUrl);
-    if (!connected) {
-      throw new Error('信令连接未建立');
-    }
-
-    const message: PairV2PeerAppMessage = {
-      type: openClawPairChatMessageType,
-      ts: Date.now(),
-      from: 'mobile',
-      payload: {},
-    };
-    const latestSession = getSessionByIdSnapshot(session.id) || session;
-    const messageId = createOpenClawPairChatMessageId(message.ts);
-    const after = collectSessionLeafIds(latestSession.messages || []);
-    const originSeq = nextOriginSeq(latestSession.messages || [], 'mobile');
-    message.payload = buildOpenClawPairChatPayload(normalizedText, {
-      id: messageId,
-      after,
-      origin: 'mobile',
-      originSeq,
-    });
-
-    const deliveredVia = await deliverAppMessage(latestSession, message, {
-      preferRelay: false,
-      peerTimeoutMs: 3500,
-      peerRetries: 0,
-    });
-    console.log(
-      `[pair-mobile] send chat binding=${latestSession.bindingId} text=${normalizedText} via=${deliveredVia} id=${messageId}`
-    );
-
-    appendMessageLocal(session.id, {
+    appendMessageLocal(draftSession.id, {
       id: messageId,
       from: 'self',
       text: normalizedText,
-      ts: message.ts,
+      ts: messageTs,
       kind: 'chat',
       origin: 'mobile',
       originSeq,
       after,
+      deliveryStatus: 'sending',
     });
+
+    try {
+      await deliverLocalChatMessage(draftSession, {
+        id: messageId,
+        text: normalizedText,
+        ts: messageTs,
+        after,
+        originSeq,
+      });
+    } catch (error) {
+      updateMessageDeliveryState(
+        session.id,
+        messageId,
+        'failed',
+        error instanceof Error ? error.message : '消息发送失败'
+      );
+      throw error;
+    }
+    return {
+      messageId,
+      ts: messageTs,
+    };
+  }
+
+  async function retryMessage(sessionId: string, messageId: string) {
+    const session = getSessionByIdSnapshot(sessionId);
+    if (!session) {
+      throw new Error('会话不存在');
+    }
+    const target = (session.messages || []).find((message) => String(message.id || '').trim() === String(messageId || '').trim());
+    if (!target || target.from !== 'self' || target.kind === 'system') {
+      throw new Error('该消息无法重发');
+    }
+    if (target.deliveryStatus !== 'failed') {
+      return;
+    }
+
+    updateMessageDeliveryState(session.id, target.id, 'sending');
+    try {
+      await deliverLocalChatMessage(session, {
+        id: target.id,
+        text: String(target.text || ''),
+        ts: Number(target.ts || Date.now()),
+        after: Array.isArray(target.after) ? [...target.after] : [],
+        originSeq: Math.max(0, Math.trunc(Number(target.originSeq || 0))),
+      });
+    } catch (error) {
+      updateMessageDeliveryState(
+        session.id,
+        target.id,
+        'failed',
+        error instanceof Error ? error.message : '消息发送失败'
+      );
+      throw error;
+    }
   }
 
   const value = useMemo<SessionsContextValue>(
@@ -1589,6 +2066,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       removeSession,
       pairByScan,
       sendMessage,
+      retryMessage,
       refreshSessions,
     }),
     [sessions]

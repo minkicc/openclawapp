@@ -346,6 +346,22 @@ impl PairBackendHandle {
         (host_seq, mobile_seq, leaf_ids)
     }
 
+    fn parse_openclaw_ping(payload: &Value) -> (String, u64) {
+        let body = payload
+            .get("payload")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let id = body
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let sent_at = body.get("sentAt").and_then(Value::as_u64).unwrap_or(0);
+        (id, sent_at)
+    }
+
     fn parse_openclaw_ack_ids(payload: &Value) -> Vec<String> {
         payload
             .get("payload")
@@ -398,6 +414,19 @@ impl PairBackendHandle {
             "type": OPENCLAW_CHAT_SYNC_REQUEST_TYPE,
             "payload": {
                 "messageIds": Self::normalize_chat_message_ids(message_ids),
+            },
+            "ts": Self::now_ms(),
+            "from": from,
+        })
+    }
+
+    fn build_openclaw_pong_payload(ping_id: &str, sent_at: u64, from: &str) -> Value {
+        serde_json::json!({
+            "type": OPENCLAW_CHAT_PONG_TYPE,
+            "payload": {
+                "id": ping_id.trim(),
+                "sentAt": sent_at,
+                "respondedAt": Self::now_ms(),
             },
             "ts": Self::now_ms(),
             "from": from,
@@ -715,7 +744,9 @@ impl PairBackendHandle {
                 OPENCLAW_CHAT_MESSAGE_TYPE,
                 OPENCLAW_CHAT_ACK_TYPE,
                 OPENCLAW_CHAT_SYNC_REQUEST_TYPE,
-                OPENCLAW_CHAT_SYNC_STATE_TYPE
+                OPENCLAW_CHAT_SYNC_STATE_TYPE,
+                OPENCLAW_CHAT_PING_TYPE,
+                OPENCLAW_CHAT_PONG_TYPE
             ],
             "features": ["chat"],
             "appId": "openclaw",
@@ -743,6 +774,31 @@ impl PairBackendHandle {
         if event_type == OPENCLAW_CHAT_ACK_TYPE {
             let message_ids = Self::parse_openclaw_ack_ids(payload);
             self.mark_mobile_ack_received(&message_ids).await;
+            return Ok(());
+        }
+
+        if event_type == OPENCLAW_CHAT_PING_TYPE {
+            let (ping_id, sent_at) = Self::parse_openclaw_ping(payload);
+            if ping_id.is_empty() {
+                return Ok(());
+            }
+            let pong_payload =
+                Self::build_openclaw_pong_payload(&ping_id, sent_at, "desktop");
+            if let Err(error) = self
+                .send_app_envelope_to_mobile_with_delivery(
+                    binding_id,
+                    mobile_id,
+                    pong_payload,
+                    source.trim() == "relay",
+                )
+                .await
+            {
+                self.append_event(format!(
+                    "link pong failed: mobile={} error={}",
+                    mobile_id, error
+                ))
+                .await;
+            }
             return Ok(());
         }
 

@@ -28,6 +28,12 @@ function compareFallbackOrder(left: ChatMessage, right: ChatMessage) {
 
 export function normalizeChatMessage(message: ChatMessage): ChatMessage {
   const kind = message.kind === 'system' ? 'system' : 'chat';
+  const deliveryStatus =
+    kind === 'chat' && message.from === 'self'
+      ? message.deliveryStatus === 'sending' || message.deliveryStatus === 'failed'
+        ? message.deliveryStatus
+        : 'sent'
+      : undefined;
   return {
     ...message,
     id: String(message.id || '').trim(),
@@ -39,6 +45,8 @@ export function normalizeChatMessage(message: ChatMessage): ChatMessage {
     originSeq: kind === 'system' ? undefined : normalizeOriginSeq(message),
     after: kind === 'chat' ? normalizeOpenClawPairChatAfterIds(message.after) : [],
     missingAfter: kind === 'chat' ? normalizeOpenClawPairChatAfterIds(message.missingAfter) : [],
+    deliveryStatus,
+    deliveryError: deliveryStatus === 'failed' ? String(message.deliveryError || '').trim() : '',
   };
 }
 

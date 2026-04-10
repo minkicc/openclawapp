@@ -3,6 +3,26 @@ use std::path::PathBuf;
 use std::process::Command;
 
 impl PairBackendHandle {
+    fn is_invalid_auth_token_error(error: &str) -> bool {
+        let normalized = error.trim().to_lowercase();
+        normalized.contains("invalid bearer token")
+            || normalized.contains("bearer token is required")
+            || normalized.contains("unauthorized")
+    }
+
+    async fn invalidate_cached_auth_session(&self, base_url: Option<&str>) {
+        let target_base_url = base_url.map(|value| value.trim().to_string());
+        let mut state = self.state.lock().await;
+        let matches = match target_base_url.as_deref() {
+            Some(base_url) if !base_url.is_empty() => state.auth_base_url.trim() == base_url,
+            _ => true,
+        };
+        if matches {
+            state.auth_session = None;
+            state.auth_base_url.clear();
+        }
+    }
+
     fn persist_pair_identity(
         &self,
         app: &AppHandle,
@@ -296,6 +316,7 @@ impl PairBackendHandle {
         &self,
         app: &AppHandle,
     ) -> Result<(String, String, PairIdentityRecord, PairAuthSession), String> {
+        let now = Self::now_ms();
         let (base_url, device_id, cached_auth_base_url, cached_session) = {
             let state = self.state.lock().await;
             (
@@ -309,7 +330,10 @@ impl PairBackendHandle {
             return Err("通信尚未配置".to_string());
         }
         if let Some(session) = cached_session {
-            if cached_auth_base_url == base_url && !session.token.trim().is_empty() {
+            if cached_auth_base_url == base_url
+                && !session.token.trim().is_empty()
+                && session.expires_at > now + 5_000
+            {
                 let identity = self.load_or_create_identity(app, &device_id).await?;
                 return Ok((base_url, device_id, identity, session));
             }
@@ -409,47 +433,83 @@ impl PairBackendHandle {
         &self,
         app: &AppHandle,
     ) -> Result<(String, String, PairIdentityRecord, PairAuthSession), String> {
+        let payload = serde_json::json!({
+            "platform": std::env::consts::OS,
+            "appVersion": app.package_info().version.to_string(),
+            "capabilities": {
+                "signaling": ["sse"],
+                "pairing": ["qr", "safety-code"],
+                "chat": true,
+            }
+        });
         let (base_url, device_id, identity, session) = self.ensure_auth_session(app).await?;
-        let _response: Value = self
+        let response: Result<Value, String> = self
             .request_json(
                 &base_url,
                 "/v2/presence/announce",
                 reqwest::Method::POST,
-                Some(serde_json::json!({
-                    "platform": std::env::consts::OS,
-                    "appVersion": app.package_info().version.to_string(),
-                    "capabilities": {
-                        "signaling": ["sse"],
-                        "pairing": ["qr", "safety-code"],
-                        "chat": true,
-                    }
-                })),
+                Some(payload.clone()),
                 Some(&session.token),
             )
-            .await?;
-        Ok((base_url, device_id, identity, session))
+            .await;
+        match response {
+            Ok(_) => Ok((base_url, device_id, identity, session)),
+            Err(error) if Self::is_invalid_auth_token_error(&error) => {
+                self.invalidate_cached_auth_session(Some(&base_url)).await;
+                let (base_url, device_id, identity, session) = self.ensure_auth_session(app).await?;
+                let _retry: Value = self
+                    .request_json(
+                        &base_url,
+                        "/v2/presence/announce",
+                        reqwest::Method::POST,
+                        Some(payload),
+                        Some(&session.token),
+                    )
+                    .await?;
+                Ok((base_url, device_id, identity, session))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub(super) async fn heartbeat_once(&self, app: &AppHandle) -> Result<(), String> {
+        let payload = serde_json::json!({
+            "platform": std::env::consts::OS,
+            "appVersion": app.package_info().version.to_string(),
+            "capabilities": {
+                "signaling": ["sse"],
+                "pairing": ["qr", "safety-code"],
+                "chat": true,
+            }
+        });
         let (base_url, _device_id, _identity, session) = self.ensure_auth_session(app).await?;
-        let _response: Value = self
+        let response: Result<Value, String> = self
             .request_json(
                 &base_url,
                 "/v2/presence/heartbeat",
                 reqwest::Method::POST,
-                Some(serde_json::json!({
-                    "platform": std::env::consts::OS,
-                    "appVersion": app.package_info().version.to_string(),
-                    "capabilities": {
-                        "signaling": ["sse"],
-                        "pairing": ["qr", "safety-code"],
-                        "chat": true,
-                    }
-                })),
+                Some(payload.clone()),
                 Some(&session.token),
             )
-            .await?;
-        Ok(())
+            .await;
+        match response {
+            Ok(_) => Ok(()),
+            Err(error) if Self::is_invalid_auth_token_error(&error) => {
+                self.invalidate_cached_auth_session(Some(&base_url)).await;
+                let (base_url, _device_id, _identity, session) = self.ensure_auth_session(app).await?;
+                let _retry: Value = self
+                    .request_json(
+                        &base_url,
+                        "/v2/presence/heartbeat",
+                        reqwest::Method::POST,
+                        Some(payload),
+                        Some(&session.token),
+                    )
+                    .await?;
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub(super) async fn resolve_ice_servers(
