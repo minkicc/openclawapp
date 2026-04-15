@@ -47,6 +47,8 @@
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>OpenClaw 需要访问摄像头，用于扫描宿主机展示的配对二维码。</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>OpenClaw 需要访问本地网络，用于与同局域网内的宿主机建立直连安全通道。</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Allow $(PRODUCT_NAME) to access your microphone</string>
 	<key>RCTNewArchEnabled</key>

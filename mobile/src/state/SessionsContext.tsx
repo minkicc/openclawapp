@@ -816,13 +816,16 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       preferRelay?: boolean;
       peerTimeoutMs?: number;
       peerRetries?: number;
+      forcePeerAttempt?: boolean;
     } = {}
   ) {
     const latestSession = getSessionByIdSnapshot(session.id) || session;
     const preferRelay = Boolean(options.preferRelay);
     const currentPeerState = String(latestSession.peerState || '').trim();
     const shouldAttemptPeer =
-      !preferRelay && currentPeerState !== 'failed' && currentPeerState !== 'disconnected';
+      !preferRelay &&
+      (Boolean(options.forcePeerAttempt) ||
+        (currentPeerState !== 'failed' && currentPeerState !== 'disconnected'));
 
     if (shouldAttemptPeer) {
       try {
@@ -930,6 +933,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
           preferRelay: options.preferRelay ?? false,
           peerTimeoutMs: 1200,
           peerRetries: 0,
+          forcePeerAttempt: true,
         }
       );
       pendingLinkPingsRef.current.set(bindingId, {

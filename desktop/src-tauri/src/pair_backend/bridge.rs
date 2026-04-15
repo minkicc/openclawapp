@@ -8,6 +8,15 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::ORIGIN;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 
+#[derive(Debug, Clone)]
+struct OpenClawTranscriptEntry {
+    gateway_message_id: String,
+    gateway_message_seq: u64,
+    role: String,
+    text: String,
+    ts: u64,
+}
+
 impl PairBackendHandle {
     fn gateway_identity_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         let dir = crate::app_config_dir(app)?.join("pairing");
@@ -97,7 +106,7 @@ impl PairBackendHandle {
         .join("|")
     }
 
-    fn build_openclaw_mobile_session_key(mobile_id: &str) -> String {
+    pub(super) fn build_openclaw_mobile_session_key(mobile_id: &str) -> String {
         let normalized = mobile_id.trim().to_ascii_lowercase();
         if normalized.is_empty() {
             return String::new();
@@ -107,6 +116,23 @@ impl PairBackendHandle {
 
     fn normalize_openclaw_session_key(value: &str) -> String {
         value.trim().to_ascii_lowercase()
+    }
+
+    fn normalize_openclaw_gateway_message_id(value: &str) -> String {
+        value.trim().to_string()
+    }
+
+    fn channel_matches_openclaw_session_key(
+        channel: &PairBackendChannel,
+        session_key: &str,
+    ) -> bool {
+        let normalized_session_key = Self::normalize_openclaw_session_key(session_key);
+        if normalized_session_key.is_empty() {
+            return false;
+        }
+        Self::normalize_openclaw_session_key(&Self::build_openclaw_mobile_session_key(
+            &channel.mobile_id,
+        )) == normalized_session_key
     }
 
     fn extract_openclaw_message_text(value: &Value) -> String {
@@ -207,6 +233,111 @@ impl PairBackendHandle {
         }
 
         Self::extract_openclaw_message_text(payload)
+    }
+
+    fn extract_openclaw_transcript_message_id(value: &Value) -> String {
+        value
+            .get("__openclaw")
+            .and_then(Value::as_object)
+            .and_then(|meta| meta.get("id"))
+            .and_then(Value::as_str)
+            .or_else(|| value.get("id").and_then(Value::as_str))
+            .or_else(|| value.get("messageId").and_then(Value::as_str))
+            .map(Self::normalize_openclaw_gateway_message_id)
+            .unwrap_or_default()
+    }
+
+    fn extract_openclaw_transcript_message_seq(value: &Value, fallback_seq: u64) -> u64 {
+        value
+            .get("__openclaw")
+            .and_then(Value::as_object)
+            .and_then(|meta| meta.get("seq"))
+            .and_then(Value::as_u64)
+            .unwrap_or(fallback_seq)
+    }
+
+    fn extract_openclaw_transcript_message_role(value: &Value) -> String {
+        value
+            .get("role")
+            .and_then(Value::as_str)
+            .map(|role| role.trim().to_ascii_lowercase())
+            .unwrap_or_default()
+    }
+
+    fn parse_openclaw_transcript_entry(
+        value: &Value,
+        fallback_seq: u64,
+    ) -> Option<OpenClawTranscriptEntry> {
+        let role = Self::extract_openclaw_transcript_message_role(value);
+        if role != "user" && role != "assistant" {
+            return None;
+        }
+        let text = Self::extract_openclaw_message_text(value);
+        if text.trim().is_empty() {
+            return None;
+        }
+        if role == "assistant" && text.trim().eq_ignore_ascii_case("NO_REPLY") {
+            return None;
+        }
+        let gateway_message_id = Self::extract_openclaw_transcript_message_id(value);
+        if gateway_message_id.is_empty() {
+            return None;
+        }
+        let ts = value
+            .get("timestamp")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(Self::now_ms);
+        Some(OpenClawTranscriptEntry {
+            gateway_message_id,
+            gateway_message_seq: Self::extract_openclaw_transcript_message_seq(
+                value,
+                fallback_seq,
+            ),
+            role,
+            text,
+            ts,
+        })
+    }
+
+    fn build_openclaw_transcript_pair_message_id(entry: &OpenClawTranscriptEntry) -> String {
+        format!("ocgw_{}", entry.gateway_message_id.trim())
+    }
+
+    fn annotate_channel_message_with_transcript_meta(
+        message: &mut PairBackendMessage,
+        entry: &OpenClawTranscriptEntry,
+    ) {
+        message.gateway_message_id = entry.gateway_message_id.clone();
+        message.gateway_message_seq = entry.gateway_message_seq;
+    }
+
+    fn find_channel_message_for_transcript_entry(
+        channel: &PairBackendChannel,
+        entry: &OpenClawTranscriptEntry,
+    ) -> Option<usize> {
+        let normalized_text = entry.text.trim();
+        if normalized_text.is_empty() {
+            return None;
+        }
+        let max_delta_ms = 2 * 60 * 1000;
+        channel
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| Self::normalize_chat_message_kind(&message.kind) != "system")
+            .filter(|(_, message)| message.gateway_message_id.trim().is_empty())
+            .filter(|(_, message)| message.text.trim() == normalized_text)
+            .filter(|(_, message)| match entry.role.as_str() {
+                "user" => message.origin.trim() == "mobile",
+                "assistant" => {
+                    message.origin.trim() == "host"
+                        && matches!(message.from.trim(), "agent" | "assistant")
+                }
+                _ => false,
+            })
+            .filter(|(_, message)| message.ts.abs_diff(entry.ts) <= max_delta_ms)
+            .min_by_key(|(_, message)| message.ts.abs_diff(entry.ts))
+            .map(|(index, _)| index)
     }
 
     fn merge_openclaw_reply_text(existing: &str, next: &str) -> String {
@@ -904,9 +1035,18 @@ impl PairBackendHandle {
             return;
         }
 
-        if frame_type == "event" && read_json_string(&frame, &["event"]) == "chat" {
-            let payload = frame.get("payload").cloned().unwrap_or(Value::Null);
-            self.handle_openclaw_gateway_chat_event(payload).await;
+        if frame_type == "event" {
+            let event_name = read_json_string(&frame, &["event"]);
+            if event_name == "chat" {
+                let payload = frame.get("payload").cloned().unwrap_or(Value::Null);
+                self.handle_openclaw_gateway_chat_event(payload).await;
+                return;
+            }
+            if event_name == "session.message" {
+                let payload = frame.get("payload").cloned().unwrap_or(Value::Null);
+                let session_key = read_json_string(&payload, &["sessionKey"]);
+                self.schedule_openclaw_session_history_sync(&session_key, "session.message");
+            }
         }
     }
 
@@ -983,6 +1123,272 @@ impl PairBackendHandle {
             )
             .await?;
         Ok(())
+    }
+
+    async fn send_existing_host_message_to_mobile(
+        &self,
+        binding_id: &str,
+        mobile_id: &str,
+        message: &PairBackendMessage,
+        prefer_relay: bool,
+        reason: &str,
+    ) {
+        let payload = Self::build_openclaw_chat_payload(message, "desktop");
+        let expect_ack = self
+            .channel_supports_message_type(binding_id, OPENCLAW_CHAT_ACK_TYPE)
+            .await;
+        if expect_ack {
+            self.register_pending_mobile_ack(
+                binding_id,
+                mobile_id,
+                &message.id,
+                &payload,
+                prefer_relay,
+            )
+            .await;
+        }
+        match self
+            .send_app_envelope_to_mobile_with_delivery(binding_id, mobile_id, payload, prefer_relay)
+            .await
+        {
+            Ok(delivery) => {
+                if expect_ack {
+                    self.arm_pending_mobile_ack(
+                        &message.id,
+                        prefer_relay || delivery == "relay",
+                    )
+                    .await;
+                }
+                self.append_event(format!(
+                    "{} -> mobile={} via={} id={}",
+                    reason,
+                    mobile_id,
+                    delivery,
+                    message.id
+                ))
+                .await;
+            }
+            Err(error) => {
+                if expect_ack {
+                    self.clear_pending_mobile_ack(&message.id).await;
+                }
+                self.append_event(format!(
+                    "{} failed: mobile={} id={} error={}",
+                    reason,
+                    mobile_id,
+                    message.id,
+                    error
+                ))
+                .await;
+            }
+        }
+    }
+
+    pub(super) async fn sync_openclaw_session_history_now(
+        &self,
+        app: &AppHandle,
+        session_key: &str,
+        reason: &str,
+    ) -> Result<(), String> {
+        let normalized_session_key = Self::normalize_openclaw_session_key(session_key);
+        if normalized_session_key.is_empty() {
+            return Ok(());
+        }
+
+        let history = self
+            .request_openclaw_gateway(
+                app,
+                "chat.history",
+                serde_json::json!({
+                    "sessionKey": normalized_session_key,
+                    "limit": 400,
+                }),
+            )
+            .await?;
+        let transcript_entries = history
+            .get("messages")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, message)| {
+                Self::parse_openclaw_transcript_entry(&message, index as u64 + 1)
+            })
+            .collect::<Vec<_>>();
+        if transcript_entries.is_empty() {
+            return Ok(());
+        }
+
+        let (
+            binding_id,
+            mobile_id,
+            imported_host_messages,
+            matched_existing,
+            imported_count,
+        ) = {
+            let mut state = self.state.lock().await;
+            let Some(channel) = state
+                .channels
+                .iter_mut()
+                .find(|channel| Self::channel_matches_openclaw_session_key(channel, &normalized_session_key))
+            else {
+                return Ok(());
+            };
+
+            let binding_id = channel.binding_id.clone();
+            let mobile_id = channel.mobile_id.clone();
+            let mut imported_host_messages = Vec::<PairBackendMessage>::new();
+            let mut matched_existing = 0_usize;
+            let mut imported_count = 0_usize;
+            let mut next_host_seq = Self::next_channel_origin_seq_locked(channel, "host");
+            let mut previous_pair_id: Option<String> = None;
+
+            for entry in transcript_entries {
+                let existing_index = channel.messages.iter().position(|message| {
+                    message.gateway_message_id.trim() == entry.gateway_message_id.trim()
+                });
+                let pair_message_id = if let Some(index) = existing_index {
+                    let message = &mut channel.messages[index];
+                    Self::annotate_channel_message_with_transcript_meta(message, &entry);
+                    matched_existing += 1;
+                    message.id.clone()
+                } else if let Some(index) =
+                    Self::find_channel_message_for_transcript_entry(channel, &entry)
+                {
+                    let message = &mut channel.messages[index];
+                    Self::annotate_channel_message_with_transcript_meta(message, &entry);
+                    matched_existing += 1;
+                    message.id.clone()
+                } else {
+                    let imported_message = PairBackendMessage {
+                        id: Self::build_openclaw_transcript_pair_message_id(&entry),
+                        from: if entry.role == "assistant" {
+                            "agent".to_string()
+                        } else {
+                            "desktop".to_string()
+                        },
+                        text: entry.text.clone(),
+                        ts: entry.ts,
+                        kind: "chat".to_string(),
+                        origin: "host".to_string(),
+                        origin_seq: next_host_seq,
+                        after: previous_pair_id
+                            .iter()
+                            .cloned()
+                            .collect::<Vec<_>>(),
+                        missing_after: Vec::new(),
+                        gateway_message_id: entry.gateway_message_id.clone(),
+                        gateway_message_seq: entry.gateway_message_seq,
+                    };
+                    next_host_seq = next_host_seq.saturating_add(1);
+                    imported_count += 1;
+                    if entry.role == "assistant" || entry.role == "user" {
+                        imported_host_messages.push(imported_message.clone());
+                    }
+                    let pair_message_id = imported_message.id.clone();
+                    channel.messages.push(imported_message);
+                    pair_message_id
+                };
+                previous_pair_id = Some(pair_message_id);
+            }
+
+            if channel.messages.len() > PAIR_CHANNEL_MESSAGE_LIMIT {
+                let keep_from = channel
+                    .messages
+                    .len()
+                    .saturating_sub(PAIR_CHANNEL_MESSAGE_LIMIT);
+                channel.messages = channel.messages.split_off(keep_from);
+            }
+            Self::reconcile_channel_messages_locked(channel);
+            (
+                binding_id,
+                mobile_id,
+                imported_host_messages,
+                matched_existing,
+                imported_count,
+            )
+        };
+        self.emit_snapshot().await;
+
+        if !imported_host_messages.is_empty() && !binding_id.trim().is_empty() && !mobile_id.trim().is_empty()
+        {
+            for message in imported_host_messages.iter() {
+                self.send_existing_host_message_to_mobile(
+                    &binding_id,
+                    &mobile_id,
+                    message,
+                    false,
+                    "openclaw transcript sync",
+                )
+                .await;
+            }
+        }
+
+        if matched_existing > 0 || imported_count > 0 {
+            self.append_event(format!(
+                "openclaw transcript reconciled: session={} reason={} matched={} imported={}",
+                normalized_session_key,
+                value_or_dash(reason),
+                matched_existing,
+                imported_count
+            ))
+            .await;
+        }
+        Ok(())
+    }
+
+    fn schedule_openclaw_session_history_sync(&self, session_key: &str, reason: &str) {
+        let normalized_session_key = Self::normalize_openclaw_session_key(session_key);
+        if normalized_session_key.is_empty() {
+            return;
+        }
+        let reason = reason.trim().to_string();
+        let backend = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let app = {
+                let mut state = backend.state.lock().await;
+                let is_bound_session = state.channels.iter().any(|channel| {
+                    Self::channel_matches_openclaw_session_key(channel, &normalized_session_key)
+                });
+                if !is_bound_session {
+                    return;
+                }
+                let now = Self::now_ms();
+                let last_sync_at = state
+                    .gateway_history_sync_at
+                    .get(&normalized_session_key)
+                    .copied()
+                    .unwrap_or(0);
+                if now < last_sync_at.saturating_add(OPENCLAW_GATEWAY_HISTORY_SYNC_THROTTLE_MS) {
+                    return;
+                }
+                state
+                    .gateway_history_sync_at
+                    .insert(normalized_session_key.clone(), now);
+                state.app.clone()
+            };
+            let Some(app_handle) = app else {
+                return;
+            };
+            if let Err(error) = backend
+                .sync_openclaw_session_history_now(
+                    &app_handle,
+                    &normalized_session_key,
+                    &reason,
+                )
+                .await
+            {
+                backend
+                    .append_event(format!(
+                        "openclaw transcript sync failed: session={} reason={} error={}",
+                        normalized_session_key,
+                        value_or_dash(&reason),
+                        error
+                    ))
+                    .await;
+            }
+        });
     }
 
     pub(super) async fn forward_mobile_message_to_openclaw(
@@ -1094,6 +1500,7 @@ impl PairBackendHandle {
             .resolve_pending_openclaw_run(&run_id, &payload_session_key)
             .await;
         let Some((primary_run_id, pending, matched_alias)) = pending else {
+            self.schedule_openclaw_session_history_sync(&payload_session_key, "chat.event");
             self.append_event(format!(
                 "openclaw chat event ignored without pending run: run={} session={}",
                 run_id,
@@ -1193,10 +1600,12 @@ impl PairBackendHandle {
                 run_id, pending.mobile_id
             ))
             .await;
+            self.schedule_openclaw_session_history_sync(&pending.session_key, "chat.final.empty");
             return;
         }
         self.mirror_openclaw_reply_to_mobile(pending, &reply_text)
             .await;
+        self.schedule_openclaw_session_history_sync(&payload_session_key, "chat.final");
     }
 
     async fn notify_openclaw_error_to_mobile(

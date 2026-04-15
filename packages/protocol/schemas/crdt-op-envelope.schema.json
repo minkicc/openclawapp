@@ -1,0 +1,495 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclawapp.dev/schemas/crdt-op-envelope.schema.json",
+  "title": "OpenClawCrdtOpEnvelope",
+  "type": "object",
+  "required": [
+    "opId",
+    "conversationId",
+    "authorDeviceId",
+    "authorEntityType",
+    "authorSeq",
+    "hlc",
+    "parents",
+    "kind",
+    "payload",
+    "signedAt",
+    "signature"
+  ],
+  "properties": {
+    "opId": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "conversationId": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "authorDeviceId": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "authorEntityType": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "authorSeq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "hlc": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "parents": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      },
+      "uniqueItems": true
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "conversation.create",
+        "member.add",
+        "member.remove",
+        "device.trust.add",
+        "device.trust.remove",
+        "channel.revoke",
+        "message.create",
+        "message.edit",
+        "message.delete",
+        "reaction.add",
+        "reaction.remove",
+        "read.cursor"
+      ]
+    },
+    "payload": {
+      "type": "object"
+    },
+    "signedAt": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "signature": {
+      "$ref": "#/$defs/nonEmptyString"
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "conversation.create"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/conversationCreatePayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "member.add"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/memberAddPayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "member.remove"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/memberRemovePayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "device.trust.add"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/deviceTrustAddPayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "device.trust.remove"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/deviceTrustRemovePayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "channel.revoke"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/channelRevokePayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "message.create"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/messageCreatePayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "message.edit"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/messageEditPayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "message.delete"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/messageDeletePayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "reaction.add"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/reactionAddPayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "reaction.remove"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/reactionRemovePayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "read.cursor"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/readCursorPayload"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "body": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "parts": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": ["text"]
+        },
+        {
+          "required": ["parts"]
+        }
+      ]
+    },
+    "conversationCreatePayload": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["direct", "group"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "memberAddPayload": {
+      "type": "object",
+      "required": ["memberId"],
+      "properties": {
+        "memberId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "role": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "displayName": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "memberRemovePayload": {
+      "type": "object",
+      "required": ["memberId"],
+      "properties": {
+        "memberId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "deviceTrustAddPayload": {
+      "type": "object",
+      "required": ["deviceId", "entityType", "publicKey"],
+      "properties": {
+        "memberId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "deviceId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "entityType": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "publicKey": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "displayName": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "deviceTrustRemovePayload": {
+      "type": "object",
+      "required": ["deviceId"],
+      "properties": {
+        "deviceId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "channelRevokePayload": {
+      "type": "object",
+      "properties": {
+        "targetDeviceId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "targetMemberId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": ["targetDeviceId"]
+        },
+        {
+          "required": ["targetMemberId"]
+        }
+      ]
+    },
+    "messageCreatePayload": {
+      "type": "object",
+      "required": ["messageId", "body"],
+      "properties": {
+        "messageId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "body": {
+          "$ref": "#/$defs/body"
+        },
+        "clientNonce": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "messageEditPayload": {
+      "type": "object",
+      "required": ["messageId", "body"],
+      "properties": {
+        "messageId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "body": {
+          "$ref": "#/$defs/body"
+        }
+      },
+      "additionalProperties": false
+    },
+    "messageDeletePayload": {
+      "type": "object",
+      "required": ["messageId"],
+      "properties": {
+        "messageId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "reactionAddPayload": {
+      "type": "object",
+      "required": ["messageId", "reaction"],
+      "properties": {
+        "messageId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reaction": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "reactionRemovePayload": {
+      "type": "object",
+      "required": ["messageId", "reaction"],
+      "properties": {
+        "messageId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reaction": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "readCursorPayload": {
+      "type": "object",
+      "properties": {
+        "messageId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "opId": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "readAt": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": ["messageId"]
+        },
+        {
+          "required": ["opId"]
+        }
+      ]
+    }
+  }
+}

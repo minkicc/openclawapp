@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclawapp.dev/schemas/crdt-sync-batch.schema.json",
+  "title": "OpenClawCrdtSyncBatch",
+  "type": "object",
+  "required": ["conversationId", "baseVersionVector", "ops", "ts"],
+  "properties": {
+    "conversationId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "baseVersionVector": {
+      "$ref": "#/$defs/versionVector"
+    },
+    "ops": {
+      "type": "array",
+      "items": {
+        "$ref": "./crdt-op-envelope.schema.json"
+      }
+    },
+    "hasMore": {
+      "type": "boolean"
+    },
+    "ts": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "versionVector": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/nonEmptyString"
+      },
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    }
+  }
+}

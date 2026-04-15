@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclawapp.dev/schemas/crdt-pong.schema.json",
+  "title": "OpenClawCrdtPong",
+  "type": "object",
+  "required": ["id", "sentAt", "respondedAt"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "sentAt": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "respondedAt": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false
+}

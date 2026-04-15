@@ -845,11 +845,7 @@ impl PairBackendHandle {
     pub(super) fn spawn_connect_task(&self, app: AppHandle, from_reconnect: bool) {
         let backend = self.clone();
         tokio::spawn(async move {
-            if let Err(error) = backend.connect(app, from_reconnect).await {
-                backend
-                    .append_event(format!("pair connect failed: {}", error))
-                    .await;
-            }
+            let _ = backend.connect(app, from_reconnect).await;
         });
     }
 }

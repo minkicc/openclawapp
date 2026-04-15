@@ -330,6 +330,115 @@ export class PairV2PeerChannel {
     this.options.onLog?.(line);
   }
 
+  private summarizeIceCandidate(candidate: Record<string, unknown> | null | undefined) {
+    if (!candidate) {
+      return '-';
+    }
+    const candidateType = String(
+      candidate.candidateType || candidate.type || candidate.networkType || ''
+    ).trim();
+    const ip = String(
+      candidate.ip || candidate.address || candidate.ipAddress || candidate.relatedAddress || ''
+    ).trim();
+    const port = Number(candidate.port || candidate.relatedPort || 0);
+    const protocol = String(candidate.protocol || '').trim().toLowerCase();
+    const networkType = String(candidate.networkType || '').trim().toLowerCase();
+    const parts = [
+      candidateType || 'candidate',
+      ip ? `${ip}${port > 0 ? `:${port}` : ''}` : '',
+      protocol || '',
+      networkType || '',
+    ].filter(Boolean);
+    return parts.join(' ');
+  }
+
+  private async logSelectedCandidatePair(
+    peer: RTCPeerConnection,
+    reason: string
+  ) {
+    if (!peer || typeof peer.getStats !== 'function') {
+      return;
+    }
+
+    try {
+      const report = await peer.getStats();
+      const entries = new Map<string, Record<string, unknown>>();
+
+      const addEntry = (value: unknown) => {
+        if (!value || typeof value !== 'object') {
+          return;
+        }
+        const record = value as Record<string, unknown>;
+        const id = String(record.id || '').trim();
+        if (!id) {
+          return;
+        }
+        entries.set(id, record);
+      };
+
+      if (typeof (report as { forEach?: unknown }).forEach === 'function') {
+        (report as { forEach: (callback: (value: unknown) => void) => void }).forEach((value) => {
+          addEntry(value);
+        });
+      } else if (Symbol.iterator in Object(report)) {
+        for (const entry of report as Iterable<unknown>) {
+          if (Array.isArray(entry) && entry.length >= 2) {
+            addEntry(entry[1]);
+          } else {
+            addEntry(entry);
+          }
+        }
+      }
+
+      let pair: Record<string, unknown> | null = null;
+
+      for (const stat of entries.values()) {
+        if (String(stat.type || '').trim() !== 'transport') {
+          continue;
+        }
+        const candidatePairId = String(stat.selectedCandidatePairId || '').trim();
+        if (candidatePairId && entries.has(candidatePairId)) {
+          pair = entries.get(candidatePairId) || null;
+          break;
+        }
+      }
+
+      if (!pair) {
+        for (const stat of entries.values()) {
+          if (String(stat.type || '').trim() !== 'candidate-pair') {
+            continue;
+          }
+          const selected = Boolean(stat.selected);
+          const nominated = Boolean(stat.nominated);
+          const state = String(stat.state || '').trim().toLowerCase();
+          if (selected || (nominated && state === 'succeeded')) {
+            pair = stat;
+            break;
+          }
+        }
+      }
+
+      if (!pair) {
+        this.log(`candidate pair (${reason}): unavailable`);
+        return;
+      }
+
+      const localCandidateId = String(pair.localCandidateId || '').trim();
+      const remoteCandidateId = String(pair.remoteCandidateId || '').trim();
+      const localCandidate = localCandidateId ? entries.get(localCandidateId) || null : null;
+      const remoteCandidate = remoteCandidateId ? entries.get(remoteCandidateId) || null : null;
+      const pairState = String(pair.state || '').trim() || '-';
+      const currentRoundTripTime = Number(pair.currentRoundTripTime || 0);
+      const rttMs =
+        currentRoundTripTime > 0 ? Math.max(0, Math.round(currentRoundTripTime * 1000)) : 0;
+      this.log(
+        `candidate pair (${reason}): local=${this.summarizeIceCandidate(localCandidate)} remote=${this.summarizeIceCandidate(remoteCandidate)} state=${pairState}${rttMs > 0 ? ` rtt=${rttMs}ms` : ''}`
+      );
+    } catch (error) {
+      this.log(`candidate pair stats failed (${reason}): ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   private async emitSignal(type: PairV2PeerSignalType, payload: PairV2PeerSignalPayload) {
     await this.options.onSignal(type, payload);
   }
@@ -429,6 +538,11 @@ export class PairV2PeerChannel {
         return;
       }
       const current = String(peer.connectionState || '').trim();
+      const iceState = String(peer.iceConnectionState || '').trim();
+      this.log(`peer connection state=${current || '-'} ice=${iceState || '-'}`);
+      if (current === 'connected') {
+        void this.logSelectedCandidatePair(peer, 'connectionstatechange');
+      }
       if (current === 'failed') {
         this.disposePeer('peer connection failed', 'failed');
         return;
@@ -446,6 +560,10 @@ export class PairV2PeerChannel {
         return;
       }
       const current = String(peer.iceConnectionState || '').trim();
+      this.log(`ice connection state=${current || '-'}`);
+      if (current === 'connected' || current === 'completed') {
+        void this.logSelectedCandidatePair(peer, `ice-${current.toLowerCase()}`);
+      }
       if (current === 'failed') {
         this.disposePeer('ice failed', 'failed');
       }
@@ -527,6 +645,9 @@ export class PairV2PeerChannel {
         return;
       }
       this.setState('channel-open', 'data channel open');
+      if (ownerPeer) {
+        void this.logSelectedCandidatePair(ownerPeer, 'data-channel-open');
+      }
       void this.sendHello().catch((error) => {
         this.log(`send hello failed: ${error?.message || String(error)}`);
         this.setState('failed', 'auth hello failed');

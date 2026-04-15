@@ -1,5 +1,10 @@
 # Remote Pairing v2 Protocol
 
+Note:
+
+- This document describes the current `v2` control/auth/message layering.
+- The next-generation non-backward-compatible chat/group direction is documented in [remote-pairing-crdt-v3.md](/Users/zhangruiqiang/dev/setupclaw/docs/remote-pairing-crdt-v3.md).
+
 This document splits `v2` into a reusable protocol stack so we can clearly separate:
 
 - server-assisted discovery/presence/pairing/signaling

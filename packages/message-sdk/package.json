@@ -21,7 +21,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@openclaw/pair-sdk": "file:../pair-sdk"
+    "@openclaw/pair-sdk": "file:../pair-sdk",
+    "@openclaw/protocol": "file:../protocol"
   },
   "devDependencies": {
     "typescript": "^5.8.2"

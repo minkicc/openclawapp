@@ -639,6 +639,29 @@ fn bundled_kernel_required_script_path(root: &Path) -> PathBuf {
         .join("openclaw.mjs")
 }
 
+fn bundled_kernel_required_paths(root: &Path) -> Vec<PathBuf> {
+    vec![
+        bundled_kernel_required_script_path(root),
+        root.join("node_modules")
+            .join("openclaw")
+            .join("package.json"),
+        root.join("node_modules").join("openai").join("package.json"),
+        root.join("node_modules").join("openai").join("index.js"),
+        root.join("node_modules").join("openai").join("azure.mjs"),
+    ]
+}
+
+fn bundled_kernel_missing_paths(root: &Path) -> Vec<PathBuf> {
+    bundled_kernel_required_paths(root)
+        .into_iter()
+        .filter(|path| !path.exists())
+        .collect()
+}
+
+fn bundled_kernel_is_complete(root: &Path) -> bool {
+    bundled_kernel_missing_paths(root).is_empty()
+}
+
 fn bundled_kernel_archive_fingerprint(path: &Path) -> Result<String, String> {
     let meta = fs::metadata(path).map_err(|e| format!("读取内置 kernel 归档失败: {}", e))?;
     let modified = meta
@@ -662,7 +685,7 @@ fn extract_bundled_kernel_archive(app: &AppHandle, archive_path: &Path) -> Resul
     let marker = bundled_kernel_fingerprint_path(app)?;
     let fingerprint = bundled_kernel_archive_fingerprint(archive_path)?;
 
-    if bundled_kernel_required_script_path(&target).exists() {
+    if bundled_kernel_is_complete(&target) {
         if fs::read_to_string(&marker)
             .ok()
             .map(|value| value.trim() == fingerprint)
@@ -670,6 +693,16 @@ fn extract_bundled_kernel_archive(app: &AppHandle, archive_path: &Path) -> Resul
         {
             return Ok(target);
         }
+    } else if target.exists() {
+        let missing = bundled_kernel_missing_paths(&target)
+            .into_iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!(
+            "bundled kernel integrity check failed, re-extracting archive; missing: {}",
+            missing
+        );
     }
 
     let staging =
@@ -707,10 +740,15 @@ fn extract_bundled_kernel_archive(app: &AppHandle, archive_path: &Path) -> Resul
         )
     })?;
 
-    if !bundled_kernel_required_script_path(&staging).exists() {
+    let missing_staging = bundled_kernel_missing_paths(&staging);
+    if !missing_staging.is_empty() {
         return Err(format!(
-            "内置 kernel 解压后缺少入口文件: {}",
-            bundled_kernel_required_script_path(&staging).display()
+            "内置 kernel 解压后缺少关键文件: {}",
+            missing_staging
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
 
@@ -747,7 +785,7 @@ fn resolve_bundled_kernel_dir(app: &AppHandle) -> Option<PathBuf> {
 
 fn existing_extracted_bundled_kernel_dir(app: &AppHandle) -> Option<PathBuf> {
     let dir = bundled_kernel_extract_dir(app).ok()?;
-    if bundled_kernel_required_script_path(&dir).exists() {
+    if bundled_kernel_is_complete(&dir) {
         Some(dir)
     } else {
         None

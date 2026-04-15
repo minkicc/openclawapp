@@ -14,7 +14,7 @@ impl PairBackendHandle {
         }
     }
 
-    fn normalize_chat_message_kind(value: &str) -> String {
+    pub(super) fn normalize_chat_message_kind(value: &str) -> String {
         if value.trim() == "system" {
             "system".to_string()
         } else {
@@ -40,6 +40,12 @@ impl PairBackendHandle {
         left: &PairBackendMessage,
         right: &PairBackendMessage,
     ) -> std::cmp::Ordering {
+        match (left.gateway_message_seq, right.gateway_message_seq) {
+            (left_seq, right_seq) if left_seq > 0 && right_seq > 0 && left_seq != right_seq => {
+                return left_seq.cmp(&right_seq);
+            }
+            _ => {}
+        }
         left.ts
             .cmp(&right.ts)
             .then_with(|| left.id.cmp(&right.id))
@@ -53,6 +59,8 @@ impl PairBackendHandle {
                 message.origin_seq = 0;
                 message.after.clear();
                 message.missing_after.clear();
+                message.gateway_message_id.clear();
+                message.gateway_message_seq = 0;
             } else {
                 message.origin =
                     Self::normalize_chat_message_origin(&message.origin, &message.from);
@@ -227,7 +235,7 @@ impl PairBackendHandle {
         expected.saturating_sub(1)
     }
 
-    fn next_channel_origin_seq_locked(channel: &PairBackendChannel, origin: &str) -> u64 {
+    pub(super) fn next_channel_origin_seq_locked(channel: &PairBackendChannel, origin: &str) -> u64 {
         channel
             .messages
             .iter()
@@ -309,6 +317,8 @@ impl PairBackendHandle {
             origin_seq,
             after,
             missing_after: Vec::new(),
+            gateway_message_id: String::new(),
+            gateway_message_seq: 0,
         })
     }
 
@@ -464,6 +474,8 @@ impl PairBackendHandle {
             origin_seq,
             after,
             missing_after: Vec::new(),
+            gateway_message_id: String::new(),
+            gateway_message_seq: 0,
         }
     }
 
@@ -1051,6 +1063,24 @@ impl PairBackendHandle {
             .into_iter()
             .collect::<std::collections::HashSet<_>>();
 
+        let app = {
+            let state = self.state.lock().await;
+            state.app.clone()
+        };
+        let session_key = Self::build_openclaw_mobile_session_key(mobile_id);
+        if let (Some(app_handle), false) = (app, session_key.trim().is_empty()) {
+            if let Err(error) = self
+                .sync_openclaw_session_history_now(&app_handle, &session_key, "mobile-sync-state")
+                .await
+            {
+                self.append_event(format!(
+                    "openclaw transcript sync failed before mobile sync: mobile={} error={}",
+                    mobile_id, error
+                ))
+                .await;
+            }
+        }
+
         let (missing_host_messages, host_leaf_ids, local_mobile_seq, local_host_seq) = {
             let state = self.state.lock().await;
             let Some(channel) = state
@@ -1413,6 +1443,8 @@ impl PairBackendHandle {
                     message.origin_seq = 0;
                     message.after.clear();
                     message.missing_after.clear();
+                    message.gateway_message_id.clear();
+                    message.gateway_message_seq = 0;
                 } else {
                     message.origin =
                         Self::normalize_chat_message_origin(&message.origin, &message.from);
@@ -1431,6 +1463,8 @@ impl PairBackendHandle {
                     existing.origin = message.origin.clone();
                     existing.origin_seq = message.origin_seq;
                     existing.after = message.after.clone();
+                    existing.gateway_message_id = message.gateway_message_id.clone();
+                    existing.gateway_message_seq = message.gateway_message_seq;
                 } else {
                     inserted = true;
                     channel.messages.push(message);

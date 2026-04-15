@@ -56,6 +56,7 @@ const OPENCLAW_GATEWAY_IDENTITY_FILE_NAME: &str = "openclaw-gateway-device-ident
 const OPENCLAW_GATEWAY_CONNECT_TIMEOUT_SECS: u64 = 20;
 const OPENCLAW_GATEWAY_REQUEST_TIMEOUT_SECS: u64 = 90;
 const OPENCLAW_GATEWAY_PENDING_RUN_TTL_MS: u64 = 3 * 60 * 1000;
+const OPENCLAW_GATEWAY_HISTORY_SYNC_THROTTLE_MS: u64 = 1_500;
 const OPENCLAW_GATEWAY_CLIENT_ID: &str = "gateway-client";
 const OPENCLAW_GATEWAY_CLIENT_MODE: &str = "backend";
 const OPENCLAW_GATEWAY_ROLE: &str = "operator";
@@ -88,6 +89,10 @@ pub struct PairBackendMessage {
     pub after: Vec<String>,
     #[serde(default)]
     pub missing_after: Vec<String>,
+    #[serde(default)]
+    pub gateway_message_id: String,
+    #[serde(default)]
+    pub gateway_message_seq: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -378,6 +383,7 @@ struct PairBackendState {
     gateway_pending_requests: HashMap<String, oneshot::Sender<Result<Value, String>>>,
     gateway_pending_runs: HashMap<String, PendingOpenClawRun>,
     gateway_pending_run_aliases: HashMap<String, String>,
+    gateway_history_sync_at: HashMap<String, u64>,
     pending_mobile_acks: HashMap<String, PendingMobileAck>,
     persisted_runtime_loaded: bool,
     persisted_runtime_state_signature: String,
@@ -417,6 +423,7 @@ impl Default for PairBackendState {
             gateway_pending_requests: HashMap::new(),
             gateway_pending_runs: HashMap::new(),
             gateway_pending_run_aliases: HashMap::new(),
+            gateway_history_sync_at: HashMap::new(),
             pending_mobile_acks: HashMap::new(),
             persisted_runtime_loaded: false,
             persisted_runtime_state_signature: String::new(),

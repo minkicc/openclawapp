@@ -10,6 +10,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "check-schemas": "node ./src/check-schemas.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

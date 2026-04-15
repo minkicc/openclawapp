@@ -169,7 +169,6 @@ impl PairBackendHandle {
         if !desired && from_reconnect {
             return Ok(());
         }
-        let (base_url, device_id, _identity, session) = self.announce_presence(&app).await?;
         let generation = {
             let mut state = self.state.lock().await;
             state.connect_generation = state.connect_generation.saturating_add(1);
@@ -195,62 +194,75 @@ impl PairBackendHandle {
             state.channel_open = true;
             state.connect_generation
         };
-        self.append_event(format!(
-            "connecting v2 stream -> {}/v2/signal/stream?clientType=desktop&clientId={}&token={}",
-            base_url, device_id, session.token
-        ))
-        .await;
         self.emit_snapshot().await;
+        let connect_result: Result<(), String> = async {
+            let (base_url, device_id, _identity, session) = self.announce_presence(&app).await?;
+            self.append_event(format!(
+                "connecting v2 stream -> {}/v2/signal/stream?clientType=desktop&clientId={}&token={}",
+                base_url, device_id, session.token
+            ))
+            .await;
 
-        let backend = self.clone();
-        let sse_app = app.clone();
-        let sse_base_url = base_url.clone();
-        let sse_token = session.token.clone();
-        let sse_device_id = device_id.clone();
-        let sse_handle = tokio::spawn(async move {
-            if let Err(error) = backend
-                .run_signal_stream(sse_app, generation, sse_base_url, sse_token, sse_device_id)
-                .await
-            {
-                backend
-                    .append_event(format!("v2 signal stream disconnected: {}", error))
-                    .await;
-                backend.handle_stream_failure(generation).await;
-            }
-        });
-        let heartbeat_backend = self.clone();
-        let heartbeat_app = app.clone();
-        let heartbeat_handle = tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(PAIR_HEARTBEAT_SECS)).await;
-                let still_current = {
-                    let state = heartbeat_backend.state.lock().await;
-                    state.channel_open
-                        && state.desired_connected
-                        && state.connect_generation == generation
-                };
-                if !still_current {
-                    break;
-                }
-                if let Err(error) = heartbeat_backend.heartbeat_once(&heartbeat_app).await {
-                    heartbeat_backend
-                        .append_event(format!("presence heartbeat failed: {}", error))
+            let backend = self.clone();
+            let sse_app = app.clone();
+            let sse_base_url = base_url.clone();
+            let sse_token = session.token.clone();
+            let sse_device_id = device_id.clone();
+            let sse_handle = tokio::spawn(async move {
+                if let Err(error) = backend
+                    .run_signal_stream(sse_app, generation, sse_base_url, sse_token, sse_device_id)
+                    .await
+                {
+                    backend
+                        .append_event(format!("v2 signal stream disconnected: {}", error))
                         .await;
-                    heartbeat_backend.handle_stream_failure(generation).await;
-                    break;
+                    backend.handle_stream_failure(generation).await;
+                }
+            });
+            let heartbeat_backend = self.clone();
+            let heartbeat_app = app.clone();
+            let heartbeat_handle = tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(PAIR_HEARTBEAT_SECS)).await;
+                    let still_current = {
+                        let state = heartbeat_backend.state.lock().await;
+                        state.channel_open
+                            && state.desired_connected
+                            && state.connect_generation == generation
+                    };
+                    if !still_current {
+                        break;
+                    }
+                    if let Err(error) = heartbeat_backend.heartbeat_once(&heartbeat_app).await {
+                        heartbeat_backend
+                            .append_event(format!("presence heartbeat failed: {}", error))
+                            .await;
+                        heartbeat_backend.handle_stream_failure(generation).await;
+                        break;
+                    }
+                }
+            });
+            {
+                let mut state = self.state.lock().await;
+                if state.connect_generation == generation {
+                    state.sse_task = Some(sse_handle);
+                    state.heartbeat_task = Some(heartbeat_handle);
+                } else {
+                    sse_handle.abort();
+                    heartbeat_handle.abort();
                 }
             }
-        });
-        {
-            let mut state = self.state.lock().await;
-            if state.connect_generation == generation {
-                state.sse_task = Some(sse_handle);
-                state.heartbeat_task = Some(heartbeat_handle);
-            } else {
-                sse_handle.abort();
-                heartbeat_handle.abort();
-            }
+            Ok(())
         }
+        .await;
+
+        if let Err(error) = connect_result {
+            self.append_event(format!("pair connect failed: {}", error))
+                .await;
+            self.handle_stream_failure(generation).await;
+            return Err(error);
+        }
+
         Ok(())
     }
 
